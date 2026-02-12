@@ -1,0 +1,28 @@
+list all BillNos
+403969, 403970, 403959, 8885
+Corrected prompt that will give correct results: please list all the BillNos with column name 'BillNo'
+
+list all titles
+The titles mentioned in the given context are:
+
+1. LIGHT ENDLESS LIGHT
+2. SUNLIT PATH THE
+3. WORDS OF THE MOTHER I
+4. WORDS OF THE MOTHER III
+5. POSTAGE AND FORWARDING (REGISTERED POST)
+6. * * *  HINDI
+7. GITA-PRABANDH
+8. KALIDASA
+9. INTEGRAL YOGA THE
+10. PACKING AND FORWARDING
+
+Corrected prompt that will give correct results: List all the titles with column name Title
+
+
+list all titles in 403970
+The titles associated with BillNo 403970 are:
+
+1. ESSAYS ON THE GITA (SC)
+2. IDEAL CHILD
+3. LIGHT ENDLESS LIGHT
+4. WORDS OF THE MOTHER III

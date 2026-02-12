@@ -1,0 +1,28 @@
+To import a .sql file using MySQL Shell (mysqlsh), you can follow these steps:
+
+1. Launch MySQL Shell: Open a command prompt or terminal and launch MySQL Shell by running the `mysqlsh` command.
+
+2. Connect to the MySQL Server: Connect to the MySQL server using the following command:
+   ```
+   \connect username@hostname:port
+   ```
+   Replace `username` with your MySQL username, `hostname` with the hostname or IP address of the MySQL server, and `port` with the port number. For example:
+   ```
+   \connect root@localhost:3306
+   ```
+
+3. Switch to SQL mode: Switch to SQL mode by running the `\sql` command. This will allow you to execute SQL statements and import the .sql file.
+   ```
+   \sql
+   ```
+
+4. Import the .sql file: Use the `source` command to import the .sql file. Provide the full path to the .sql file within quotes. For example:
+   ```
+   \source 'path/to/your/file.sql'
+   ```
+
+   Ensure that you provide the correct path to the .sql file.
+
+5. Verify the import: After the import process completes, you can verify the imported data and schema by querying the relevant tables or data.
+
+By following these steps, you can import a .sql file using MySQL Shell (mysqlsh). Make sure you have MySQL Shell installed and adjust the commands and file paths according to your specific setup and requirements.
