@@ -986,6 +986,85 @@ button:disabled {
   color: #fff;
 }
 
+/* Top actions row (banner + download btn) */
+.profiler-top-actions {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+/* Action row (back + download) */
+.profiler-action-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+/* PDF download button */
+.pdf-download-btn {
+  padding: 8px 20px;
+  border-radius: 10px;
+  border: none;
+  background: linear-gradient(135deg, #1565C0 0%, #0d47a1 100%);
+  color: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(21, 101, 192, 0.3);
+}
+
+.pdf-download-btn:hover {
+  background: linear-gradient(135deg, #0d47a1 0%, #0a3a82 100%);
+  box-shadow: 0 4px 12px rgba(21, 101, 192, 0.4);
+  transform: translateY(-1px);
+}
+
+/* Pagination controls */
+.profiler-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  margin-top: 16px;
+  padding: 12px 0;
+}
+
+.profiler-page-btn {
+  padding: 8px 20px;
+  border-radius: 10px;
+  border: 1px solid var(--ksp-navy);
+  background: transparent;
+  color: var(--ksp-navy);
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.profiler-page-btn:hover:not(:disabled) {
+  background: var(--ksp-navy);
+  color: #fff;
+}
+
+.profiler-page-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.profiler-page-info {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ksp-navy);
+  min-width: 120px;
+  text-align: center;
+}
+
 /* Profile report top bar variant */
 .profiler-report-top-bar {
   background: linear-gradient(135deg, #1b5e20 0%, #2e7d32 100%);

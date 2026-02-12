@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react'
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Cell, ResponsiveContainer, LabelList } from 'recharts'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import html2pdf from 'html2pdf.js'
 import kspLogo from './assets/ksp_logo.png'
 
 const NEO4J_URI = import.meta.env.VITE_NEO4J_URI || 'bolt://localhost:7687'
@@ -67,6 +68,8 @@ function formatCompact(val: number): string {
   return '₹ ' + val.toFixed(0)
 }
 
+const MULE_PAGE_SIZE = 10
+
 const LAYER_COLORS = [
   '#ffd400', '#43A047', '#FB8C00', '#E53935', '#8E24AA',
   '#6D4C41', '#00ACC1', '#C62828', '#1565C0', '#F06292',
@@ -102,8 +105,10 @@ function App() {
   const [profileReport, setProfileReport] = useState('')
   const [profileError, setProfileError] = useState('')
   const [muleSortBy, setMuleSortBy] = useState<'case_count' | 'total_amount' | 'risk'>('case_count')
+  const [mulePage, setMulePage] = useState(0)
   const [profilerView, setProfilerView] = useState<'list' | 'profile'>('list')
   const profileReportRef = useRef<HTMLDivElement | null>(null)
+  const muleListRef = useRef<HTMLDivElement | null>(null)
 
   // Neovis state
   const [graphReady, setGraphReady] = useState(false)
@@ -445,6 +450,18 @@ function App() {
       sorted.sort((a, b) => (riskOrder[b.risk] || 0) - (riskOrder[a.risk] || 0) || b.case_count - a.case_count)
     }
     return sorted
+  }
+
+  function handleDownloadPdf(element: HTMLElement | null, filename: string) {
+    if (!element) return
+    const opt = {
+      margin: [10, 10, 10, 10] as [number, number, number, number],
+      filename,
+      image: { type: 'jpeg' as const, quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true, scrollY: 0 },
+      jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' as const },
+    }
+    html2pdf().set(opt).from(element).save()
   }
 
   function handleBackToMuleList() {
@@ -800,13 +817,24 @@ function App() {
         {/* ============ ACCOUNT PROFILER PAGE ============ */}
         {page === 'profiler' && profilerView === 'list' && (
           <>
-            <div className="ksp-banner">
-              <h1 className="ksp-title">Suspect Account Profiler</h1>
-              <p className="ksp-subtitle">
-                Auto-detects mule accounts involved in multiple fraud cases. Click any account for AI-powered deep profiling.
-              </p>
+            <div className="profiler-top-actions">
+              <div className="ksp-banner" style={{ flex: 1, marginBottom: 0 }}>
+                <h1 className="ksp-title">Suspect Account Profiler</h1>
+                <p className="ksp-subtitle">
+                  Auto-detects mule accounts involved in multiple fraud cases. Click any account for AI-powered deep profiling.
+                </p>
+              </div>
+              {muleAccounts.length > 0 && (
+                <button
+                  className="pdf-download-btn"
+                  onClick={() => handleDownloadPdf(muleListRef.current, 'Mule_Accounts_Report.pdf')}
+                >
+                  Download PDF
+                </button>
+              )}
             </div>
 
+            <div ref={muleListRef}>
             {/* Summary cards */}
             {muleSummary && (
               <div className="profiler-summary-cards">
@@ -855,24 +883,24 @@ function App() {
                   <span className="profiler-controls-label">Sort by:</span>
                   <button
                     className={`profiler-sort-btn ${muleSortBy === 'case_count' ? 'profiler-sort-active' : ''}`}
-                    onClick={() => setMuleSortBy('case_count')}
+                    onClick={() => { setMuleSortBy('case_count'); setMulePage(0) }}
                   >
                     Case Count
                   </button>
                   <button
                     className={`profiler-sort-btn ${muleSortBy === 'total_amount' ? 'profiler-sort-active' : ''}`}
-                    onClick={() => setMuleSortBy('total_amount')}
+                    onClick={() => { setMuleSortBy('total_amount'); setMulePage(0) }}
                   >
                     Amount
                   </button>
                   <button
                     className={`profiler-sort-btn ${muleSortBy === 'risk' ? 'profiler-sort-active' : ''}`}
-                    onClick={() => setMuleSortBy('risk')}
+                    onClick={() => { setMuleSortBy('risk'); setMulePage(0) }}
                   >
                     Risk Level
                   </button>
                   <span className="profiler-count-label">
-                    Showing {muleAccounts.length} accounts
+                    Showing {mulePage * MULE_PAGE_SIZE + 1}–{Math.min((mulePage + 1) * MULE_PAGE_SIZE, muleAccounts.length)} of {muleAccounts.length} accounts
                   </span>
                 </div>
               </div>
@@ -897,9 +925,9 @@ function App() {
                       </tr>
                     </thead>
                     <tbody>
-                      {getSortedMuleAccounts().map((acct, idx) => (
+                      {getSortedMuleAccounts().slice(mulePage * MULE_PAGE_SIZE, (mulePage + 1) * MULE_PAGE_SIZE).map((acct, idx) => (
                         <tr key={acct.account_no} className={`profiler-row profiler-row-${acct.risk.toLowerCase()}`}>
-                          <td className="profiler-cell-idx">{idx + 1}</td>
+                          <td className="profiler-cell-idx">{mulePage * MULE_PAGE_SIZE + idx + 1}</td>
                           <td className="profiler-cell-account">{acct.account_no}</td>
                           <td>{acct.bank}</td>
                           <td className="profiler-cell-cases">{acct.case_count}</td>
@@ -925,8 +953,32 @@ function App() {
                     </tbody>
                   </table>
                 </div>
+
+                {/* Pagination controls */}
+                {muleAccounts.length > MULE_PAGE_SIZE && (
+                  <div className="profiler-pagination">
+                    <button
+                      className="profiler-page-btn"
+                      onClick={() => setMulePage(p => p - 1)}
+                      disabled={mulePage === 0}
+                    >
+                      ← Back
+                    </button>
+                    <span className="profiler-page-info">
+                      Page {mulePage + 1} of {Math.ceil(muleAccounts.length / MULE_PAGE_SIZE)}
+                    </span>
+                    <button
+                      className="profiler-page-btn"
+                      onClick={() => setMulePage(p => p + 1)}
+                      disabled={(mulePage + 1) * MULE_PAGE_SIZE >= muleAccounts.length}
+                    >
+                      Next →
+                    </button>
+                  </div>
+                )}
               </div>
             )}
+            </div>
           </>
         )}
 
@@ -940,9 +992,19 @@ function App() {
               </p>
             </div>
 
-            <button className="profiler-back-btn" onClick={handleBackToMuleList}>
-              ← Back to Mule Accounts
-            </button>
+            <div className="profiler-action-row">
+              <button className="profiler-back-btn" onClick={handleBackToMuleList}>
+                ← Back to Mule Accounts
+              </button>
+              {profileReport && !profileLoading && (
+                <button
+                  className="pdf-download-btn"
+                  onClick={() => handleDownloadPdf(profileReportRef.current, `Profile_${profileAccount}.pdf`)}
+                >
+                  Download PDF
+                </button>
+              )}
+            </div>
 
             {/* Status */}
             {profileStatus && (

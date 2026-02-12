@@ -487,6 +487,7 @@ async def _stream_investigation(ack_no: str):
                         chunk = json.loads(line)
                         token = chunk.get("response", "")
                         if token:
+                            token = token.replace("$", "₹")
                             yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
                         if chunk.get("done", False):
                             break
