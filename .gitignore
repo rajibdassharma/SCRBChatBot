@@ -7,10 +7,10 @@ __pycache__/
 *$py.class
 *.egg-info/
 
-# Environment variables (contain passwords/secrets)
-.env
-.env.local
-.env.*.local
+# Environment variables (uncomment if using production secrets)
+# .env
+# .env.local
+# .env.*.local
 
 # Vector Database / Chroma
 **/chroma_store/
