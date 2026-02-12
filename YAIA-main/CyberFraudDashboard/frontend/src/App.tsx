@@ -90,6 +90,21 @@ function App() {
   const [invError, setInvError] = useState('')
   const invReportRef = useRef<HTMLDivElement | null>(null)
 
+  // Profiler state
+  const [muleAccounts, setMuleAccounts] = useState<any[]>([])
+  const [muleSummary, setMuleSummary] = useState<any>(null)
+  const [muleLoading, setMuleLoading] = useState(false)
+  const [muleError, setMuleError] = useState('')
+  const [muleLoaded, setMuleLoaded] = useState(false)
+  const [profileAccount, setProfileAccount] = useState('')
+  const [profileLoading, setProfileLoading] = useState(false)
+  const [profileStatus, setProfileStatus] = useState('')
+  const [profileReport, setProfileReport] = useState('')
+  const [profileError, setProfileError] = useState('')
+  const [muleSortBy, setMuleSortBy] = useState<'case_count' | 'total_amount' | 'risk'>('case_count')
+  const [profilerView, setProfilerView] = useState<'list' | 'profile'>('list')
+  const profileReportRef = useRef<HTMLDivElement | null>(null)
+
   // Neovis state
   const [graphReady, setGraphReady] = useState(false)
   const [graphCypher, setGraphCypher] = useState('')
@@ -390,6 +405,112 @@ function App() {
     if (e.key === 'Enter') handleInvestigate()
   }
 
+  // ── Profiler functions ──
+
+  async function loadMuleAccounts() {
+    setMuleLoading(true)
+    setMuleError('')
+    setMuleAccounts([])
+    setMuleSummary(null)
+
+    try {
+      const res = await fetch('/api/profiler/mule-accounts')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const json = await res.json()
+      setMuleSummary(json.summary)
+      setMuleAccounts(json.accounts)
+      setMuleLoaded(true)
+    } catch (err) {
+      setMuleError(err instanceof Error ? err.message : 'Failed to load mule accounts')
+    } finally {
+      setMuleLoading(false)
+    }
+  }
+
+  // Auto-load mule accounts when profiler page is opened
+  useEffect(() => {
+    if (page === 'profiler' && !muleLoaded && !muleLoading) {
+      loadMuleAccounts()
+    }
+  }, [page])
+
+  function getSortedMuleAccounts() {
+    const sorted = [...muleAccounts]
+    if (muleSortBy === 'case_count') {
+      sorted.sort((a, b) => b.case_count - a.case_count || b.total_amount - a.total_amount)
+    } else if (muleSortBy === 'total_amount') {
+      sorted.sort((a, b) => b.total_amount - a.total_amount)
+    } else if (muleSortBy === 'risk') {
+      const riskOrder: Record<string, number> = { CRITICAL: 3, HIGH: 2, MEDIUM: 1 }
+      sorted.sort((a, b) => (riskOrder[b.risk] || 0) - (riskOrder[a.risk] || 0) || b.case_count - a.case_count)
+    }
+    return sorted
+  }
+
+  function handleBackToMuleList() {
+    setProfilerView('list')
+    setProfileReport('')
+    setProfileStatus('')
+    setProfileError('')
+    setProfileAccount('')
+  }
+
+  async function handleProfileAccount(accountNo: string) {
+    setProfileAccount(accountNo)
+    setProfilerView('profile')
+    setProfileLoading(true)
+    setProfileStatus('Starting account profiling...')
+    setProfileReport('')
+    setProfileError('')
+
+    try {
+      const response = await fetch(`/api/profiler/account/${encodeURIComponent(accountNo)}`)
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error('No response stream')
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const event = JSON.parse(line.slice(6))
+            if (event.type === 'status') {
+              setProfileStatus(event.message)
+            } else if (event.type === 'token') {
+              setProfileReport(prev => prev + event.content)
+              if (profileReportRef.current) {
+                profileReportRef.current.scrollTop = profileReportRef.current.scrollHeight
+              }
+            } else if (event.type === 'error') {
+              setProfileError(event.message)
+              setProfileStatus('')
+            } else if (event.type === 'done') {
+              setProfileStatus('')
+            }
+          } catch {
+            // skip malformed SSE lines
+          }
+        }
+      }
+    } catch (err) {
+      setProfileError(err instanceof Error ? err.message : 'Profiling failed')
+    } finally {
+      setProfileLoading(false)
+      if (!profileError) setProfileStatus('')
+    }
+  }
+
   return (
     <div className="app-shell">
       {/* Sidebar */}
@@ -677,17 +798,194 @@ function App() {
         )}
 
         {/* ============ ACCOUNT PROFILER PAGE ============ */}
-        {page === 'profiler' && (
+        {page === 'profiler' && profilerView === 'list' && (
           <>
             <div className="ksp-banner">
               <h1 className="ksp-title">Suspect Account Profiler</h1>
               <p className="ksp-subtitle">
-                AI agent that profiles suspect accounts — maps all connected cases, counterparties, and generates a risk assessment.
+                Auto-detects mule accounts involved in multiple fraud cases. Click any account for AI-powered deep profiling.
               </p>
             </div>
-            <div className="empty-state">
-              Coming soon — Enter an Account Number and the AI agent will build a comprehensive profile.
+
+            {/* Summary cards */}
+            {muleSummary && (
+              <div className="profiler-summary-cards">
+                <div className="profiler-stat-card profiler-stat-total">
+                  <div className="profiler-stat-label">Total Mule Accounts</div>
+                  <div className="profiler-stat-value">{muleSummary.total_mule_accounts.toLocaleString()}</div>
+                  <div className="profiler-stat-sub">Involved in 2+ cases</div>
+                </div>
+                <div className="profiler-stat-card profiler-stat-critical">
+                  <div className="profiler-stat-label">Critical Risk</div>
+                  <div className="profiler-stat-value">{muleSummary.critical.toLocaleString()}</div>
+                  <div className="profiler-stat-sub">5+ cases</div>
+                </div>
+                <div className="profiler-stat-card profiler-stat-high">
+                  <div className="profiler-stat-label">High Risk</div>
+                  <div className="profiler-stat-value">{muleSummary.high.toLocaleString()}</div>
+                  <div className="profiler-stat-sub">3-4 cases</div>
+                </div>
+                <div className="profiler-stat-card profiler-stat-medium">
+                  <div className="profiler-stat-label">Medium Risk</div>
+                  <div className="profiler-stat-value">{muleSummary.medium.toLocaleString()}</div>
+                  <div className="profiler-stat-sub">2 cases</div>
+                </div>
+                <div className="profiler-stat-card profiler-stat-amount">
+                  <div className="profiler-stat-label">Total Amount Involved</div>
+                  <div className="profiler-stat-value">{formatCurrency(muleSummary.total_amount_involved)}</div>
+                </div>
+              </div>
+            )}
+
+            {/* Loading */}
+            {muleLoading && <div className="loading">Scanning database for mule accounts...</div>}
+
+            {/* Error */}
+            {muleError && (
+              <div className="error-box">
+                {muleError}
+                <button className="btn-navy" style={{ marginLeft: 12 }} onClick={loadMuleAccounts}>Retry</button>
+              </div>
+            )}
+
+            {/* Sort controls */}
+            {muleAccounts.length > 0 && (
+              <div className="ksp-card" style={{ marginBottom: 16 }}>
+                <div className="profiler-controls">
+                  <span className="profiler-controls-label">Sort by:</span>
+                  <button
+                    className={`profiler-sort-btn ${muleSortBy === 'case_count' ? 'profiler-sort-active' : ''}`}
+                    onClick={() => setMuleSortBy('case_count')}
+                  >
+                    Case Count
+                  </button>
+                  <button
+                    className={`profiler-sort-btn ${muleSortBy === 'total_amount' ? 'profiler-sort-active' : ''}`}
+                    onClick={() => setMuleSortBy('total_amount')}
+                  >
+                    Amount
+                  </button>
+                  <button
+                    className={`profiler-sort-btn ${muleSortBy === 'risk' ? 'profiler-sort-active' : ''}`}
+                    onClick={() => setMuleSortBy('risk')}
+                  >
+                    Risk Level
+                  </button>
+                  <span className="profiler-count-label">
+                    Showing {muleAccounts.length} accounts
+                  </span>
+                </div>
+              </div>
+            )}
+
+            {/* Mule accounts table */}
+            {muleAccounts.length > 0 && (
+              <div className="ksp-card">
+                <div className="profiler-table-wrap">
+                  <table className="profiler-table">
+                    <thead>
+                      <tr>
+                        <th>#</th>
+                        <th>Account No</th>
+                        <th>Bank</th>
+                        <th>Cases</th>
+                        <th>Appearances</th>
+                        <th>Total Amount</th>
+                        <th>Layers</th>
+                        <th>Risk</th>
+                        <th>Action</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {getSortedMuleAccounts().map((acct, idx) => (
+                        <tr key={acct.account_no} className={`profiler-row profiler-row-${acct.risk.toLowerCase()}`}>
+                          <td className="profiler-cell-idx">{idx + 1}</td>
+                          <td className="profiler-cell-account">{acct.account_no}</td>
+                          <td>{acct.bank}</td>
+                          <td className="profiler-cell-cases">{acct.case_count}</td>
+                          <td>{acct.total_appearances}</td>
+                          <td className="profiler-cell-amount">{formatCurrency(acct.total_amount)}</td>
+                          <td>{acct.min_layer === acct.max_layer ? `L${acct.min_layer}` : `L${acct.min_layer}-L${acct.max_layer}`}</td>
+                          <td>
+                            <span className={`profiler-risk-badge profiler-risk-${acct.risk.toLowerCase()}`}>
+                              {acct.risk === 'CRITICAL' ? '🔴' : acct.risk === 'HIGH' ? '🟠' : '🟡'} {acct.risk}
+                            </span>
+                          </td>
+                          <td>
+                            <button
+                              className="profiler-profile-btn"
+                              onClick={() => handleProfileAccount(acct.account_no)}
+                              disabled={profileLoading}
+                            >
+                              Profile
+                            </button>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </>
+        )}
+
+        {/* ============ ACCOUNT PROFILE REPORT VIEW ============ */}
+        {page === 'profiler' && profilerView === 'profile' && (
+          <>
+            <div className="ksp-banner">
+              <h1 className="ksp-title">Suspect Account Profiler</h1>
+              <p className="ksp-subtitle">
+                AI-powered deep profile for account <strong>{profileAccount}</strong>
+              </p>
             </div>
+
+            <button className="profiler-back-btn" onClick={handleBackToMuleList}>
+              ← Back to Mule Accounts
+            </button>
+
+            {/* Status */}
+            {profileStatus && (
+              <div className="inv-status">
+                <span className="inv-status-dot" />
+                {profileStatus}
+              </div>
+            )}
+
+            {/* Error */}
+            {profileError && <div className="error-box">{profileError}</div>}
+
+            {/* Report */}
+            {profileReport && (
+              <div className="ksp-card inv-report-card">
+                <div className="inv-report-top-bar profiler-report-top-bar">
+                  <div className="inv-report-ack">
+                    <span className="inv-report-ack-label">Account No.</span>
+                    <span className="inv-report-ack-value">{profileAccount}</span>
+                  </div>
+                  <div className="inv-report-header-right">
+                    <h3 className="inv-report-title">Account Profile Report</h3>
+                    {!profileLoading && (
+                      <span className="inv-report-badge">
+                        <span className="inv-report-badge-dot" />
+                        Analysis Complete
+                      </span>
+                    )}
+                    {profileLoading && (
+                      <span className="inv-report-badge inv-report-badge-progress">
+                        <span className="inv-status-dot" />
+                        Generating...
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="inv-report" ref={profileReportRef}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {profileReport}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            )}
           </>
         )}
 

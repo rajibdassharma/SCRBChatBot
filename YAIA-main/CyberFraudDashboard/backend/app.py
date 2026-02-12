@@ -22,6 +22,7 @@ CONN_STR = (
 
 from graph_api import router as graph_router
 from investigation_api import router as investigation_router
+from profiler_api import router as profiler_router
 
 app = FastAPI(title="NCRP Cyber Fraud Dashboard")
 
@@ -34,6 +35,7 @@ app.add_middleware(
 
 app.include_router(graph_router, prefix="/api")
 app.include_router(investigation_router, prefix="/api")
+app.include_router(profiler_router, prefix="/api")
 
 
 def get_conn():

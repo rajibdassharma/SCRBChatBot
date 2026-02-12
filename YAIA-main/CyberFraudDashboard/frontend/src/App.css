@@ -726,6 +726,271 @@ button:disabled {
   opacity: 0.5;
 }
 
+/* ─── Account Profiler ─────────────────────────────────────────────────── */
+
+/* Summary stat cards */
+.profiler-summary-cards {
+  display: grid;
+  grid-template-columns: repeat(5, 1fr);
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.profiler-stat-card {
+  border-radius: 14px;
+  padding: 18px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.10);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.profiler-stat-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.profiler-stat-value {
+  font-size: 26px;
+  font-weight: 700;
+  color: #ffffff;
+}
+
+.profiler-stat-sub {
+  font-size: 11px;
+  font-weight: 500;
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.profiler-stat-total { background: var(--ksp-navy); }
+.profiler-stat-critical { background: #b71c1c; }
+.profiler-stat-high { background: #e65100; }
+.profiler-stat-medium { background: #f9a825; }
+.profiler-stat-medium .profiler-stat-label,
+.profiler-stat-medium .profiler-stat-sub { color: rgba(0, 0, 0, 0.55); }
+.profiler-stat-medium .profiler-stat-value { color: #1a1a1a; }
+.profiler-stat-amount { background: #1b5e20; }
+
+/* Sort controls */
+.profiler-controls {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.profiler-controls-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ksp-navy);
+}
+
+.profiler-sort-btn {
+  padding: 6px 14px;
+  border-radius: 8px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  background: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--ksp-navy);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.profiler-sort-btn:hover {
+  background: var(--ksp-yellow-soft);
+  border-color: var(--ksp-yellow-border);
+}
+
+.profiler-sort-active {
+  background: var(--ksp-navy);
+  color: #fff;
+  border-color: var(--ksp-navy-deep);
+}
+
+.profiler-sort-active:hover {
+  background: var(--ksp-navy-deep);
+}
+
+.profiler-count-label {
+  margin-left: auto;
+  font-size: 13px;
+  font-weight: 500;
+  color: rgba(0, 0, 0, 0.45);
+}
+
+/* Mule account table */
+.profiler-table-wrap {
+  overflow-x: auto;
+}
+
+.profiler-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+}
+
+.profiler-table thead {
+  background: linear-gradient(135deg, #0b2c4a 0%, #143d5e 100%);
+}
+
+.profiler-table thead th {
+  padding: 12px 14px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 12px;
+  color: #ffffff;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.profiler-table tbody tr {
+  border-bottom: 1px solid #eef1f5;
+  transition: background 0.15s ease;
+}
+
+.profiler-table tbody tr:nth-child(even) {
+  background: #f8f9fb;
+}
+
+.profiler-table tbody tr:hover {
+  background: #e3ecf6;
+}
+
+.profiler-table tbody td {
+  padding: 10px 14px;
+  color: #333;
+  vertical-align: middle;
+}
+
+.profiler-cell-idx {
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.35);
+  width: 40px;
+}
+
+.profiler-cell-account {
+  font-family: 'Consolas', 'Monaco', monospace;
+  font-weight: 600;
+  color: var(--ksp-navy);
+  font-size: 12.5px;
+}
+
+.profiler-cell-cases {
+  font-weight: 700;
+  font-size: 15px;
+  color: var(--ksp-red);
+}
+
+.profiler-cell-amount {
+  font-weight: 600;
+  color: #1a1a1a;
+  white-space: nowrap;
+}
+
+/* Risk badges */
+.profiler-risk-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 10px;
+  border-radius: 12px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+
+.profiler-risk-critical {
+  background: #ffebee;
+  color: #b71c1c;
+  border: 1px solid #ef9a9a;
+}
+
+.profiler-risk-high {
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ffcc80;
+}
+
+.profiler-risk-medium {
+  background: #fffde7;
+  color: #f57f17;
+  border: 1px solid #fff176;
+}
+
+/* Row risk highlight */
+.profiler-row-critical {
+  border-left: 4px solid #b71c1c;
+}
+
+.profiler-row-high {
+  border-left: 4px solid #e65100;
+}
+
+.profiler-row-medium {
+  border-left: 4px solid #f9a825;
+}
+
+/* Profile button */
+.profiler-profile-btn {
+  padding: 5px 14px;
+  border-radius: 8px;
+  border: 1px solid var(--ksp-navy);
+  background: transparent;
+  color: var(--ksp-navy);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.profiler-profile-btn:hover {
+  background: var(--ksp-navy);
+  color: #fff;
+}
+
+.profiler-profile-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Back button */
+.profiler-back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 18px;
+  margin-bottom: 16px;
+  border-radius: 10px;
+  border: 1px solid var(--ksp-navy);
+  background: transparent;
+  color: var(--ksp-navy);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.profiler-back-btn:hover {
+  background: var(--ksp-navy);
+  color: #fff;
+}
+
+/* Profile report top bar variant */
+.profiler-report-top-bar {
+  background: linear-gradient(135deg, #1b5e20 0%, #2e7d32 100%);
+}
+
 @media (max-width: 1100px) {
   .app-shell {
     flex-direction: column;
@@ -746,6 +1011,10 @@ button:disabled {
     grid-template-columns: repeat(2, 1fr);
   }
 
+  .profiler-summary-cards {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
   .breakdown-grid {
     grid-template-columns: repeat(2, 1fr);
   }
@@ -753,6 +1022,10 @@ button:disabled {
 
 @media (max-width: 600px) {
   .summary-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .profiler-summary-cards {
     grid-template-columns: 1fr;
   }
 
