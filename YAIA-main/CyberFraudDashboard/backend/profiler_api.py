@@ -437,6 +437,15 @@ Your task is to analyze the provided account data and generate a comprehensive a
 
 CRITICAL: ALL monetary amounts MUST be in Indian Rupees using the ₹ symbol (e.g. ₹1,50,000.00). NEVER use $, USD, or any other currency. Use Indian number formatting with commas (lakhs/crores system).
 
+ABSOLUTE RULE — NEVER HALLUCINATE OR INVENT DATA:
+- The NCRP database contains ONLY financial data: account numbers, bank names, IFSC codes, transaction amounts, layer numbers, and acknowledgement numbers.
+- There are NO personal names, phone numbers, email addresses, or physical addresses in this data. Do NOT invent any.
+- NEVER write placeholder text like "[Insert X]", and NEVER invent fake names like "John Doe" or "Rajesh Kumar".
+- ONLY include data that is explicitly provided in the context below. If a field is not in the data, do NOT mention it at all.
+- If an entire section has no data, write "No data available from NCRP records." and move on.
+- It is BETTER to have a short, accurate report than a long report with invented information.
+- Your report should ONLY contain: account numbers, bank names, IFSC codes, amounts (₹), layer numbers, acknowledgement numbers, and analysis derived from these.
+
 IMPORTANT FORMATTING RULES — you MUST follow these:
 - Use markdown headers: # for main title, ## for sections, ### for subsections
 - Use **bold** for important values, account numbers, and amounts
@@ -517,9 +526,98 @@ Total connections: {graph_data.get('total_connections', 0)}
 ## AEPS RECORDS
 {json.dumps(aeps_data, indent=2, default=str) if aeps_data else "No AEPS records."}
 
-Generate the account profile report now. Remember to use proper markdown formatting with ## headers, **bold**, tables, and bullet points."""
+Generate the account profile report now. Remember to use proper markdown formatting with ## headers, **bold**, tables, and bullet points.
+
+CRITICAL REMINDER: ONLY use data provided above. There are NO personal names in this data — do NOT invent names. Do NOT use placeholders. If data is missing, state "No data available" and move on."""
 
     return prompt
+
+
+def _build_factual_report(account_no: str, account_data: dict, graph_data: dict) -> str:
+    """Build a factual report from raw data without LLM — used when MSSQL data is sparse."""
+    summary = account_data.get("summary", {})
+    bank_info = account_data.get("bank_info", {})
+    as_source = account_data.get("as_source", {})
+    cases = account_data.get("cases", [])
+    case_wise = account_data.get("case_wise_breakdown", [])
+    connected = graph_data.get("connected_accounts", [])
+    graph_cases = graph_data.get("connected_cases", [])
+
+    lines = []
+    lines.append(f"# Account Profile: {account_no}\n")
+
+    lines.append("## 1. Account Identity\n")
+    lines.append(f"- **Account Number:** {account_no}")
+    lines.append(f"- **Bank:** {bank_info.get('bank', 'N/A')}")
+    lines.append(f"- **IFSC Code:** {bank_info.get('ifsc', 'N/A')}\n")
+
+    lines.append("## 2. Case Involvement\n")
+    all_cases = list(set(cases + graph_cases))
+    lines.append(f"- **Total cases:** {len(all_cases)}")
+    if all_cases:
+        lines.append(f"- **Acknowledgement Numbers:** {', '.join(all_cases)}")
+    else:
+        lines.append("- No case data available.\n")
+
+    if case_wise:
+        lines.append("\n| Ack No | Amount (₹) | Disputed (₹) | Records | Layer(s) | Sources | Action |")
+        lines.append("|--------|-----------|-------------|---------|----------|---------|--------|")
+        for cw in case_wise:
+            layer_str = f"L{cw['min_layer']}" if cw['min_layer'] == cw['max_layer'] else f"L{cw['min_layer']}-L{cw['max_layer']}"
+            lines.append(f"| {cw['ack_no']} | ₹{cw['total_amount']:,.2f} | ₹{cw['total_disputed']:,.2f} | {cw['records']} | {layer_str} | {cw.get('sources', 'N/A')} | {cw.get('action', 'N/A')} |")
+    lines.append("")
+
+    lines.append("## 3. Transaction Summary\n")
+    lines.append(f"- **As destination (received):** {summary.get('transfer_count', 0)} transfers, ₹{summary.get('total_transaction_amount', 0):,.2f}")
+    lines.append(f"- **As source (sent):** {as_source.get('transfer_count', 0)} transfers, ₹{as_source.get('total_amount', 0):,.2f}")
+    lines.append(f"- **Total disputed:** ₹{summary.get('total_disputed_amount', 0):,.2f}\n")
+
+    lines.append("## 4. Money Flow Network (from Graph Database)\n")
+    lines.append(f"- **Total connections:** {graph_data.get('total_connections', 0)}")
+    if connected:
+        lines.append("\n| Account | Bank | Direction | Amount (₹) | Case |")
+        lines.append("|---------|------|-----------|-----------|------|")
+        for c in connected[:30]:
+            lines.append(f"| {c.get('account_no', 'N/A')} | {c.get('bank', 'N/A')} | {c.get('direction', 'N/A')} | ₹{c.get('amount', 0):,.2f} | {c.get('crime_no', 'N/A')} |")
+    else:
+        lines.append("- No graph connections found.\n")
+
+    lines.append("\n## 5. Risk Assessment\n")
+    case_count = len(all_cases)
+    if case_count >= 5:
+        lines.append(f"> **CRITICAL RISK** — This account appears in **{case_count} fraud cases**. Strong mule account indicator.")
+    elif case_count >= 3:
+        lines.append(f"> **HIGH RISK** — This account appears in **{case_count} fraud cases**.")
+    elif case_count >= 2:
+        lines.append(f"> **MEDIUM RISK** — This account appears in **{case_count} fraud cases**.")
+    else:
+        lines.append(f"- Appears in {case_count} case(s).\n")
+
+    lines.append("\n## 6. Bank Action Status\n")
+    put_on_hold = account_data.get("put_on_hold", [])
+    if put_on_hold:
+        lines.append(f"- {len(put_on_hold)} put-on-hold record(s) found.")
+    else:
+        lines.append("- No put-on-hold records in NCRP database.")
+    atm = account_data.get("atm_withdrawals", [])
+    if atm:
+        lines.append(f"- {len(atm)} ATM withdrawal record(s) found.")
+    aeps = account_data.get("aeps", [])
+    if aeps:
+        lines.append(f"- {len(aeps)} AEPS record(s) found.")
+    lines.append("")
+
+    lines.append("## 7. Recommendations\n")
+    lines.append("1. Investigate all linked cases for this account")
+    if connected:
+        lines.append(f"2. Examine the {len(connected)} connected accounts in the money flow network")
+    lines.append(f"3. Issue freeze/hold request to the bank if not already done")
+    lines.append(f"4. Cross-reference with other ongoing investigations\n")
+
+    lines.append("---\n")
+    lines.append("> *Note: This report was generated from available NCRP database and graph records. Limited MSSQL transaction data was found for this account — the report is based on graph connections and available records only.*")
+
+    return "\n".join(lines)
 
 
 async def _stream_profile(account_no: str):
@@ -532,19 +630,30 @@ async def _stream_profile(account_no: str):
         yield f"data: {json.dumps({'type': 'error', 'message': f'Failed to query MSSQL: {e}'})}\n\n"
         return
 
-    total = (account_data["summary"]["transfer_count"]
-             + account_data["as_source"]["transfer_count"]
-             + len(account_data["put_on_hold"])
-             + len(account_data["atm_withdrawals"])
-             + len(account_data["aeps"]))
-
-    if total == 0:
-        yield f"data: {json.dumps({'type': 'error', 'message': f'No records found for account: {account_no}'})}\n\n"
-        return
+    mssql_total = (account_data["summary"]["transfer_count"]
+                   + account_data["as_source"]["transfer_count"]
+                   + len(account_data["put_on_hold"])
+                   + len(account_data["atm_withdrawals"])
+                   + len(account_data["aeps"]))
 
     # Step 2: Gather graph data
     yield f"data: {json.dumps({'type': 'status', 'message': 'Analyzing account connections in graph...'})}\n\n"
     graph_data = gather_account_graph_data(account_no)
+
+    graph_total = graph_data.get("total_connections", 0)
+
+    if mssql_total == 0 and graph_total == 0:
+        yield f"data: {json.dumps({'type': 'error', 'message': f'No records found for account: {account_no}'})}\n\n"
+        return
+
+    # For accounts with very sparse MSSQL data, generate a factual report
+    # directly from data instead of risking LLM hallucination
+    if mssql_total <= 2 and graph_total > 0:
+        yield f"data: {json.dumps({'type': 'status', 'message': 'Generating factual report from available data...'})}\n\n"
+        report = _build_factual_report(account_no, account_data, graph_data)
+        yield f"data: {json.dumps({'type': 'token', 'content': report})}\n\n"
+        yield f"data: {json.dumps({'type': 'done'})}\n\n"
+        return
 
     # Step 3: Build prompt & stream from Ollama
     yield f"data: {json.dumps({'type': 'status', 'message': f'AI agent profiling account ({OLLAMA_MODEL})...'})}\n\n"
@@ -560,6 +669,7 @@ async def _stream_profile(account_no: str):
                     "prompt": prompt,
                     "system": PROFILE_SYSTEM_PROMPT,
                     "stream": True,
+                    "options": {"temperature": 0, "top_p": 0.9},
                 },
             ) as response:
                 if response.status_code != 200:

@@ -332,6 +332,13 @@ Your task is to analyze the provided case data and generate a comprehensive inve
 
 CRITICAL: ALL monetary amounts MUST be in Indian Rupees using the ₹ symbol (e.g. ₹1,50,000.00). NEVER use $, USD, or any other currency. Use Indian number formatting with commas (lakhs/crores system).
 
+ABSOLUTE RULE — NEVER HALLUCINATE OR INVENT DATA:
+- The NCRP database contains ONLY financial data: account numbers, bank names, IFSC codes, transaction amounts, layer numbers, and acknowledgement numbers.
+- There are NO personal names, phone numbers, email addresses, or physical addresses in this data. Do NOT invent any.
+- NEVER write placeholder text like "[Insert X]", and NEVER invent fake names like "John Doe" or "Rajesh Kumar".
+- ONLY include data that is explicitly provided in the context below. If a field is not in the data, do NOT mention it at all.
+- If an entire section has no data, write "No data available from NCRP records." and move on.
+
 IMPORTANT FORMATTING RULES — you MUST follow these:
 - Use markdown headers: # for main title, ## for sections, ### for subsections
 - Use **bold** for important values, account numbers, and amounts
@@ -473,6 +480,7 @@ async def _stream_investigation(ack_no: str):
                     "prompt": prompt,
                     "system": SYSTEM_PROMPT,
                     "stream": True,
+                    "options": {"temperature": 0, "top_p": 0.9},
                 },
             ) as response:
                 if response.status_code != 200:
