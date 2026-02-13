@@ -110,6 +110,47 @@ function App() {
   const profileReportRef = useRef<HTMLDivElement | null>(null)
   const muleListRef = useRef<HTMLDivElement | null>(null)
 
+  // Triage state
+  type TriageView = 'paste' | 'batch'
+  const [triageView, setTriageView] = useState<TriageView>('paste')
+  const [triageText, setTriageText] = useState('')
+  const [triageLoading, setTriageLoading] = useState(false)
+  const [triageStatus, setTriageStatus] = useState('')
+  const [triageReport, setTriageReport] = useState('')
+  const [triageError, setTriageError] = useState('')
+  const [triageEntities, setTriageEntities] = useState<any>(null)
+  const triageReportRef = useRef<HTMLDivElement | null>(null)
+
+  // Batch triage state
+  const [batchCases, setBatchCases] = useState<any[]>([])
+  const [batchLoading, setBatchLoading] = useState(false)
+  const [batchError, setBatchError] = useState('')
+  const [batchLoaded, setBatchLoaded] = useState(false)
+  const [batchSortBy, setBatchSortBy] = useState<'auto_score' | 'total_amount' | 'mule_account_count'>('auto_score')
+  const [batchPage, setBatchPage] = useState(0)
+  const BATCH_PAGE_SIZE = 15
+
+  // Intelligence state
+  const [intelQuestion, setIntelQuestion] = useState('')
+  const [intelLoading, setIntelLoading] = useState(false)
+  const [intelStatus, setIntelStatus] = useState('')
+  const [intelReport, setIntelReport] = useState('')
+  const [intelError, setIntelError] = useState('')
+  const [intelQueries, setIntelQueries] = useState<{sql?: string, cypher?: string, explanation?: string} | null>(null)
+  const [intelShowQueries, setIntelShowQueries] = useState(false)
+  const [intelHistory, setIntelHistory] = useState<Array<{question: string, report: string, queries: any}>>([])
+  const intelReportRef = useRef<HTMLDivElement | null>(null)
+
+  const INTEL_SUGGESTED_QUESTIONS = [
+    'Which banks have the most fraud cases?',
+    'Top 10 mule accounts by transaction amount',
+    'Cases with highest unrecovered amounts',
+    'Total amount frozen vs total disputed',
+    'Accounts connected to more than 5 cases',
+    'ATM withdrawal hotspots',
+    'Money flow depth analysis across all cases',
+  ]
+
   // Neovis state
   const [graphReady, setGraphReady] = useState(false)
   const [graphCypher, setGraphCypher] = useState('')
@@ -462,6 +503,189 @@ function App() {
       jsPDF: { unit: 'mm', format: 'a4', orientation: 'landscape' as const },
     }
     html2pdf().set(opt).from(element).save()
+  }
+
+  // ── Triage functions ──
+
+  async function handleTriage() {
+    const trimmed = triageText.trim()
+    if (!trimmed) return
+
+    setTriageLoading(true)
+    setTriageStatus('Starting complaint triage...')
+    setTriageReport('')
+    setTriageError('')
+    setTriageEntities(null)
+
+    try {
+      const response = await fetch('/api/triage/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text: trimmed }),
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error('No response stream')
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const event = JSON.parse(line.slice(6))
+            if (event.type === 'status') {
+              setTriageStatus(event.message)
+            } else if (event.type === 'entities') {
+              setTriageEntities(event.data)
+            } else if (event.type === 'token') {
+              setTriageReport(prev => prev + event.content)
+              if (triageReportRef.current) {
+                triageReportRef.current.scrollTop = triageReportRef.current.scrollHeight
+              }
+            } else if (event.type === 'error') {
+              setTriageError(event.message)
+              setTriageStatus('')
+            } else if (event.type === 'done') {
+              setTriageStatus('')
+            }
+          } catch {
+            // skip malformed SSE lines
+          }
+        }
+      }
+    } catch (err) {
+      setTriageError(err instanceof Error ? err.message : 'Triage failed')
+    } finally {
+      setTriageLoading(false)
+      setTriageStatus('')
+    }
+  }
+
+  async function loadBatchCases() {
+    setBatchLoading(true)
+    setBatchError('')
+    setBatchCases([])
+
+    try {
+      const res = await fetch('/api/triage/cases')
+      if (!res.ok) throw new Error(`HTTP ${res.status}`)
+      const json = await res.json()
+      setBatchCases(json.cases)
+      setBatchLoaded(true)
+    } catch (err) {
+      setBatchError(err instanceof Error ? err.message : 'Failed to load cases')
+    } finally {
+      setBatchLoading(false)
+    }
+  }
+
+  useEffect(() => {
+    if (page === 'triage' && triageView === 'batch' && !batchLoaded && !batchLoading) {
+      loadBatchCases()
+    }
+  }, [page, triageView])
+
+  function getSortedBatchCases() {
+    const sorted = [...batchCases]
+    if (batchSortBy === 'auto_score') {
+      sorted.sort((a, b) => b.auto_score - a.auto_score)
+    } else if (batchSortBy === 'total_amount') {
+      sorted.sort((a, b) => b.total_amount - a.total_amount)
+    } else if (batchSortBy === 'mule_account_count') {
+      sorted.sort((a, b) => b.mule_account_count - a.mule_account_count || b.auto_score - a.auto_score)
+    }
+    return sorted
+  }
+
+  // ── Intelligence functions ──
+
+  async function handleIntelQuery(question?: string) {
+    const q = (question || intelQuestion).trim()
+    if (!q) return
+
+    setIntelLoading(true)
+    setIntelStatus('Understanding your question...')
+    setIntelReport('')
+    setIntelError('')
+    setIntelQueries(null)
+    setIntelShowQueries(false)
+    if (!question) setIntelQuestion(q)
+
+    try {
+      const response = await fetch('/api/intelligence/query', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question: q }),
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+
+      const reader = response.body?.getReader()
+      if (!reader) throw new Error('No response stream')
+
+      const decoder = new TextDecoder()
+      let buffer = ''
+      let finalReport = ''
+      let finalQueries: any = null
+
+      while (true) {
+        const { done, value } = await reader.read()
+        if (done) break
+
+        buffer += decoder.decode(value, { stream: true })
+        const lines = buffer.split('\n')
+        buffer = lines.pop() || ''
+
+        for (const line of lines) {
+          if (!line.startsWith('data: ')) continue
+          try {
+            const event = JSON.parse(line.slice(6))
+            if (event.type === 'status') {
+              setIntelStatus(event.message)
+            } else if (event.type === 'queries') {
+              finalQueries = event.data
+              setIntelQueries(event.data)
+            } else if (event.type === 'token') {
+              finalReport += event.content
+              setIntelReport(prev => prev + event.content)
+              if (intelReportRef.current) {
+                intelReportRef.current.scrollTop = intelReportRef.current.scrollHeight
+              }
+            } else if (event.type === 'error') {
+              setIntelError(event.message)
+              setIntelStatus('')
+            } else if (event.type === 'done') {
+              setIntelStatus('')
+            }
+          } catch {
+            // skip malformed SSE lines
+          }
+        }
+      }
+
+      // Save to history
+      if (finalReport) {
+        setIntelHistory(prev => [{ question: q, report: finalReport, queries: finalQueries }, ...prev])
+      }
+    } catch (err) {
+      setIntelError(err instanceof Error ? err.message : 'Intelligence query failed')
+    } finally {
+      setIntelLoading(false)
+      setIntelStatus('')
+    }
+  }
+
+  function handleIntelKeyDown(e: React.KeyboardEvent) {
+    if (e.key === 'Enter') handleIntelQuery()
   }
 
   function handleBackToMuleList() {
@@ -1057,12 +1281,364 @@ function App() {
             <div className="ksp-banner">
               <h1 className="ksp-title">Complaint Triage Agent</h1>
               <p className="ksp-subtitle">
-                AI agent that reads incoming complaints, classifies fraud type, extracts entities, and prioritizes cases automatically.
+                AI agent that reads incoming complaints, classifies fraud type, extracts entities,
+                cross-references with NCRP database, and prioritizes cases.
               </p>
             </div>
-            <div className="empty-state">
-              Coming soon — Paste or upload a complaint and the AI agent will classify and extract key information.
+
+            {/* Tab bar */}
+            <div className="triage-tabs">
+              <button
+                className={`triage-tab ${triageView === 'paste' ? 'triage-tab-active' : ''}`}
+                onClick={() => setTriageView('paste')}
+              >
+                Paste &amp; Triage
+              </button>
+              <button
+                className={`triage-tab ${triageView === 'batch' ? 'triage-tab-active' : ''}`}
+                onClick={() => setTriageView('batch')}
+              >
+                Case Priority Dashboard
+              </button>
             </div>
+
+            {/* === PASTE & TRIAGE VIEW === */}
+            {triageView === 'paste' && (
+              <>
+                <div className="ksp-card" style={{ marginBottom: 20 }}>
+                  <label className="ksp-label">Paste Complaint Text</label>
+                  <textarea
+                    className="triage-textarea"
+                    placeholder="Paste the complaint text from NCRP portal, victim email, or FIR here..."
+                    value={triageText}
+                    onChange={e => setTriageText(e.target.value)}
+                    disabled={triageLoading}
+                    rows={8}
+                  />
+                  <div className="triage-actions">
+                    <button
+                      className="btn-navy"
+                      onClick={handleTriage}
+                      disabled={triageLoading || !triageText.trim()}
+                    >
+                      {triageLoading ? 'Analyzing...' : 'Analyze Complaint'}
+                    </button>
+                    <span className="triage-char-count">
+                      {triageText.length.toLocaleString()} characters
+                    </span>
+                  </div>
+                </div>
+
+                {/* Status */}
+                {triageStatus && (
+                  <div className="inv-status">
+                    <span className="inv-status-dot" />
+                    {triageStatus}
+                  </div>
+                )}
+
+                {/* Error */}
+                {triageError && <div className="error-box">{triageError}</div>}
+
+                {/* Entities card */}
+                {triageEntities && (
+                  <div className="triage-entities-card">
+                    <div className="triage-priority-header">
+                      <div className="triage-priority-badge-wrap">
+                        <span className={`triage-priority-badge triage-priority-${triageEntities.priority?.priority?.toLowerCase()}`}>
+                          {triageEntities.priority?.priority}
+                        </span>
+                        <span className="triage-priority-score">
+                          Score: {triageEntities.priority?.score}/100
+                        </span>
+                      </div>
+                      <span className="triage-fraud-type">
+                        {triageEntities.extracted?.fraud_type?.replace(/_/g, ' ').toUpperCase() || 'UNCLASSIFIED'}
+                      </span>
+                    </div>
+
+                    <div className="triage-entities-grid">
+                      {triageEntities.extracted?.accounts?.length > 0 && (
+                        <div className="triage-entity-group">
+                          <div className="triage-entity-label">Accounts Extracted</div>
+                          {triageEntities.extracted.accounts.map((a: string) => (
+                            <span key={a} className="triage-entity-chip triage-chip-account">{a}</span>
+                          ))}
+                        </div>
+                      )}
+                      {triageEntities.extracted?.bank_names?.length > 0 && (
+                        <div className="triage-entity-group">
+                          <div className="triage-entity-label">Banks</div>
+                          {triageEntities.extracted.bank_names.map((b: string) => (
+                            <span key={b} className="triage-entity-chip triage-chip-bank">{b}</span>
+                          ))}
+                        </div>
+                      )}
+                      {triageEntities.extracted?.upi_ids?.length > 0 && (
+                        <div className="triage-entity-group">
+                          <div className="triage-entity-label">UPI IDs</div>
+                          {triageEntities.extracted.upi_ids.map((u: string) => (
+                            <span key={u} className="triage-entity-chip triage-chip-upi">{u}</span>
+                          ))}
+                        </div>
+                      )}
+                      {triageEntities.extracted?.amounts?.length > 0 && (
+                        <div className="triage-entity-group">
+                          <div className="triage-entity-label">Amounts</div>
+                          {triageEntities.extracted.amounts.map((a: number, i: number) => (
+                            <span key={i} className="triage-entity-chip triage-chip-amount">
+                              {formatCurrency(a)}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+                      {triageEntities.extracted?.phone_numbers?.length > 0 && (
+                        <div className="triage-entity-group">
+                          <div className="triage-entity-label">Phone Numbers</div>
+                          {triageEntities.extracted.phone_numbers.map((p: string) => (
+                            <span key={p} className="triage-entity-chip triage-chip-account">{p}</span>
+                          ))}
+                        </div>
+                      )}
+                      {triageEntities.extracted?.payment_methods?.length > 0 && (
+                        <div className="triage-entity-group">
+                          <div className="triage-entity-label">Payment Methods</div>
+                          {triageEntities.extracted.payment_methods.map((m: string) => (
+                            <span key={m} className="triage-entity-chip triage-chip-bank">{m}</span>
+                          ))}
+                        </div>
+                      )}
+                      {triageEntities.mssql_xref?.total_matched_accounts > 0 && (
+                        <div className="triage-entity-group triage-entity-alert">
+                          <div className="triage-entity-label">Database Matches</div>
+                          <span className="triage-match-alert">
+                            {triageEntities.mssql_xref.total_matched_accounts} account(s) found in {triageEntities.mssql_xref.total_cases} existing case(s)
+                          </span>
+                        </div>
+                      )}
+                      {triageEntities.graph_xref?.mule_count > 0 && (
+                        <div className="triage-entity-group triage-entity-alert">
+                          <div className="triage-entity-label">Mule Account Alerts</div>
+                          <span className="triage-match-alert">
+                            {triageEntities.graph_xref.mule_count} account(s) flagged as mule (multi-case)
+                          </span>
+                        </div>
+                      )}
+                    </div>
+
+                    {triageEntities.priority?.reasons?.length > 0 && (
+                      <div className="triage-reasons">
+                        <div className="triage-entity-label" style={{ marginBottom: 4 }}>Priority Factors</div>
+                        {triageEntities.priority.reasons.map((r: string, i: number) => (
+                          <span key={i} className="triage-reason-chip">{r}</span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Streaming report */}
+                {triageReport && (
+                  <div className="ksp-card inv-report-card">
+                    <div className="inv-report-top-bar triage-report-top-bar">
+                      <div className="inv-report-ack">
+                        <span className="inv-report-ack-label">Complaint Triage</span>
+                        <span className="inv-report-ack-value">
+                          {triageEntities?.extracted?.fraud_type?.replace(/_/g, ' ').toUpperCase() || 'Analysis'}
+                        </span>
+                      </div>
+                      <div className="inv-report-header-right">
+                        <h3 className="inv-report-title">Triage Report</h3>
+                        {!triageLoading && (
+                          <span className="inv-report-badge">
+                            <span className="inv-report-badge-dot" />
+                            Analysis Complete
+                          </span>
+                        )}
+                        {triageLoading && (
+                          <span className="inv-report-badge inv-report-badge-progress">
+                            <span className="inv-status-dot" />
+                            Generating...
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="inv-report" ref={triageReportRef}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {triageReport}
+                      </ReactMarkdown>
+                    </div>
+                  </div>
+                )}
+
+                {/* Empty state */}
+                {!triageReport && !triageLoading && !triageError && !triageEntities && (
+                  <div className="empty-state">
+                    Paste a complaint above and click Analyze to run AI-powered triage.
+                  </div>
+                )}
+              </>
+            )}
+
+            {/* === BATCH CASE PRIORITY DASHBOARD === */}
+            {triageView === 'batch' && (
+              <>
+                {batchLoading && <div className="loading">Loading case priority data...</div>}
+                {batchError && (
+                  <div className="error-box">
+                    {batchError}
+                    <button className="btn-navy" style={{ marginLeft: 12 }} onClick={loadBatchCases}>Retry</button>
+                  </div>
+                )}
+
+                {/* Summary stats */}
+                {batchCases.length > 0 && (
+                  <div className="profiler-summary-cards">
+                    <div className="profiler-stat-card profiler-stat-total">
+                      <div className="profiler-stat-label">Total Cases</div>
+                      <div className="profiler-stat-value">{batchCases.length.toLocaleString()}</div>
+                    </div>
+                    <div className="profiler-stat-card profiler-stat-critical">
+                      <div className="profiler-stat-label">Critical</div>
+                      <div className="profiler-stat-value">{batchCases.filter(c => c.auto_priority === 'CRITICAL').length}</div>
+                    </div>
+                    <div className="profiler-stat-card profiler-stat-high">
+                      <div className="profiler-stat-label">High</div>
+                      <div className="profiler-stat-value">{batchCases.filter(c => c.auto_priority === 'HIGH').length}</div>
+                    </div>
+                    <div className="profiler-stat-card profiler-stat-medium">
+                      <div className="profiler-stat-label">Medium</div>
+                      <div className="profiler-stat-value">{batchCases.filter(c => c.auto_priority === 'MEDIUM').length}</div>
+                    </div>
+                    <div className="profiler-stat-card profiler-stat-amount">
+                      <div className="profiler-stat-label">Low</div>
+                      <div className="profiler-stat-value">{batchCases.filter(c => c.auto_priority === 'LOW').length}</div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Sort controls */}
+                {batchCases.length > 0 && (
+                  <div className="ksp-card" style={{ marginBottom: 16 }}>
+                    <div className="profiler-controls">
+                      <span className="profiler-controls-label">Sort by:</span>
+                      <button
+                        className={`profiler-sort-btn ${batchSortBy === 'auto_score' ? 'profiler-sort-active' : ''}`}
+                        onClick={() => { setBatchSortBy('auto_score'); setBatchPage(0) }}
+                      >
+                        Priority Score
+                      </button>
+                      <button
+                        className={`profiler-sort-btn ${batchSortBy === 'total_amount' ? 'profiler-sort-active' : ''}`}
+                        onClick={() => { setBatchSortBy('total_amount'); setBatchPage(0) }}
+                      >
+                        Amount
+                      </button>
+                      <button
+                        className={`profiler-sort-btn ${batchSortBy === 'mule_account_count' ? 'profiler-sort-active' : ''}`}
+                        onClick={() => { setBatchSortBy('mule_account_count'); setBatchPage(0) }}
+                      >
+                        Mule Accounts
+                      </button>
+                      <span className="profiler-count-label">
+                        Showing {batchPage * BATCH_PAGE_SIZE + 1}–{Math.min((batchPage + 1) * BATCH_PAGE_SIZE, batchCases.length)} of {batchCases.length} cases
+                      </span>
+                    </div>
+                  </div>
+                )}
+
+                {/* Cases table */}
+                {batchCases.length > 0 && (
+                  <div className="ksp-card">
+                    <div className="profiler-table-wrap">
+                      <table className="profiler-table">
+                        <thead>
+                          <tr>
+                            <th>#</th>
+                            <th>Ack No</th>
+                            <th>Amount</th>
+                            <th>Disputed</th>
+                            <th>Held</th>
+                            <th>Recovery</th>
+                            <th>Accounts</th>
+                            <th>Layers</th>
+                            <th>Banks</th>
+                            <th>Mules</th>
+                            <th>Priority</th>
+                            <th>Action</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {getSortedBatchCases().slice(batchPage * BATCH_PAGE_SIZE, (batchPage + 1) * BATCH_PAGE_SIZE).map((c, idx) => (
+                            <tr key={c.ack_no} className={`profiler-row profiler-row-${c.auto_priority.toLowerCase()}`}>
+                              <td className="profiler-cell-idx">{batchPage * BATCH_PAGE_SIZE + idx + 1}</td>
+                              <td className="profiler-cell-account">{c.ack_no}</td>
+                              <td className="profiler-cell-amount">{formatCurrency(c.total_amount)}</td>
+                              <td className="profiler-cell-amount">{formatCurrency(c.disputed_amount)}</td>
+                              <td className="profiler-cell-amount">{formatCurrency(c.held_amount)}</td>
+                              <td>
+                                <span className={
+                                  c.recovery_pct >= 50 ? 'triage-batch-recovery-good' :
+                                  c.recovery_pct >= 20 ? 'triage-batch-recovery-partial' :
+                                  'triage-batch-recovery-low'
+                                }>
+                                  {c.recovery_pct.toFixed(1)}%
+                                </span>
+                              </td>
+                              <td>{c.unique_accounts}</td>
+                              <td>L0-L{c.max_layer}</td>
+                              <td>{c.unique_banks}</td>
+                              <td className="profiler-cell-cases">{c.mule_account_count}</td>
+                              <td>
+                                <span className={`profiler-risk-badge profiler-risk-${c.auto_priority.toLowerCase()}`}>
+                                  {c.auto_priority}
+                                </span>
+                              </td>
+                              <td>
+                                <button
+                                  className="profiler-profile-btn"
+                                  onClick={() => { setInvAckNo(c.ack_no); setPage('investigation') }}
+                                >
+                                  Investigate
+                                </button>
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    {/* Pagination */}
+                    {batchCases.length > BATCH_PAGE_SIZE && (
+                      <div className="profiler-pagination">
+                        <button
+                          className="profiler-page-btn"
+                          onClick={() => setBatchPage(p => p - 1)}
+                          disabled={batchPage === 0}
+                        >
+                          ← Back
+                        </button>
+                        <span className="profiler-page-info">
+                          Page {batchPage + 1} of {Math.ceil(batchCases.length / BATCH_PAGE_SIZE)}
+                        </span>
+                        <button
+                          className="profiler-page-btn"
+                          onClick={() => setBatchPage(p => p + 1)}
+                          disabled={(batchPage + 1) * BATCH_PAGE_SIZE >= batchCases.length}
+                        >
+                          Next →
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                )}
+
+                {/* Empty state */}
+                {!batchLoading && !batchError && batchCases.length === 0 && batchLoaded && (
+                  <div className="empty-state">No cases found in the database.</div>
+                )}
+              </>
+            )}
           </>
         )}
 
@@ -1072,12 +1648,155 @@ function App() {
             <div className="ksp-banner">
               <h1 className="ksp-title">Multi-Source Intelligence Agent</h1>
               <p className="ksp-subtitle">
-                AI agent that correlates data across NCRP tables, bank responses, and telecom records to build unified intelligence.
+                Ask questions in natural language. The AI agent queries MSSQL and Neo4j databases, then synthesizes an intelligence report.
               </p>
             </div>
-            <div className="empty-state">
-              Coming soon — Ask questions in natural language and the AI agent will query multiple data sources.
+
+            {/* Input row */}
+            <div className="ksp-card" style={{ marginBottom: 20 }}>
+              <div className="intel-input-row">
+                <input
+                  className="intel-input"
+                  type="text"
+                  placeholder="Ask a question about the fraud data..."
+                  value={intelQuestion}
+                  onChange={e => setIntelQuestion(e.target.value)}
+                  onKeyDown={handleIntelKeyDown}
+                  disabled={intelLoading}
+                />
+                <button
+                  className="btn-navy intel-send-btn"
+                  onClick={() => handleIntelQuery()}
+                  disabled={intelLoading || !intelQuestion.trim()}
+                >
+                  {intelLoading ? 'Querying...' : 'Send'}
+                </button>
+              </div>
             </div>
+
+            {/* Suggested questions — always visible except during loading */}
+            {!intelLoading && (
+              <div className="intel-suggestions">
+                <span className="intel-suggestions-label">Suggested questions:</span>
+                {INTEL_SUGGESTED_QUESTIONS.map(q => (
+                  <button
+                    key={q}
+                    className="intel-chip"
+                    onClick={() => { setIntelQuestion(q); handleIntelQuery(q) }}
+                  >
+                    {q}
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Status */}
+            {intelStatus && (
+              <div className="inv-status">
+                <span className="inv-status-dot" />
+                {intelStatus}
+              </div>
+            )}
+
+            {/* Error */}
+            {intelError && <div className="error-box">{intelError}</div>}
+
+            {/* Collapsible queries section */}
+            {intelQueries && (
+              <div className="intel-queries-section">
+                <button
+                  className="intel-queries-toggle"
+                  onClick={() => setIntelShowQueries(prev => !prev)}
+                >
+                  {intelShowQueries ? '\u25BC' : '\u25B6'} View Generated Queries
+                </button>
+                {intelShowQueries && (
+                  <div className="intel-queries-content">
+                    {intelQueries.explanation && (
+                      <p className="intel-queries-explanation">{intelQueries.explanation}</p>
+                    )}
+                    {intelQueries.sql && (
+                      <div className="intel-query-block">
+                        <div className="intel-query-label">SQL Query</div>
+                        <pre className="intel-query-code">{intelQueries.sql}</pre>
+                      </div>
+                    )}
+                    {intelQueries.cypher && (
+                      <div className="intel-query-block">
+                        <div className="intel-query-label">Cypher Query</div>
+                        <pre className="intel-query-code">{intelQueries.cypher}</pre>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Streaming report */}
+            {intelReport && (
+              <div className="ksp-card inv-report-card">
+                <div className="inv-report-top-bar intel-report-top-bar">
+                  <div className="inv-report-ack">
+                    <span className="inv-report-ack-label">Intelligence Query</span>
+                    <span className="inv-report-ack-value" style={{ fontSize: 14, fontFamily: 'inherit' }}>
+                      {intelQuestion || 'Analysis'}
+                    </span>
+                  </div>
+                  <div className="inv-report-header-right">
+                    <h3 className="inv-report-title">Intelligence Report</h3>
+                    {!intelLoading && (
+                      <span className="inv-report-badge">
+                        <span className="inv-report-badge-dot" />
+                        Analysis Complete
+                      </span>
+                    )}
+                    {intelLoading && (
+                      <span className="inv-report-badge inv-report-badge-progress">
+                        <span className="inv-status-dot" />
+                        Generating...
+                      </span>
+                    )}
+                  </div>
+                </div>
+                <div className="inv-report" ref={intelReportRef}>
+                  <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                    {intelReport}
+                  </ReactMarkdown>
+                </div>
+              </div>
+            )}
+
+            {/* Previous queries history */}
+            {intelHistory.length > 0 && !intelLoading && (
+              <div className="intel-history-section">
+                <h3 className="intel-history-title">Previous Queries</h3>
+                {intelHistory.map((item, idx) => (
+                  <button
+                    key={idx}
+                    className="intel-history-item"
+                    onClick={() => {
+                      setIntelQuestion(item.question)
+                      setIntelReport(item.report)
+                      setIntelQueries(item.queries)
+                      setIntelError('')
+                      setIntelShowQueries(false)
+                    }}
+                  >
+                    <span className="intel-history-q">{item.question}</span>
+                    <span className="intel-history-preview">
+                      {item.report.slice(0, 120).replace(/[#*_]/g, '')}...
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+
+            {/* Empty state */}
+            {!intelReport && !intelLoading && !intelError && intelHistory.length === 0 && (
+              <div className="empty-state">
+                Ask a question above or click a suggested question to generate an intelligence report.
+              </div>
+            )}
           </>
         )}
       </main>

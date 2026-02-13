@@ -1070,6 +1070,434 @@ button:disabled {
   background: linear-gradient(135deg, #1b5e20 0%, #2e7d32 100%);
 }
 
+/* ---- Complaint Triage ---- */
+
+.triage-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 16px;
+}
+
+.triage-tab {
+  padding: 10px 24px;
+  border-radius: 12px;
+  border: 2px solid rgba(0, 0, 0, 0.15);
+  background: #fff;
+  font-family: inherit;
+  font-weight: 600;
+  font-size: 14px;
+  color: var(--ksp-navy);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.triage-tab:hover {
+  background: var(--ksp-yellow-soft);
+  border-color: var(--ksp-yellow-border);
+}
+
+.triage-tab-active {
+  background: var(--ksp-navy);
+  color: #fff;
+  border-color: var(--ksp-navy-deep);
+}
+
+.triage-textarea {
+  width: 100%;
+  padding: 14px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  font-size: 14px;
+  font-family: inherit;
+  line-height: 1.7;
+  resize: vertical;
+  min-height: 160px;
+  margin-bottom: 12px;
+  box-sizing: border-box;
+}
+
+.triage-textarea:focus {
+  outline: none;
+  border-color: var(--ksp-navy);
+  box-shadow: 0 0 0 3px rgba(11, 44, 74, 0.1);
+}
+
+.triage-actions {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.triage-char-count {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.4);
+  font-weight: 500;
+}
+
+/* Entities card */
+.triage-entities-card {
+  background: #ffffff;
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: 0 6px 16px rgba(0, 0, 0, 0.08);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  margin-bottom: 16px;
+}
+
+.triage-priority-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 16px;
+  padding-bottom: 12px;
+  border-bottom: 2px solid rgba(0, 0, 0, 0.06);
+}
+
+.triage-priority-badge-wrap {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.triage-priority-badge {
+  padding: 6px 18px;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.triage-priority-critical {
+  background: #b71c1c;
+  color: #fff;
+}
+
+.triage-priority-high {
+  background: #e65100;
+  color: #fff;
+}
+
+.triage-priority-medium {
+  background: #f9a825;
+  color: #1a1a1a;
+}
+
+.triage-priority-low {
+  background: #43a047;
+  color: #fff;
+}
+
+.triage-priority-score {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.5);
+}
+
+.triage-fraud-type {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--ksp-navy);
+  letter-spacing: 0.03em;
+}
+
+.triage-entities-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.triage-entity-group {
+  flex: 1;
+  min-width: 180px;
+}
+
+.triage-entity-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: rgba(0, 0, 0, 0.5);
+  margin-bottom: 6px;
+}
+
+.triage-entity-chip {
+  display: inline-block;
+  padding: 4px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  margin: 2px 4px 2px 0;
+  font-family: 'Consolas', 'Monaco', monospace;
+}
+
+.triage-chip-account {
+  background: #e3f2fd;
+  color: #0d47a1;
+  border: 1px solid #90caf9;
+}
+
+.triage-chip-bank {
+  background: #e8f5e9;
+  color: #1b5e20;
+  border: 1px solid #a5d6a7;
+}
+
+.triage-chip-upi {
+  background: #f3e5f5;
+  color: #4a148c;
+  border: 1px solid #ce93d8;
+}
+
+.triage-chip-amount {
+  background: #fff3e0;
+  color: #e65100;
+  border: 1px solid #ffcc80;
+  font-family: inherit;
+}
+
+.triage-entity-alert {
+  flex-basis: 100%;
+}
+
+.triage-match-alert {
+  display: inline-block;
+  padding: 8px 16px;
+  background: #ffebee;
+  color: #b71c1c;
+  border: 1px solid #ef9a9a;
+  border-radius: 10px;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.triage-reasons {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.triage-reason-chip {
+  display: inline-block;
+  padding: 3px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 500;
+  margin: 2px 4px 2px 0;
+  background: #f5f5f5;
+  color: #333;
+  border: 1px solid #e0e0e0;
+}
+
+/* Triage report top bar variant */
+.triage-report-top-bar {
+  background: linear-gradient(135deg, #b71c1c 0%, #c62828 100%);
+}
+
+/* Batch priority recovery colors */
+.triage-batch-recovery-good { color: #1b5e20; font-weight: 700; }
+.triage-batch-recovery-partial { color: #e65100; font-weight: 700; }
+.triage-batch-recovery-low { color: #b71c1c; font-weight: 700; }
+
+/* Add LOW risk badge */
+.profiler-risk-low {
+  background: rgba(67, 160, 71, 0.12);
+  color: #1b5e20;
+}
+
+.profiler-row-low {
+  border-left: 4px solid #43a047;
+}
+
+/* ---- Multi-Source Intelligence ---- */
+
+.intel-input-row {
+  display: flex;
+  gap: 12px;
+  align-items: center;
+}
+
+.intel-input {
+  flex: 1;
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.15);
+  font-size: 15px;
+  font-family: inherit;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.intel-input:focus {
+  outline: none;
+  border-color: #1a237e;
+  box-shadow: 0 0 0 3px rgba(26, 35, 126, 0.1);
+}
+
+.intel-send-btn {
+  padding: 12px 28px;
+  font-size: 15px;
+  border-radius: 12px;
+  white-space: nowrap;
+}
+
+/* Suggested question chips */
+.intel-suggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.intel-suggestions-label {
+  font-size: 13px;
+  font-weight: 600;
+  color: rgba(0, 0, 0, 0.5);
+  margin-right: 4px;
+}
+
+.intel-chip {
+  padding: 8px 16px;
+  border-radius: 20px;
+  border: 1px solid rgba(26, 35, 126, 0.2);
+  background: rgba(26, 35, 126, 0.04);
+  color: #1a237e;
+  font-family: inherit;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.intel-chip:hover {
+  background: #1a237e;
+  color: #fff;
+  border-color: #1a237e;
+  box-shadow: 0 2px 8px rgba(26, 35, 126, 0.25);
+}
+
+/* Collapsible queries section */
+.intel-queries-section {
+  background: #ffffff;
+  border-radius: 14px;
+  padding: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+  border: 1px solid rgba(0, 0, 0, 0.06);
+  margin-bottom: 16px;
+}
+
+.intel-queries-toggle {
+  width: 100%;
+  padding: 12px 16px;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a237e;
+  cursor: pointer;
+  text-align: left;
+  border-radius: 10px;
+  transition: background 0.15s ease;
+}
+
+.intel-queries-toggle:hover {
+  background: rgba(26, 35, 126, 0.04);
+}
+
+.intel-queries-content {
+  padding: 0 16px 16px;
+}
+
+.intel-queries-explanation {
+  font-size: 13px;
+  color: rgba(0, 0, 0, 0.6);
+  margin: 0 0 12px;
+  line-height: 1.6;
+}
+
+.intel-query-block {
+  margin-bottom: 12px;
+}
+
+.intel-query-label {
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(0, 0, 0, 0.45);
+  margin-bottom: 6px;
+}
+
+.intel-query-code {
+  background: linear-gradient(135deg, #1e293b 0%, #0f172a 100%);
+  color: #e2e8f0;
+  padding: 14px 18px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  font-family: 'Consolas', 'Monaco', monospace;
+  line-height: 1.6;
+  overflow-x: auto;
+  margin: 0;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Intelligence report top bar — indigo gradient */
+.intel-report-top-bar {
+  background: linear-gradient(135deg, #1a237e 0%, #283593 100%);
+}
+
+/* Previous queries history */
+.intel-history-section {
+  margin-top: 24px;
+}
+
+.intel-history-title {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--ksp-navy);
+  margin: 0 0 12px;
+}
+
+.intel-history-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  width: 100%;
+  padding: 14px 18px;
+  margin-bottom: 8px;
+  border-radius: 12px;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  background: #ffffff;
+  cursor: pointer;
+  text-align: left;
+  font-family: inherit;
+  transition: all 0.15s ease;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.04);
+}
+
+.intel-history-item:hover {
+  border-color: #1a237e;
+  background: rgba(26, 35, 126, 0.02);
+  box-shadow: 0 4px 12px rgba(26, 35, 126, 0.1);
+}
+
+.intel-history-q {
+  font-size: 14px;
+  font-weight: 600;
+  color: #1a237e;
+}
+
+.intel-history-preview {
+  font-size: 12px;
+  color: rgba(0, 0, 0, 0.45);
+  line-height: 1.5;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 1100px) {
   .app-shell {
     flex-direction: column;
