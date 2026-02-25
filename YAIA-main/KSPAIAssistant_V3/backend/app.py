@@ -1,11 +1,14 @@
 import os
+os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
+
 import json
 import tempfile
 
 from typing import Optional, Dict, Any, List, Literal, Tuple
 from pydantic import BaseModel
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from graph_api import router as graph_router
 
 from pydantic import BaseModel
@@ -21,11 +24,37 @@ from graph_qa import graph_ask
 # - clear_all_documents safely deletes all indexed docs and embeddings
 from rag import index_document, ask_pdf, ask_docs_agent, clear_all_documents
 
+from config import WHISPER_MODEL
+
+# Lazy-loaded Whisper model (only loads when voice is first used)
+_whisper_model = None
+
+def get_whisper_model():
+    global _whisper_model
+    if _whisper_model is None:
+        import torch
+        from faster_whisper import WhisperModel
+        if torch.cuda.is_available():
+            print(f"[Whisper] Using GPU: {torch.cuda.get_device_name(0)}")
+            _whisper_model = WhisperModel(WHISPER_MODEL, device="cuda", compute_type="float16")
+        else:
+            print("[Whisper] No GPU detected, using CPU")
+            _whisper_model = WhisperModel(WHISPER_MODEL, device="cpu", compute_type="int8")
+    return _whisper_model
+
 
 # ------------------------------------------------------------------------------
 # App
 # ------------------------------------------------------------------------------
 app = FastAPI(title="KSP AI Assistant")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 app.include_router(graph_router)
 
@@ -414,6 +443,192 @@ def docs_ask(payload: DocQuestion):
 
     except Exception as e:
         return {"ok": False, "error": "Failed to answer from documents", "detail": str(e)}
+
+
+# ------------------------------------------------------------------------------
+# Docs Transcribe (STT only — no RAG)
+# ------------------------------------------------------------------------------
+def _convert_to_wav16k(input_path: str, output_path: str):
+    """Convert any audio file to 16kHz mono WAV using PyAV (ffmpeg)."""
+    import av
+    import numpy as np
+    import wave
+    import struct
+
+    container = av.open(input_path)
+    audio_stream = next(s for s in container.streams if s.type == "audio")
+
+    resampler = av.AudioResampler(
+        format="s16",       # 16-bit signed PCM
+        layout="mono",      # mono
+        rate=16000,          # 16kHz — what Whisper expects
+    )
+
+    pcm_data = bytearray()
+    for frame in container.decode(audio_stream):
+        for resampled in resampler.resample(frame):
+            pcm_data.extend(bytes(resampled.planes[0]))
+
+    container.close()
+
+    # Write as WAV
+    with wave.open(output_path, "wb") as wf:
+        wf.setnchannels(1)
+        wf.setsampwidth(2)  # 16-bit = 2 bytes
+        wf.setframerate(16000)
+        wf.writeframes(bytes(pcm_data))
+
+    duration = len(pcm_data) / (2 * 16000)  # bytes / (bytes_per_sample * sample_rate)
+    print(f"[Audio Convert] {input_path} -> {output_path}, PCM bytes={len(pcm_data)}, duration={duration:.1f}s")
+    return duration
+
+
+@app.post("/docs/transcribe")
+async def docs_transcribe(audio: UploadFile = File(...)):
+    """
+    Transcribe audio to text using local Whisper. Returns { ok, transcription }.
+    """
+    tmp_path = None
+    wav_path = None
+    try:
+        ext = os.path.splitext(audio.filename or "audio.webm")[1] or ".webm"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp.write(await audio.read())
+            tmp_path = tmp.name
+
+        file_size = os.path.getsize(tmp_path)
+        if file_size < 1000:
+            return {"ok": False, "error": f"Audio too short ({file_size} bytes). Please speak longer and try again."}
+
+        # Save debug copy so user can verify audio quality
+        debug_dir = os.path.join(os.path.dirname(__file__), "debug_audio")
+        os.makedirs(debug_dir, exist_ok=True)
+        import shutil
+        debug_original = os.path.join(debug_dir, f"last_recording{ext}")
+        shutil.copy2(tmp_path, debug_original)
+        print(f"[Transcribe] Saved debug audio: {debug_original} ({file_size} bytes)")
+
+        # Convert webm/opus -> 16kHz mono WAV for reliable Whisper decoding
+        wav_path = tmp_path + ".wav"
+        try:
+            audio_duration = _convert_to_wav16k(tmp_path, wav_path)
+        except Exception as conv_err:
+            print(f"[Transcribe] WAV conversion failed: {conv_err}, falling back to raw file")
+            wav_path = None
+            audio_duration = 0
+
+        transcribe_path = wav_path if wav_path and os.path.exists(wav_path) else tmp_path
+
+        # Also save the converted WAV for debugging
+        if wav_path and os.path.exists(wav_path):
+            debug_wav = os.path.join(debug_dir, "last_recording.wav")
+            shutil.copy2(wav_path, debug_wav)
+
+        segments, _info = get_whisper_model().transcribe(
+            transcribe_path,
+            beam_size=5,
+            language="en",
+        )
+        transcription = " ".join(seg.text.strip() for seg in segments).strip()
+
+        # Log for debugging
+        print(f"[Transcribe] file={file_size} bytes, lang={_info.language}, "
+              f"duration={_info.duration:.1f}s, text='{transcription}'")
+
+        # Filter out empty or common Whisper hallucinations on silence/noise
+        cleaned = transcription.strip().strip(".").strip()
+        HALLUCINATIONS = {
+            "", "thank you", "thanks for watching", "subscribe",
+            "you", "bye", ".", "...", "thank you for watching",
+            "please subscribe", "like and subscribe",
+        }
+        if not cleaned or cleaned.lower() in HALLUCINATIONS or len(cleaned) < 3:
+            return {
+                "ok": False,
+                "error": (
+                    f"Could not transcribe audio ({file_size} bytes, "
+                    f"lang={_info.language}, {_info.duration:.1f}s). "
+                    f"Whisper heard: '{transcription}'. "
+                    f"Please speak clearly and try again."
+                ),
+            }
+
+        return {"ok": True, "transcription": transcription}
+
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return {"ok": False, "error": "Transcription failed", "detail": str(e)}
+    finally:
+        for p in [tmp_path, wav_path]:
+            if p:
+                try:
+                    os.remove(p)
+                except Exception:
+                    pass
+
+
+# ------------------------------------------------------------------------------
+# Docs Voice Ask (STT + RAG Q&A)
+# ------------------------------------------------------------------------------
+@app.post("/docs/voice-ask")
+async def docs_voice_ask(
+    audio: UploadFile = File(...),
+    doc_id: Optional[str] = Form(None),
+    history: Optional[str] = Form(None),
+):
+    """
+    Voice Q&A: receive audio → transcribe with local Whisper → answer via RAG.
+    Returns { ok, transcription, answer, used_chunks }.
+    """
+    tmp_path = None
+    try:
+        # Save uploaded audio to temp file
+        ext = os.path.splitext(audio.filename or "audio.webm")[1] or ".webm"
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp.write(await audio.read())
+            tmp_path = tmp.name
+
+        # Transcribe with faster-whisper (local, offline)
+        segments, _info = get_whisper_model().transcribe(tmp_path, language="en")
+        transcription = " ".join(seg.text.strip() for seg in segments).strip()
+
+        if not transcription:
+            return {"ok": False, "error": "Could not transcribe audio. Please speak clearly and try again."}
+
+        # Parse history if provided
+        parsed_history: List[ChatMessage] = []
+        if history:
+            try:
+                raw = json.loads(history)
+                parsed_history = [ChatMessage(**m) for m in raw]
+            except Exception:
+                pass
+
+        # Build context from history (reuse existing helper)
+        history_context = build_context_from_history(parsed_history, keep_last=8)
+        question = transcription
+        if history_context:
+            question = (
+                "You are continuing an ongoing conversation about the same document(s).\n"
+                "Use the context to resolve references like 'it', 'that section', 'previous answer'.\n\n"
+                f"CONVERSATION CONTEXT:\n{history_context}\n\n"
+                f"CURRENT USER QUESTION:\n{transcription}"
+            )
+
+        # Answer via existing RAG pipeline
+        result = ask_pdf(doc_id=doc_id, question=question, top_k=15)
+
+        return {"ok": True, "transcription": transcription, **result}
+
+    except Exception as e:
+        return {"ok": False, "error": "Voice Q&A failed", "detail": str(e)}
+    finally:
+        if tmp_path:
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
 
 
 # ------------------------------------------------------------------------------

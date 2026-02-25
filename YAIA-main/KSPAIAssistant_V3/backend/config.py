@@ -25,3 +25,6 @@ SCHEMA_MAX_LINES = int(os.getenv("SCHEMA_MAX_LINES", "250"))
 GRAPH_MODEL = os.getenv("GRAPH_MODEL", "qwen2.5-coder:7b-instruct")   # Cypher
 GRAPH_SUMMARY_MODEL = os.getenv("GRAPH_SUMMARY_MODEL", "llama3.1:8b") # Explanation
 
+# Whisper STT (local, offline)
+WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")  # tiny/base/small/medium/large
+

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { jsPDF } from 'jspdf'
 import kspLogo from './assets/ksp_logo.png'
 import './App.css'
 
@@ -6,6 +7,51 @@ const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 const NEO4J_URI = import.meta.env.VITE_NEO4J_URI || 'bolt://localhost:7687'
 const NEO4J_USERNAME = import.meta.env.VITE_NEO4J_USERNAME || 'neo4j'
 const NEO4J_PASSWORD = import.meta.env.VITE_NEO4J_PASSWORD || 'sandy411'
+
+// ── Download conversation history as PDF ────────────────────────────────────
+function downloadChatAsPdf(messages: ChatMessage[], title: string) {
+  if (!messages.length) return
+
+  const doc = new jsPDF()
+  const pageW = doc.internal.pageSize.getWidth()
+  const pageH = doc.internal.pageSize.getHeight()
+  const margin = 14
+  const maxW = pageW - 2 * margin
+
+  doc.setFontSize(16)
+  doc.setFont('helvetica', 'bold')
+  doc.setTextColor(11, 44, 74)
+  doc.text(title, margin, 20)
+
+  doc.setFontSize(10)
+  doc.setFont('helvetica', 'normal')
+  doc.setTextColor(128, 128, 128)
+  doc.text(`Generated: ${new Date().toLocaleString()}`, margin, 28)
+
+  let y = 36
+
+  for (const msg of messages) {
+    const isUser = msg.role === 'user'
+    const prefix = isUser ? 'Q: ' : 'A: '
+    doc.setFont('helvetica', isUser ? 'bold' : 'normal')
+    doc.setFontSize(11)
+    doc.setTextColor(isUser ? 0 : 51, isUser ? 51 : 51, isUser ? 153 : 51)
+
+    const lines: string[] = doc.splitTextToSize(prefix + msg.content, maxW)
+    const blockH = lines.length * 5.5
+
+    if (y + blockH > pageH - 20) {
+      doc.addPage()
+      y = 20
+    }
+
+    doc.text(lines, margin, y)
+    y += blockH + 5
+  }
+
+  const filename = title.replace(/[^a-zA-Z0-9]/g, '_') + '_' + new Date().toISOString().slice(0, 10) + '.pdf'
+  doc.save(filename)
+}
 
 const TABS = [
   'Database Intelligence',
@@ -86,7 +132,29 @@ export default function App() {
   const [docLastError, setDocLastError] = useState('')
   const [docFiles, setDocFiles] = useState<FileList | null>(null)
   const [docLoading, setDocLoading] = useState(false)
+  const [docIndexing, setDocIndexing] = useState(false)
   const [confirmClearDocs, setConfirmClearDocs] = useState(false)
+
+  // Voice Q&A state
+  const [isRecording, setIsRecording] = useState(false)
+  const [isSpeaking, setIsSpeaking] = useState(false)
+  const [voiceStatus, setVoiceStatus] = useState('')
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
+  const audioChunksRef = useRef<Blob[]>([])
+  const [audioDevices, setAudioDevices] = useState<MediaDeviceInfo[]>([])
+  const [selectedDeviceId, setSelectedDeviceId] = useState<string>('')
+  const [micLevel, setMicLevel] = useState(0)
+  const analyserRef = useRef<AnalyserNode | null>(null)
+  const micLevelIntervalRef = useRef<number | null>(null)
+
+  // Indexing progress state
+  const [indexProgress, setIndexProgress] = useState<{ current: number; total: number; startTime: number; fileName: string } | null>(null)
+
+  // TTS pause state
+  const [isPaused, setIsPaused] = useState(false)
+
+  // Elapsed seconds timer for indexing progress
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
 
   const [crimeNo, setCrimeNo] = useState('')
   const [expandAccused, setExpandAccused] = useState(true)
@@ -128,6 +196,28 @@ export default function App() {
     return () => {
       isMounted = false
     }
+  }, [])
+
+  // Enumerate audio input devices
+  useEffect(() => {
+    const enumerateDevices = async () => {
+      try {
+        // Need a brief getUserMedia to get device labels (browsers hide labels until permission granted)
+        const tempStream = await navigator.mediaDevices.getUserMedia({ audio: true })
+        tempStream.getTracks().forEach((t) => t.stop())
+
+        const devices = await navigator.mediaDevices.enumerateDevices()
+        const audioInputs = devices.filter((d) => d.kind === 'audioinput')
+        setAudioDevices(audioInputs)
+        console.log('[Voice] Audio devices:', audioInputs.map((d) => `${d.label} (${d.deviceId.slice(0, 8)})`))
+        if (audioInputs.length > 0 && !selectedDeviceId) {
+          setSelectedDeviceId(audioInputs[0].deviceId)
+        }
+      } catch (err) {
+        console.warn('[Voice] Could not enumerate audio devices:', err)
+      }
+    }
+    enumerateDevices()
   }, [])
 
   useEffect(() => {
@@ -206,6 +296,18 @@ export default function App() {
     }
   }, [graphCypher, graphReady])
 
+  // Tick elapsed seconds every 1s while indexing
+  useEffect(() => {
+    if (!docIndexing) {
+      setElapsedSeconds(0)
+      return
+    }
+    const timer = setInterval(() => {
+      setElapsedSeconds((prev) => prev + 1)
+    }, 1000)
+    return () => clearInterval(timer)
+  }, [docIndexing])
+
   const handleDbAsk = async () => {
     const question = dbQuestion.trim()
     if (!question) {
@@ -262,12 +364,19 @@ export default function App() {
       return
     }
 
-    setDocLoading(true)
+    const files = Array.from(docFiles)
+    setDocIndexing(true)
+    setIndexProgress({ current: 0, total: files.length, startTime: Date.now(), fileName: files[0].name })
 
     let indexedCount = 0
     let lastError = ''
 
-    for (const file of Array.from(docFiles)) {
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i]
+
+      // Show which file is being processed before starting
+      setIndexProgress((prev) => prev ? { ...prev, fileName: file.name } : null)
+
       const formData = new FormData()
       formData.append('file', file)
 
@@ -283,14 +392,15 @@ export default function App() {
 
         if (data?.ok === false) {
           lastError = `${file.name}: ${data.error || 'Indexing failed.'}`
-          continue
+        } else {
+          indexedCount += 1
+          setDocs((prev) => [...prev, data])
         }
-
-        indexedCount += 1
-        setDocs((prev) => [...prev, data])
       } catch (error) {
         lastError = `${file.name}: ${error instanceof Error ? error.message : 'Indexing failed.'}`
       }
+
+      setIndexProgress((prev) => prev ? { ...prev, current: i + 1 } : null)
     }
 
     if (indexedCount > 0) {
@@ -305,7 +415,8 @@ export default function App() {
       setDocLastError(lastError)
     }
 
-    setDocLoading(false)
+    setIndexProgress(null)
+    setDocIndexing(false)
   }
 
   const handleDocAsk = async () => {
@@ -366,6 +477,185 @@ export default function App() {
       setDocLastError(error instanceof Error ? error.message : 'Document query failed.')
     } finally {
       setDocLoading(false)
+    }
+  }
+
+  // ── Voice Q&A handlers ──────────────────────────────────────────────────
+
+  const speakText = (text: string) => {
+    if (!text || !window.speechSynthesis) return
+    window.speechSynthesis.cancel()
+    const utter = new SpeechSynthesisUtterance(text)
+    utter.rate = 1.0
+    utter.pitch = 1.0
+    utter.onstart = () => setIsSpeaking(true)
+    utter.onend = () => setIsSpeaking(false)
+    utter.onerror = () => setIsSpeaking(false)
+    window.speechSynthesis.speak(utter)
+  }
+
+  const stopSpeaking = () => {
+    window.speechSynthesis.cancel()
+    setIsSpeaking(false)
+    setIsPaused(false)
+  }
+
+  const pauseSpeaking = () => {
+    window.speechSynthesis.pause()
+    setIsPaused(true)
+  }
+
+  const resumeSpeaking = () => {
+    window.speechSynthesis.resume()
+    setIsPaused(false)
+  }
+
+  const handleVoiceToggle = async () => {
+    // ── Stop recording → MediaRecorder.stop() triggers onstop ───────────
+    if (isRecording && mediaRecorderRef.current) {
+      mediaRecorderRef.current.stop()
+      return
+    }
+
+    // Validate: docs must be indexed
+    if (!docs.length) {
+      setDocLastError('Please index at least one document before using voice.')
+      return
+    }
+
+    setDocLastError('')
+    setDocLastAnswer('')
+    setDocStatus('')
+    setVoiceStatus('Requesting microphone...')
+
+    try {
+      const audioConstraints: MediaTrackConstraints = {
+        channelCount: 1,
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+      }
+      if (selectedDeviceId) {
+        audioConstraints.deviceId = { exact: selectedDeviceId }
+      }
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: audioConstraints })
+      console.log(`[Voice] Using device: ${stream.getAudioTracks()[0]?.label}`)
+
+      // Set up audio level meter using AnalyserNode
+      const audioCtx = new AudioContext()
+      const source = audioCtx.createMediaStreamSource(stream)
+      const analyser = audioCtx.createAnalyser()
+      analyser.fftSize = 256
+      source.connect(analyser)
+      analyserRef.current = analyser
+      const dataArray = new Uint8Array(analyser.frequencyBinCount)
+      micLevelIntervalRef.current = window.setInterval(() => {
+        analyser.getByteFrequencyData(dataArray)
+        const avg = dataArray.reduce((sum, v) => sum + v, 0) / dataArray.length
+        setMicLevel(avg / 255) // normalize to 0-1
+      }, 100)
+      // Prefer audio/webm;codecs=opus, fall back to default
+      const mimeOptions = ['audio/webm;codecs=opus', 'audio/webm', 'audio/ogg;codecs=opus']
+      const selectedMime = mimeOptions.find((m) => MediaRecorder.isTypeSupported(m)) || ''
+      console.log(`[Voice] Using MIME type: ${selectedMime || 'default'}`)
+      const recorder = selectedMime
+        ? new MediaRecorder(stream, { mimeType: selectedMime })
+        : new MediaRecorder(stream)
+      audioChunksRef.current = []
+
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) audioChunksRef.current.push(e.data)
+      }
+
+      recorder.onstop = async () => {
+        stream.getTracks().forEach((t) => t.stop())
+        if (micLevelIntervalRef.current) { clearInterval(micLevelIntervalRef.current); micLevelIntervalRef.current = null }
+        audioCtx.close()
+        setMicLevel(0)
+        setIsRecording(false)
+        setVoiceStatus('Transcribing your speech...')
+
+        // Send raw audio directly — faster-whisper decodes via PyAV
+        const mimeType = recorder.mimeType || 'audio/webm'
+        const ext = mimeType.includes('webm') ? 'webm' : mimeType.includes('ogg') ? 'ogg' : 'webm'
+        const blob = new Blob(audioChunksRef.current, { type: mimeType })
+        console.log(`[Voice] Sending ${blob.size} bytes as ${mimeType}`)
+
+        try {
+          const formData = new FormData()
+          formData.append('audio', blob, `recording.${ext}`)
+
+          const resp = await fetch(`${API_BASE}/docs/transcribe`, {
+            method: 'POST',
+            body: formData,
+          })
+          const data = await resp.json()
+
+          if (!data.ok) {
+            setDocLastError(data.error || 'Transcription failed.')
+            setVoiceStatus('')
+            return
+          }
+
+          const transcription = data.transcription || ''
+          setDocQuestion(transcription)
+
+          // Auto-query documents with the transcription
+          setVoiceStatus(`Heard: "${transcription}" — Querying...`)
+          setDocLoading(true)
+
+          const activeDocId = docs[docs.length - 1]?.doc_id
+          const askResp = await apiFetch<{
+            ok?: boolean
+            answer?: string
+            error?: string
+          }>('/docs/ask', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              doc_id: activeDocId ?? null,
+              question: transcription,
+              history: docChat,
+            }),
+          })
+
+          if (askResp?.ok === false) {
+            setDocLastError(askResp.error || 'Document query failed.')
+          } else {
+            const answer = (askResp?.answer || '').trim()
+            setDocChat((prev) => [
+              ...prev,
+              { role: 'user', content: transcription },
+              { role: 'assistant', content: answer },
+            ])
+
+            if (answer.toLowerCase().startsWith('not found')) {
+              setDocLastError(answer)
+            } else {
+              setDocLastAnswer(answer)
+              setDocStatus('OK Voice answer generated.')
+              speakText(answer)
+            }
+          }
+        } catch (err) {
+          setDocLastError(err instanceof Error ? err.message : 'Voice Q&A failed.')
+        } finally {
+          setDocLoading(false)
+          setVoiceStatus('')
+        }
+      }
+
+      mediaRecorderRef.current = recorder
+      recorder.start(250) // collect data every 250ms for reliable capture
+      setIsRecording(true)
+      setVoiceStatus('Recording... click mic to stop')
+    } catch (err) {
+      setVoiceStatus('')
+      setDocLastError(
+        err instanceof Error && err.name === 'NotAllowedError'
+          ? 'Microphone access denied. Please allow microphone in browser settings.'
+          : 'Failed to access microphone.'
+      )
     }
   }
 
@@ -570,6 +860,13 @@ export default function App() {
           </div>
           <details className="history">
             <summary>Conversation History</summary>
+            {dbChat.length > 0 && (
+              <div className="history-actions">
+                <button type="button" className="btn-navy-compact" onClick={() => downloadChatAsPdf(dbChat, 'Database Intelligence')}>
+                  Download PDF
+                </button>
+              </div>
+            )}
             <div className="history-list">
               {dbChat.map((msg, idx) => (
                 <div
@@ -607,11 +904,31 @@ export default function App() {
                   type="button"
                   className="btn-navy"
                   onClick={handleDocIndex}
-                  disabled={docLoading}
+                  disabled={docIndexing || docLoading}
                 >
-                  {docLoading ? 'Indexing...' : 'Index Documents'}
+                  {docIndexing ? 'Indexing...' : 'Index Documents'}
                 </button>
               </div>
+              {indexProgress && (() => {
+                const pct = Math.round((indexProgress.current / indexProgress.total) * 100)
+                const barWidth = Math.max(pct, 8)
+                return (
+                  <div className="index-progress-wrapper">
+                    <div className="index-progress-bar">
+                      <div
+                        className="index-progress-fill"
+                        style={{ width: `${barWidth}%` }}
+                      />
+                    </div>
+                    <div className="index-progress-text">
+                      {pct < 100
+                        ? `Processing: ${indexProgress.fileName} — ${indexProgress.current}/${indexProgress.total} files — ${pct}% — ${elapsedSeconds}s elapsed`
+                        : `Done — ${indexProgress.total} file(s) — ${elapsedSeconds}s`
+                      }
+                    </div>
+                  </div>
+                )
+              })()}
               <span className="ksp-chip ksp-chip-spaced">Ask</span>
               <textarea
                 className="ksp-textarea"
@@ -619,16 +936,55 @@ export default function App() {
                 onChange={(event) => setDocQuestion(event.target.value)}
                 placeholder="Ask question on uploaded documents"
               />
-              <div className="normal-btn">
+              {audioDevices.length > 1 && (
+                <div className="mic-selector">
+                  <label htmlFor="mic-select">Microphone: </label>
+                  <select
+                    id="mic-select"
+                    value={selectedDeviceId}
+                    onChange={(e) => setSelectedDeviceId(e.target.value)}
+                    disabled={isRecording}
+                  >
+                    {audioDevices.map((d) => (
+                      <option key={d.deviceId} value={d.deviceId}>
+                        {d.label || `Mic ${d.deviceId.slice(0, 8)}`}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              <div className="normal-btn voice-btn-row">
                 <button
                   type="button"
-                  className="btn-navy"
+                  className={docs.length ? 'btn-navy btn-navy-active' : 'btn-navy'}
                   onClick={handleDocAsk}
-                  disabled={docLoading}
+                  disabled={docLoading || docIndexing || !docs.length}
+                  title={!docs.length ? 'Index documents first' : ''}
                 >
                   {docLoading ? 'Searching...' : 'Ask Documents'}
                 </button>
+                <button
+                  type="button"
+                  className={`voice-btn${isRecording ? ' recording' : ''}`}
+                  onClick={handleVoiceToggle}
+                  disabled={(docLoading || docIndexing) && !isRecording}
+                  title={isRecording ? 'Stop recording' : 'Ask with voice'}
+                >
+                  {isRecording ? '⏹' : '🎤'}
+                </button>
+                {isRecording && (
+                  <div className="mic-level-container" title={`Mic level: ${Math.round(micLevel * 100)}%`}>
+                    <div className="mic-level-bar" style={{ width: `${Math.max(micLevel * 100, 2)}%` }} />
+                    <span className="mic-level-text">{Math.round(micLevel * 100)}%</span>
+                  </div>
+                )}
               </div>
+              {voiceStatus && <div className="voice-status">{voiceStatus}</div>}
+              {isRecording && micLevel < 0.01 && (
+                <div className="status warning">
+                  No audio detected! Check if the correct microphone is selected and not muted in Windows Sound Settings.
+                </div>
+              )}
             </div>
             <div>
               <span className="ksp-chip">Results</span>
@@ -656,8 +1012,39 @@ export default function App() {
 
                 {docLastAnswer ? (
                   <>
-                    <p className="result-title">Answer:</p>
-                    <p>{docLastAnswer}</p>
+                    <p className="result-title">
+                      Answer:
+                      {isSpeaking ? (
+                        <span className="tts-controls">
+                          <button
+                            type="button"
+                            className="tts-ctrl-btn tts-pause"
+                            onClick={() => isPaused ? resumeSpeaking() : pauseSpeaking()}
+                            title={isPaused ? 'Resume narration' : 'Pause narration'}
+                          >
+                            {isPaused ? '▶' : '⏸'}
+                          </button>
+                          <button
+                            type="button"
+                            className="tts-ctrl-btn tts-stop"
+                            onClick={stopSpeaking}
+                            title="Stop narration"
+                          >
+                            ⏹
+                          </button>
+                        </span>
+                      ) : (
+                        <button
+                          type="button"
+                          className="voice-btn voice-btn-sm"
+                          onClick={() => speakText(docLastAnswer)}
+                          title="Read answer aloud"
+                        >
+                          🔊
+                        </button>
+                      )}
+                    </p>
+                    <div className="doc-answer-text">{docLastAnswer}</div>
                   </>
                 ) : (
                   <p>Answers will appear here after you ask a question.</p>
@@ -667,6 +1054,13 @@ export default function App() {
           </div>
           <details className="history">
             <summary>Conversation History</summary>
+            {docChat.length > 0 && (
+              <div className="history-actions">
+                <button type="button" className="btn-navy-compact" onClick={() => downloadChatAsPdf(docChat, 'Document Intelligence')}>
+                  Download PDF
+                </button>
+              </div>
+            )}
             <div className="history-list">
               {docChat.map((msg, idx) => (
                 <div
@@ -775,9 +1169,16 @@ export default function App() {
     docLastAnswer,
     docLastError,
     docLoading,
+    docIndexing,
     docQuestion,
     docStatus,
     docs,
+    isRecording,
+    isSpeaking,
+    isPaused,
+    voiceStatus,
+    indexProgress,
+    elapsedSeconds,
     expandAccused,
     graphAnswer,
     graphAskError,

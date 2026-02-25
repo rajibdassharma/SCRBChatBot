@@ -16,6 +16,13 @@ __pycache__/
 **/chroma_store/
 **/chroma_db/
 
+# SQLite databases
+*.db
+*.sqlite3
+
+# Debug audio recordings
+**/debug_audio/
+
 # macOS
 .DS_Store
 

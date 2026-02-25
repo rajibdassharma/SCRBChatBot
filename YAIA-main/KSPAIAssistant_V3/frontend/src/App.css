@@ -318,6 +318,8 @@ body {
   margin-bottom: 6px;
   font-size: 14px;
   line-height: 1.5;
+  white-space: pre-wrap;
+  word-wrap: break-word;
 }
 
 .chat-ai {
@@ -328,6 +330,8 @@ body {
   border-left: 4px solid var(--ksp-navy);
   font-size: 14px;
   line-height: 1.6;
+  white-space: pre-wrap;
+  word-wrap: break-word;
 }
 
 .history {
@@ -553,4 +557,251 @@ button:disabled {
   justify-content: center;
   color: #5a5a5a;
   background: linear-gradient(135deg, #fff 0%, #f6f6f6 100%);
+}
+
+/* ---- Voice Q&A ---- */
+
+.voice-btn-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.voice-btn {
+  width: 42px;
+  height: 42px;
+  border-radius: 50%;
+  border: 2px solid var(--ksp-navy);
+  background: #fff;
+  font-size: 18px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s ease;
+  flex-shrink: 0;
+  padding: 0;
+}
+
+.voice-btn:hover {
+  background: var(--ksp-yellow-soft);
+  border-color: var(--ksp-yellow-border);
+}
+
+.voice-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.voice-btn.recording {
+  border-color: var(--ksp-red);
+  background: #fff0f0;
+  animation: pulse-red 1s ease-in-out infinite;
+}
+
+.voice-btn.speaking {
+  border-color: #1565c0;
+  background: #e3f2fd;
+  animation: pulse-blue 1s ease-in-out infinite;
+}
+
+.voice-btn-sm {
+  width: 30px;
+  height: 30px;
+  font-size: 14px;
+  margin-left: 8px;
+  display: inline-flex;
+  vertical-align: middle;
+}
+
+.voice-status {
+  font-size: 13px;
+  color: #1565c0;
+  font-weight: 600;
+  font-style: italic;
+  margin-top: 6px;
+  padding: 4px 8px;
+  background: #e3f2fd;
+  border-radius: 6px;
+  display: inline-block;
+}
+
+@keyframes pulse-red {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(177, 0, 0, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(177, 0, 0, 0); }
+}
+
+@keyframes pulse-blue {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(21, 101, 192, 0.4); }
+  50% { box-shadow: 0 0 0 8px rgba(21, 101, 192, 0); }
+}
+
+/* ---- Indexing Progress Bar ---- */
+
+.index-progress-wrapper {
+  margin: 8px 0 4px;
+}
+
+.index-progress-bar {
+  width: 100%;
+  height: 10px;
+  background: #e0e4ea;
+  border-radius: 6px;
+  overflow: hidden;
+}
+
+.index-progress-fill {
+  height: 100%;
+  background: repeating-linear-gradient(
+    -45deg,
+    #1565c0,
+    #1565c0 8px,
+    #42a5f5 8px,
+    #42a5f5 16px
+  );
+  background-size: 22.6px 100%;
+  border-radius: 6px;
+  transition: width 0.4s ease;
+  animation: progress-stripe 0.6s linear infinite;
+}
+
+@keyframes progress-stripe {
+  0% { background-position: 0 0; }
+  100% { background-position: 22.6px 0; }
+}
+
+.index-progress-text {
+  font-size: 12px;
+  color: #1565c0;
+  font-weight: 600;
+  margin-top: 4px;
+}
+
+/* ---- Ask Documents Highlight ---- */
+
+.btn-navy-active {
+  background: #1565c0;
+  box-shadow: 0 0 0 3px rgba(21, 101, 192, 0.3);
+  border-color: #1565c0;
+}
+
+.btn-navy-active:hover {
+  background: #0d47a1;
+}
+
+/* ---- TTS Pause / Stop Controls ---- */
+
+.tts-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+.tts-ctrl-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 50%;
+  border: 2px solid var(--ksp-navy);
+  background: #fff;
+  font-size: 14px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: all 0.2s ease;
+}
+
+.tts-ctrl-btn:hover {
+  background: var(--ksp-yellow-soft);
+}
+
+.tts-pause {
+  border-color: #1565c0;
+  color: #1565c0;
+  animation: pulse-blue 1s ease-in-out infinite;
+}
+
+.tts-stop {
+  border-color: var(--ksp-red);
+  color: var(--ksp-red);
+}
+
+.tts-stop:hover {
+  background: #fff0f0;
+}
+
+/* ---- Mic Selector & Level Meter ---- */
+
+.mic-selector {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+  font-size: 13px;
+}
+
+.mic-selector label {
+  font-weight: 600;
+  color: var(--ksp-navy);
+  white-space: nowrap;
+}
+
+.mic-selector select {
+  flex: 1;
+  padding: 4px 8px;
+  border: 1px solid #ccc;
+  border-radius: 6px;
+  font-size: 13px;
+  max-width: 300px;
+}
+
+.mic-level-container {
+  position: relative;
+  flex: 1;
+  height: 24px;
+  background: #e0e0e0;
+  border-radius: 12px;
+  overflow: hidden;
+  min-width: 80px;
+  max-width: 200px;
+}
+
+.mic-level-bar {
+  height: 100%;
+  background: linear-gradient(90deg, #4caf50, #ff9800, #f44336);
+  border-radius: 12px;
+  transition: width 0.1s ease;
+}
+
+.mic-level-text {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  font-size: 11px;
+  font-weight: 700;
+  color: #333;
+  text-shadow: 0 0 3px #fff;
+}
+
+/* ---- Document Answer Formatting ---- */
+
+.history-actions {
+  margin: 8px 0;
+}
+
+.doc-answer-text {
+  white-space: pre-wrap;
+  word-wrap: break-word;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #1a1a1a;
+  background: #fff;
+  border: 1px solid rgba(0, 0, 0, 0.08);
+  border-radius: 10px;
+  padding: 14px 16px;
+  margin-top: 4px;
 }
