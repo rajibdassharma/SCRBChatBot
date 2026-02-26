@@ -278,18 +278,21 @@ export default function App() {
   const [selectedLocation, setSelectedLocation] = useState<LocationData | null>(null)
   const locationPollRef = useRef<number | null>(null)
 
-  // Load indexed document list from backend on mount (survives page refresh)
+  // Load indexed document list from backend on mount & collection change (survives page refresh)
   useEffect(() => {
     let isMounted = true
     apiFetch<{ ok: boolean; docs?: DocRecord[] }>(`/docs/list?collection=${activeCollection}`)
       .then((data) => {
-        if (isMounted && data?.ok && data.docs && data.docs.length > 0) {
+        if (isMounted && data?.ok && data.docs) {
           setDocs(data.docs)
+          if (data.docs.length > 0) {
+            setDocStatus(`OK ${data.docs.length} document${data.docs.length !== 1 ? 's' : ''} indexed. Ready for Q&A.`)
+          }
         }
       })
       .catch(() => {})
     return () => { isMounted = false }
-  }, [])
+  }, [activeCollection])
 
   // Enumerate audio input devices
   useEffect(() => {

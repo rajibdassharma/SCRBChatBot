@@ -258,7 +258,7 @@ body {
   min-height: 140px;
   padding: 12px 14px;
   border-radius: 12px;
-  border: 1px solid rgba(0, 0, 0, 0.15);
+  border: 2px solid var(--ksp-navy);
   background: #fff;
   font-family: inherit;
   font-size: 14px;
@@ -406,7 +406,7 @@ body {
   background: var(--ksp-gray);
   border-radius: 14px;
   padding: 16px;
-  border: 1px solid rgba(0, 0, 0, 0.08);
+  border: 2px solid var(--ksp-navy);
 }
 
 .result-title {
@@ -442,6 +442,10 @@ body {
 .doc-list-panel {
   max-height: 220px;
   overflow-y: auto;
+  border: 2px solid var(--ksp-navy);
+  border-radius: 14px;
+  padding: 12px;
+  background: var(--ksp-gray);
 }
 
 .ksp-chip-error {
