@@ -2,6 +2,7 @@ import os
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 import json
+import re
 import tempfile
 import threading
 
@@ -16,6 +17,7 @@ from rag import index_document, ask_pdf, ask_docs_agent, clear_all_documents, ge
 from config import WHISPER_MODEL
 from entity_graph import extract_and_store_entities, get_all_entities, get_graph_data, clear_graph_data
 from activity_timeline import extract_and_store_activities, get_timeline_data, get_breadcrumb_trail, get_groups as get_timeline_groups, clear_timeline_data, get_extracted_doc_ids
+from qa_testing import extract_prompts_from_file, start_test_run, get_test_status, get_test_results
 from location_extractor import (
     extract_and_store_locations,
     get_all_locations,
@@ -97,6 +99,18 @@ def build_context_from_history(history: Optional[List[ChatMessage]], keep_last: 
         lines.append(f"{m.role.upper()}: {m.content}")
     return "\n".join(lines)
 
+
+# ------------------------------------------------------------------------------
+# Spell Checker (browser-independent, offline)
+# ------------------------------------------------------------------------------
+from spellchecker import SpellChecker
+
+_spell = SpellChecker()
+_spell.word_frequency.load_words([
+    "associates", "hideouts", "accused", "complainant", "fir", "chargesheet",
+    "smac", "ncrp", "cybercrime", "aadhaar", "pancard", "aadhar",
+    "accomplice", "accomplices", "hideout", "absconding", "absconder",
+])
 
 # ------------------------------------------------------------------------------
 # Health
@@ -296,23 +310,30 @@ def clear_docs(collection: str = "SMAC"):
 @app.post("/docs/ask")
 def docs_ask(payload: DocQuestion):
     try:
-        history_context = build_context_from_history(payload.history, keep_last=8)
-
-        question = payload.question
-        if history_context:
-            question = (
-                "You are continuing an ongoing conversation about the same document(s).\n"
-                "Use the context to resolve references like 'it', 'that section', 'previous answer'.\n\n"
-                f"CONVERSATION CONTEXT:\n{history_context}\n\n"
-                f"CURRENT USER QUESTION:\n{payload.question}"
-            )
-
-        result = ask_pdf(doc_id=payload.doc_id, question=question, top_k=15, collection_name=payload.collection)
+        result = ask_pdf(doc_id=payload.doc_id, question=payload.question, top_k=15, collection_name=payload.collection)
 
         return {"ok": True, **result}
 
     except Exception as e:
         return {"ok": False, "error": "Failed to answer from documents", "detail": str(e)}
+
+
+# ------------------------------------------------------------------------------
+# Spell Check
+# ------------------------------------------------------------------------------
+@app.post("/spell-check")
+def spell_check(payload: dict):
+    text = payload.get("text", "")
+    words = re.findall(r"[a-zA-Z]+", text)
+    corrections = {}
+    for word in words:
+        if len(word) < 3:
+            continue
+        if _spell.unknown([word.lower()]):
+            suggestion = _spell.correction(word.lower())
+            if suggestion and suggestion != word.lower():
+                corrections[word] = suggestion
+    return {"corrections": corrections}
 
 
 # ------------------------------------------------------------------------------
@@ -858,3 +879,69 @@ def structured_nl_query(payload: NLSQLQuestion):
 
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+# ------------------------------------------------------------------------------
+# QA Testing Endpoints
+# ------------------------------------------------------------------------------
+class QARunRequest(BaseModel):
+    prompts: List[str]
+    doc_ids: Optional[List[str]] = None
+    collection: str = "SMAC"
+
+
+@app.post("/qa/upload-prompts")
+async def qa_upload_prompts(file: UploadFile = File(...)):
+    """Upload a PDF or DOCX file containing test prompts and extract them."""
+    try:
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in [".pdf", ".docx", ".doc"]:
+            return {"ok": False, "error": "Supported: PDF, DOCX. Please upload a file with test prompts."}
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=ext) as tmp:
+            tmp.write(await file.read())
+            tmp_path = tmp.name
+
+        prompts = extract_prompts_from_file(tmp_path, file.filename)
+
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
+        return {"ok": True, "prompts": prompts, "count": len(prompts)}
+
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.post("/qa/run")
+def qa_run(payload: QARunRequest):
+    """Start a batch QA test run in a background thread."""
+    if not payload.prompts:
+        return {"ok": False, "error": "No prompts provided."}
+
+    result = start_test_run(
+        prompts=payload.prompts,
+        doc_ids=payload.doc_ids,
+        collection=payload.collection,
+    )
+    return result
+
+
+@app.get("/qa/status")
+def qa_status(run_id: str):
+    """Poll progress and partial results for a QA test run."""
+    result = get_test_status(run_id)
+    if result is None:
+        return {"ok": False, "error": f"Test run '{run_id}' not found."}
+    return result
+
+
+@app.get("/qa/results")
+def qa_results(run_id: str):
+    """Get full results for a completed QA test run."""
+    result = get_test_results(run_id)
+    if result is None:
+        return {"ok": False, "error": f"Test run '{run_id}' not found."}
+    return result

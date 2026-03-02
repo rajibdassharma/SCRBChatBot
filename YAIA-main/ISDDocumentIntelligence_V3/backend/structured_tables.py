@@ -94,13 +94,18 @@ def store_document_fields(
     """
     conn = _get_conn()
 
-    # Check if already stored
+    # Delete any previous entries for this document (handles re-indexing)
     cur = conn.execute(
-        "SELECT COUNT(*) FROM document_fields WHERE doc_id = ?", (doc_id,)
+        "SELECT COUNT(*) FROM document_fields WHERE doc_name = ? AND collection = ?",
+        (doc_name, collection),
     )
-    if cur.fetchone()[0] > 0:
-        conn.close()
-        return {"ok": True, "message": "Document fields already stored", "doc_id": doc_id}
+    old_count = cur.fetchone()[0]
+    if old_count > 0:
+        conn.execute(
+            "DELETE FROM document_fields WHERE doc_name = ? AND collection = ?",
+            (doc_name, collection),
+        )
+        print(f"[StructuredTables] Cleared {old_count} old rows for {doc_name} ({collection})")
 
     stored = 0
     for fv in field_values:

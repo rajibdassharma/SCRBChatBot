@@ -801,13 +801,13 @@ useEffect(() => {
 
 ---
 
-### 6.18 Conversation Context for Follow-up Questions
+### 6.18 Stateless Q&A (No Conversation History)
 
-**Problem:** Users ask follow-up questions like "summarize it" that reference previous answers.
+**Problem:** Prepending conversation history to the user question caused three cascading failures: (a) keyword extraction pulled dozens of irrelevant words from history text (e.g., "conversation", "resolve", "assistant"), (b) the embedding model choked on the massive combined string and produced zero-vector embeddings, and (c) irrelevant fields matched the noise keywords, drowning relevant results in garbage context.
 
-**Solution:** Send the last 8 messages as conversation context with each question. The backend prepends context to resolve references.
+**Solution:** Removed conversation history prepending entirely. Each Q&A call is stateless — `payload.question` goes directly to `ask_pdf()`. This is appropriate for a simple document Q&A tool where each question should stand on its own.
 
-**Implementation:** `app.py` -> `build_context_from_history()`, `App.tsx` -> `docChat` state
+**Implementation:** `app.py` -> `/docs/ask` endpoint passes `payload.question` directly (no `build_context_from_history()`)
 
 ---
 
@@ -818,6 +818,106 @@ useEffect(() => {
 **Solution:** All system prompts include "Always respond in English only."
 
 **Implementation:** `rag.py` -> all system prompt strings
+
+---
+
+### 6.20 LLM Accuracy Optimizations (Q&A Pipeline)
+
+A comprehensive set of fixes applied to the RAG Q&A pipeline to eliminate hallucination, ensure complete answers, and improve retrieval accuracy. These are grouped into three categories.
+
+#### A. Document Parsing & Indexing
+
+**1. Hybrid document reading (Docling + python-docx)**
+Uses python-docx for DOCX files (reads XML directly, fast) and Docling with OCR disabled for PDFs (table structure detection only). Falls back to pypdf if Docling fails. Saves ~4-6GB RAM.
+`llm_kv_extractor.py` -> `_read_document()`
+
+**2. LLM-based key-value extraction**
+Uses the LLM to extract structured field key-value pairs from documents, producing richer metadata for ChromaDB chunks. Toggle: `USE_LLM_PARSER` in `config.py`.
+`llm_kv_extractor.py` -> `extract_fields()`
+
+**3. Robust JSON recovery**
+Handles truncated JSON, markdown code fences, and control characters from LLM output. Uses `strict=False` parsing with multiple fallback strategies.
+`llm_kv_extractor.py` -> `_parse_json_response()`
+
+#### B. Retrieval Accuracy
+
+**4. Clean question for keyword extraction (`raw_question`)**
+Added `raw_question` parameter to `ask_docs()`, `ask_pdf()`, `ask_doc()`. The clean user question (without history or template boilerplate) is used for keyword extraction, field detection, and embedding — while the full context can be used for the LLM prompt if needed.
+`rag.py` -> `q_for_keywords = raw_question if raw_question else question`
+
+**5. Expanded stop-word filtering**
+Added ~30 conversation-template noise words to the stop-word set as defense-in-depth: "context", "conversation", "continuing", "resolve", "references", "assistant", "user", "document", "provided", etc. Prevents these from becoming search keywords.
+`rag.py` -> `_stop_words` set
+
+**6. Keyword synonym expansion**
+Maps user search terms to document field terms. For example, "lawyer" maps to ["advocate", "lawyer", "legal", "counsel"]; "associate" maps to ["associate", "accomplice", "helper", "co-accused", "companion", "contact"].
+`rag.py` -> `_KEYWORD_SYNONYMS` dict
+
+**7. IR field keyword additions**
+Added domain-specific keywords like "lawyer" to `IR_FIELD_KEYWORDS` so they trigger the specialized fuzzy field retrieval path.
+`rag.py` -> `IR_FIELD_KEYWORDS` list
+
+**8. Fuzzy retrieval searches document text (not just field_name metadata)**
+The original `_get_chunks_by_field_fuzzy()` only matched `field_name` metadata, skipping page-text chunks that contained relevant data but had no `field_name`. Now searches both `field_name` metadata AND document text content, returning `field_results + text_results`.
+`rag.py` -> `_get_chunks_by_field_fuzzy()`
+
+**9. Direct text search function (`_ir_text_search`)**
+New scoring-based text search that scans all ChromaDB chunks for significant words from the question. Uses majority-match scoring (`min_matches = max(2, (len+1)//2)`) rather than requiring all words, tolerating typos and partial matches. Results sorted by score, capped at 5.
+`rag.py` -> `_ir_text_search()`
+
+**10. Always merge field/text + hybrid retrieval for IR**
+IR queries now always run both text/field search AND hybrid (vector + BM25) retrieval, merging results with deduplication. Text-matched chunks are placed first (higher relevance), then hybrid fills remaining slots.
+`rag.py` -> `ask_docs()` IR branch
+
+**11. Clean question for embedding**
+All `_hybrid_retrieve()` calls use the clean `q_for_keywords` instead of the full question string. This prevents the embedding model from choking on long history-enhanced strings (which produced zero-vector embeddings and garbage retrieval).
+`rag.py` -> all `_hybrid_retrieve()` call sites
+
+**12. Embedding batch retry with fallback**
+`ollama_embed_batch()` retries failed batches up to 3 times with exponential backoff, then falls back to one-by-one embedding. Uses zero-vector placeholders for chunks that still fail, so indexing doesn't break.
+`ollama_client.py` -> `ollama_embed_batch()`
+
+#### C. LLM Answer Generation
+
+**13. Focused context window (5-chunk cap)**
+When text/field search finds strong matches, total results are capped at 5 chunks instead of 15. This dramatically reduces noise and hallucination — gemma3:12b performs much better with focused, relevant context than with large volumes of loosely-related text.
+`rag.py` -> `max_results = min(top_k, 5)` when `field_chunks` exist
+
+**14. Context size cap (30K chars)**
+Hard limit of 30,000 characters on the context sent to the LLM. Well within gemma3:12b's 128K token limit but prevents pathological cases from overwhelming the model.
+`rag.py` -> `MAX_CONTEXT_CHARS = 30000`
+
+**15. Temperature = 0**
+All LLM calls use `temperature=0.0` for deterministic, factual responses. Eliminates creative/random variation in answers.
+`ollama_client.py` -> `ollama_chat(temperature=0.0)`
+
+**16. Anti-hallucination system prompt**
+System prompt includes explicit instructions: "ONLY use information from the CONTEXT below", "If the answer is not found, say so", "Do NOT make up information."
+`rag.py` -> system prompt string
+
+**17. Exhaustive listing instruction**
+Prompt includes: "Be EXHAUSTIVE: list ALL names, items, and entries found in the CONTEXT. Never truncate or abbreviate lists." Ensures the LLM doesn't summarize or skip items in multi-item answers.
+`rag.py` -> system prompt string
+
+**18. Clean question sent to LLM**
+The `QUESTION:` field in the LLM prompt uses `q_for_keywords` (the clean user question) rather than the history-enhanced string. This focuses the LLM on the actual question being asked.
+`rag.py` -> `llm_question = q_for_keywords`
+
+**19. Answer truncation raised to 8K chars**
+Increased from 2,500 to 8,000 characters to avoid cutting off long lists (e.g., 16 associates with details). The focused context (fix #13) naturally limits answer length, so the higher cap doesn't cause bloat.
+`rag.py` -> answer truncation threshold
+
+**20. Error handling and diagnostic logging**
+Added comprehensive logging around the LLM call: context size, question size, prompt size before the call; response size after; and try/except with error return instead of crash. Diagnostic script `_diagnose_index.py` checks MSSQL + ChromaDB contents.
+`rag.py` -> print statements around `ollama_chat()`, `_diagnose_index.py`
+
+#### Key Insight: Less Context = Better Answers
+
+The single most impactful optimization was **reducing context from 12-15 chunks to 5 focused chunks** when text search finds strong matches. With gemma3:12b:
+- 15 chunks (~17K chars): LLM hallucinated ("Milwaukee, WI - 53207"), returned only 1-3 of 7 names
+- 5 chunks (~7K chars): LLM returned all 7 names correctly, zero hallucination
+
+This is a fundamental property of smaller LLMs — they perform dramatically better with focused, relevant context than with large volumes of loosely-related text. The retrieval pipeline should aggressively filter and rank rather than passing everything to the LLM.
 
 ---
 
@@ -870,8 +970,8 @@ All values have sensible defaults in `config.py` and can be overridden via envir
 | Embedding batch size      | 64      | `ollama_client.py` -> `batch_size` |
 | Entity extraction batch   | 5 chunks| `entity_graph.py` -> `batch_size`  |
 | Activity extraction batch | 3 chunks| `activity_timeline.py` -> `batch_size` |
-| RAG top_k results         | 12-15   | `app.py` / `rag.py`               |
-| Conversation history kept | 8 msgs  | `app.py` -> `keep_last`           |
+| RAG top_k results         | 5 (focused) / 15 (fallback) | `rag.py` -> `max_results` |
+| Conversation history kept | None (stateless) | Removed — see 6.18    |
 | Number of documents       | No limit| Disk space only                    |
 
 ---

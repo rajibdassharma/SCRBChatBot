@@ -364,6 +364,144 @@ body {
   box-shadow: 0 0 0 3px rgba(10, 92, 42, 0.3);
 }
 
+/* ── Stop button ── */
+.btn-stop {
+  background: #dc3545;
+  color: #fff;
+  border: none;
+  padding: 10px 16px;
+  border-radius: 12px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.btn-stop:hover {
+  background: #a71d2a;
+}
+
+/* ── Help button and popover ── */
+.ask-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.help-btn {
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  border: 2px solid var(--ksp-navy);
+  background: transparent;
+  color: var(--ksp-navy);
+  font-weight: 700;
+  font-size: 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  transition: all 0.2s;
+}
+.help-btn:hover {
+  background: var(--ksp-navy);
+  color: #fff;
+}
+
+.help-popover {
+  background: #f8f9fa;
+  border: 1px solid var(--ksp-navy);
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin-bottom: 10px;
+  font-size: 13.5px;
+  line-height: 1.6;
+  color: #1a1a1a;
+}
+.help-popover strong {
+  color: var(--ksp-navy);
+  display: block;
+  margin-top: 8px;
+  margin-bottom: 4px;
+}
+.help-popover strong:first-child {
+  margin-top: 0;
+}
+.help-popover ul {
+  margin: 0;
+  padding-left: 20px;
+}
+.help-popover li {
+  margin-bottom: 4px;
+}
+.help-popover em {
+  color: #0a5c2a;
+}
+
+/* ── Spell check banner ── */
+.spell-banner {
+  background: #fff3cd;
+  border: 1px solid #ffc107;
+  border-radius: 10px;
+  padding: 12px 16px;
+  margin: 8px 0;
+}
+.spell-banner-title {
+  font-weight: 600;
+  color: #856404;
+}
+.spell-corrections {
+  margin: 8px 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.spell-item {
+  font-size: 14px;
+}
+.spell-wrong {
+  text-decoration: line-through;
+  color: #dc3545;
+}
+.spell-right {
+  color: #0a5c2a;
+  font-weight: 600;
+}
+.spell-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 8px;
+}
+.btn-spell-fix {
+  background: #0a5c2a;
+  color: #fff;
+  border: none;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: background 0.2s;
+}
+.btn-spell-fix:hover {
+  background: #07421e;
+}
+.btn-spell-ignore {
+  background: transparent;
+  color: #856404;
+  border: 1px solid #856404;
+  padding: 6px 14px;
+  border-radius: 8px;
+  font-weight: 600;
+  font-size: 13px;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+.btn-spell-ignore:hover {
+  background: #856404;
+  color: #fff;
+}
+
 .normal-btn {
   margin-top: 10px;
   margin-bottom: 8px;
@@ -1624,4 +1762,206 @@ button:disabled {
   .location-detail-grid {
     grid-template-columns: 1fr;
   }
+}
+
+/* ---- QA Testing Tab ---- */
+
+.qa-upload-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 14px;
+}
+
+.qa-collection-select {
+  height: 36px;
+  padding: 0 12px;
+  border-radius: 8px;
+  border: 2px solid var(--ksp-navy);
+  background: var(--ksp-navy);
+  color: var(--ksp-yellow);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.qa-doc-selector {
+  max-height: 180px;
+  overflow-y: auto;
+  border: 2px solid var(--ksp-navy);
+  border-radius: 12px;
+  padding: 10px 14px;
+  background: var(--ksp-gray);
+  margin-bottom: 14px;
+}
+
+.qa-doc-selector label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  padding: 3px 0;
+  cursor: pointer;
+}
+
+.qa-doc-selector input[type="checkbox"] {
+  accent-color: var(--ksp-navy);
+}
+
+.qa-doc-select-actions {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.qa-doc-select-actions button {
+  font-size: 12px;
+  padding: 2px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  background: #fff;
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--ksp-navy);
+}
+
+.qa-doc-select-actions button:hover {
+  background: var(--ksp-yellow-soft);
+}
+
+.qa-prompts-summary {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--ksp-navy);
+  margin-bottom: 10px;
+}
+
+.qa-progress-bar {
+  width: 100%;
+  height: 10px;
+  background: #e0e4ea;
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 8px 0;
+}
+
+.qa-progress-fill {
+  height: 100%;
+  background: repeating-linear-gradient(
+    -45deg,
+    #1565c0,
+    #1565c0 8px,
+    #42a5f5 8px,
+    #42a5f5 16px
+  );
+  background-size: 22.6px 100%;
+  border-radius: 6px;
+  transition: width 0.4s ease;
+  animation: progress-stripe 0.6s linear infinite;
+}
+
+.qa-progress-text {
+  font-size: 13px;
+  color: #1565c0;
+  font-weight: 600;
+  margin-bottom: 10px;
+}
+
+.qa-results-table {
+  width: 100%;
+  border-collapse: separate;
+  border-spacing: 0;
+  font-size: 13px;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+  overflow: hidden;
+}
+
+.qa-results-table th {
+  background: var(--ksp-navy);
+  color: #fff;
+  font-weight: 600;
+  text-align: left;
+  padding: 10px 12px;
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+
+.qa-results-table td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+  vertical-align: top;
+}
+
+.qa-row-pending td {
+  background: #f9f9f9;
+  color: #999;
+}
+
+.qa-row-running td {
+  background: #e3f2fd;
+  color: #1565c0;
+}
+
+.qa-row-done td {
+  background: #fff;
+}
+
+.qa-row-error td {
+  background: #fff5f5;
+  color: #b10000;
+}
+
+.qa-prompt-cell {
+  max-width: 300px;
+  word-wrap: break-word;
+  font-weight: 500;
+}
+
+.qa-answer-cell {
+  max-width: 400px;
+  word-wrap: break-word;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.qa-answer-truncated {
+  max-height: 60px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.qa-answer-expanded {
+  max-height: none;
+}
+
+.qa-time-cell {
+  white-space: nowrap;
+  font-family: monospace;
+  font-size: 12px;
+  color: #666;
+}
+
+.qa-status-icon {
+  font-size: 16px;
+  text-align: center;
+}
+
+.qa-action-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-bottom: 14px;
+  flex-wrap: wrap;
+}
+
+.qa-empty {
+  color: #999;
+  font-size: 14px;
+  text-align: center;
+  padding: 40px;
 }

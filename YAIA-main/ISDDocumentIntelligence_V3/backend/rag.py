@@ -31,9 +31,12 @@ from openpyxl import load_workbook
 from config import (
     CHROMA_PATH, EMBED_MODEL, PDF_MODEL,
     ENABLE_HYBRID_SEARCH, ENABLE_MULTI_QUERY, ENABLE_RERANKING,
+    USE_LLM_PARSER,
 )
 from ollama_client import ollama_embed, ollama_embed_batch, ollama_chat
 from structured_tables import store_smac_report, store_ir_report, search_fields, execute_sql_query, get_table_schema_description
+from llm_kv_extractor import extract_kv_from_docx as _llm_extract_kv_from_docx
+from llm_kv_extractor import extract_kv_from_pdf as _llm_extract_kv_from_pdf
 
 
 # -------------------------------------------------------------------
@@ -521,10 +524,12 @@ def _index_text_units(
 # SMAC 3-column table parser (S.No | Field Name | Value)
 # Handles multi-line values by accumulating continuation lines.
 # -------------------------------------------------------------------
-def _parse_smac_table_page(lines: List[str], page_no: int) -> Tuple[List[str], List[dict]]:
+def _parse_smac_table_page_legacy(lines: List[str], page_no: int) -> Tuple[List[str], List[dict]]:
     """
-    Parse SMAC tabular PDF format:
-        Col1: Serial No  |  Col2: Field Name  |  Col3: Value
+    Legacy heuristic parser for SMAC/IR tabular PDF format.
+    Supports two formats:
+      3-column: Col1: Serial No | Col2: Field Name | Col3: Value
+      2-column: Col1: Serial No | Col2: Full Text (all info in one column)
     Handles pipe-separated and multi-space-separated rows.
     Multi-line values are accumulated until the next numbered row.
     Returns: (units, metas) where each unit is "FieldName: Value".
@@ -539,6 +544,8 @@ def _parse_smac_table_page(lines: List[str], page_no: int) -> Tuple[List[str], L
     pipe_re = re.compile(r"^(\d{1,3})\s*\|\s*([^|]+?)\s*\|\s*(.+)$")
     # Space-separated: 1  Gist  some value here  (2+ spaces as delimiter)
     space_re = re.compile(r"^(\d{1,3})[.)\s]\s+([A-Za-z][A-Za-z0-9 /()]{1,50}?)\s{2,}(.+)$")
+    # 2-column pipe:   1 | full text here (only one pipe, no second column)
+    pipe2_re = re.compile(r"^(\d{1,3})\s*\|\s*(.+)$")
     # Detects start of a new numbered row (to stop continuation accumulation)
     new_row_re = re.compile(r"^\d{1,3}[\s|.]")
 
@@ -553,6 +560,7 @@ def _parse_smac_table_page(lines: List[str], page_no: int) -> Tuple[List[str], L
         current_serial = None
         current_value_lines = []
 
+    # ── Pass 1: try 3-column parsing ──────────────────────────────────
     for ln in lines:
         ln = ln.strip()
         if not ln:
@@ -570,142 +578,378 @@ def _parse_smac_table_page(lines: List[str], page_no: int) -> Tuple[List[str], L
                 flush_row()
 
     flush_row()
+
+    if units:
+        return units, metas
+
+    # ── Pass 2: try 2-column parsing (Serial | Text) ─────────────────
+    current_serial = None
+    current_value_lines = []
+
+    def flush_2col():
+        nonlocal current_serial, current_value_lines
+        if current_serial is not None and current_value_lines:
+            text = " ".join(current_value_lines).strip()
+            if text:
+                # Try to extract "FieldName: Value" from the content
+                colon_match = re.match(r"^([^:]{3,60}):\s+(.+)", text, re.DOTALL)
+                if colon_match:
+                    field = colon_match.group(1).strip()
+                    val = colon_match.group(2).strip()
+                    units.append(f"{field}: {val}")
+                    metas.append({"page": page_no, "field_name": field, "serial_no": current_serial})
+                else:
+                    # No colon separator — use the text itself as content
+                    # First few words become the field key for retrieval
+                    words = text.split()
+                    field = " ".join(words[:8]) if len(words) > 8 else text
+                    units.append(f"{field}: {text}")
+                    metas.append({"page": page_no, "field_name": field, "serial_no": current_serial})
+        current_serial = None
+        current_value_lines = []
+
+    for ln in lines:
+        ln = ln.strip()
+        if not ln:
+            continue
+        m2 = pipe2_re.match(ln)
+        if m2 and "|" not in m2.group(2):
+            flush_2col()
+            current_serial = m2.group(1).strip()
+            current_value_lines = [m2.group(2).strip()]
+        elif current_serial is not None:
+            if not new_row_re.match(ln):
+                current_value_lines.append(ln)
+            else:
+                flush_2col()
+
+    flush_2col()
     return units, metas
 
 
 # -------------------------------------------------------------------
 # IR (Interrogation Report) DOCX table parser
-# FORM No-16: 3-column table (Sl No | Description | Value)
-# Uses python-docx structured cell access — no regex needed.
+# State-machine approach: iterates ALL tables in document order,
+# classifies each row independently, and merges multi-row values.
 # -------------------------------------------------------------------
-def _find_ir_data_table(doc):
+
+# Row type constants
+_IR_SKIP = "skip"
+_IR_SECTION = "section"
+_IR_FIELD_3 = "field_3"       # 3-col: [empty/sno, field_name, value]
+_IR_FIELD_4 = "field_4"       # 4-col: address-type present/permanent split
+_IR_FIELD_2 = "field_2"       # 2-col: [field_name, value]
+_IR_CONTINUE = "continue"     # 2-col: ['', continuation_text]
+
+_IR_HEADER_WORDS = frozenset({
+    "sl no", "sl. no", "s.no", "s. no", "sno",
+    "description", "particulars", "field", "serial no", "value",
+})
+
+_IR_SECTION_TITLE_RE = re.compile(
+    r"(personal details|descriptive roll|physical description|"
+    r"document details|financial details|communication details|"
+    r"family members|criminal cases|apprehension|habits|"
+    r"particulars of|role model|chronological|"
+    r"part[\s\-]*[a-z]|section\s+\d)",
+    re.IGNORECASE,
+)
+
+_IR_NIL_VALUES = frozenset({
+    "-", "–", "—", "nil", "-nil-", "n/a", "none", "not available",
+    "not applicable", "na", ".", "..", "---",
+})
+
+
+def _ir_get_row_cells(row) -> List[str]:
+    """Extract and deduplicate cells from a DOCX table row."""
+    raw = [
+        c.text.strip().replace("\r", " ").replace("\n", " ").strip()
+        for c in row.cells
+    ]
+    # Deduplicate adjacent identical cells (merged cells in DOCX)
+    return [raw[i] for i in range(len(raw)) if i == 0 or raw[i] != raw[i - 1]]
+
+
+def _ir_is_section_title(text: str) -> bool:
+    """Heuristic: is this text a section header rather than a field value?"""
+    t = text.strip()
+    if not t:
+        return False
+    if _IR_SECTION_TITLE_RE.search(t):
+        return True
+    # Short text without sub-field markers, ending with period
+    if len(t) < 60 and not re.search(r"\([a-z]\)|\([ivx]+\)", t):
+        if t.endswith(".") and not any(ch.isdigit() for ch in t[:-1]):
+            return True
+    return False
+
+
+def _ir_is_address_sub_header(col2: str, col3: str) -> bool:
+    """Detect if a 4-col row is a sub-header defining column meanings."""
+    markers = {"present", "permanent", "address", "temporary", "native"}
+    c2 = col2.lower()
+    c3 = col3.lower()
+    return any(m in c2 for m in markers) and any(m in c3 for m in markers)
+
+
+def _ir_classify_row(cells: List[str]) -> str:
+    """Classify a DOCX table row into a row type for the IR parser."""
+    non_empty = [c for c in cells if c.strip()]
+
+    # Rule 1: nothing useful
+    if not non_empty or len(cells) < 2:
+        return _IR_SKIP
+
+    # Rule 2: header row detection
+    for c in cells:
+        cleaned = c.strip().lower().strip(".:- ")
+        if cleaned in _IR_HEADER_WORDS or (cleaned.startswith("sl") and len(cleaned) < 12):
+            return _IR_SKIP
+
+    first = cells[0].strip()
+    is_serial = bool(re.match(r"^\d+\.?\s*$", first)) if first else False
+    is_empty = first == ""
+
+    # Rule 3: 4-column rows
+    if len(cells) >= 4:
+        return _IR_FIELD_4
+
+    # Rule 4: 3-column rows
+    if len(cells) == 3:
+        second = cells[1].strip()
+        third = cells[2].strip()
+
+        if is_empty or is_serial:
+            # Section header: serial + title, no value (or empty value)
+            if is_serial and not third and _ir_is_section_title(second):
+                return _IR_SECTION
+            # Has both field name and value
+            if second and third:
+                return _IR_FIELD_3
+            # Field name but empty value — could be section header or empty field
+            if second and not third:
+                return _IR_SECTION if _ir_is_section_title(second) else _IR_FIELD_3
+        # First cell is text (not empty/serial) — treat as 3-col data
+        if first and second:
+            return _IR_FIELD_3
+
+    # Rule 5: 2-column rows
+    if len(cells) == 2:
+        second = cells[1].strip()
+
+        if is_empty:
+            return _IR_CONTINUE if second else _IR_SKIP
+
+        if is_serial:
+            if second and _ir_is_section_title(second):
+                return _IR_SECTION
+            return _IR_CONTINUE if second else _IR_SKIP
+
+        # Both cells are non-empty text
+        if first and second:
+            return _IR_FIELD_2
+
+    return _IR_SKIP
+
+
+def _ir_flush_field(
+    field_name: str, value: str, serial_no: str, section: str,
+    units: List[str], metas: List[dict],
+):
+    """Flush accumulated field state into the output lists."""
+    fn = field_name.strip() if field_name else ""
+    val = value.strip() if value else ""
+    if not fn or not val:
+        return
+    # Skip nil/dash values
+    if val.lower().strip(".- ") in _IR_NIL_VALUES:
+        return
+    # Skip pure-number field names
+    if re.match(r"^\d+\.?\s*$", fn):
+        return
+
+    unit = f"{fn}: {val}"
+    meta: Dict[str, str] = {"field_name": fn, "serial_no": serial_no}
+    if section:
+        meta["section"] = section
+    units.append(unit)
+    metas.append(meta)
+
+
+def _parse_ir_table_from_docx_legacy(docx_path: str) -> Tuple[List[str], List[dict], str]:
     """
-    Identify the main IR data table (Sl No | Description | Value) in the document.
-    Ignores pre-table content: free-form paragraphs, photographs, small header tables.
-    Strategy: score each table by row count + IR header keywords; return the winner.
-    """
-    ir_header_words = {"sl no", "sl. no", "s.no", "s. no", "sno",
-                       "description", "particulars", "field", "serial no"}
-    best_score = -1
-    best_table = None
-
-    for table in doc.tables:
-        rows = table.rows
-        if len(rows) < 3:           # Too few rows to be the data table
-            continue
-
-        # Effective first-row cells (deduplicate merged cells)
-        first_raw = [c.text.strip().lower() for c in rows[0].cells]
-        first = [first_raw[i] for i in range(len(first_raw))
-                 if i == 0 or first_raw[i] != first_raw[i - 1]]
-
-        if len(first) < 2:
-            continue
-
-        score = len(rows)           # More rows → more likely the data table
-
-        # Strong bonus for recognisable IR column headers
-        for cell_text in first:
-            cleaned = cell_text.strip(".:- ")
-            if cleaned in ir_header_words or cleaned.startswith("sl"):
-                score += 100
-                break
-        for cell_text in first:
-            if "description" in cell_text or "particulars" in cell_text:
-                score += 80
-                break
-
-        if score > best_score:
-            best_score = score
-            best_table = table
-
-    return best_table
-
-
-def _parse_ir_table_from_docx(docx_path: str) -> Tuple[List[str], List[dict]]:
-    """
-    Parse IR Form-16 DOCX: 3-column table (Sl No | Description | Value).
-    Skips all pre-table content (free-form text, photographs, header tables).
-    Only processes the main data table identified by _find_ir_data_table().
-    Returns: (units, metas) where each unit is "FieldName: Value".
+    Legacy heuristic parser for IR Form-16 DOCX. Row-by-row state machine
+    that handles 2/3/4-column rows, multi-row value continuation,
+    section headers, and address present/permanent splits.
+    Returns: (units, metas, paragraph_text)
     """
     try:
         doc = DocxDocument(docx_path)
     except Exception as e:
         print(f"[RAG:IR] Cannot open as DOCX (file may be .doc renamed to .docx): {e}")
-        return [], []
+        return [], [], ""
+
     units: List[str] = []
     metas: List[dict] = []
 
-    table = _find_ir_data_table(doc)
-    if table is None:
-        print("[RAG:IR] No suitable data table found in DOCX")
-        return units, metas
+    if not doc.tables:
+        print("[RAG:IR] No tables found in DOCX")
+        para_text = "\n".join(p.text.strip() for p in doc.paragraphs if p.text.strip())
+        return units, metas, para_text
 
-    rows = table.rows
+    # State machine variables
+    current_section = ""
+    current_field = None       # type: Optional[str]
+    current_value = ""
+    current_serial = ""
+    four_col_headers = None  # Set when a 4-col sub-header is detected
 
-    # Effective column count from first row
-    first_raw = [c.text.strip() for c in rows[0].cells]
-    first_deduped = [first_raw[i] for i in range(len(first_raw))
-                     if i == 0 or first_raw[i] != first_raw[i - 1]]
-    ncols = len(first_deduped)
+    for table_idx, table in enumerate(doc.tables):
+        for row in table.rows:
+            cells = _ir_get_row_cells(row)
+            row_type = _ir_classify_row(cells)
 
-    # Detect and skip header row
-    ir_header_words = {"sl no", "sl. no", "s.no", "s. no", "sno",
-                       "description", "particulars", "field", "serial no"}
-    is_header = any(
-        t.lower().strip(".:- ") in ir_header_words or t.lower().startswith("sl")
-        for t in first_deduped if t
-    )
-    start_idx = 1 if is_header else 0
+            if row_type == _IR_SKIP:
+                continue
 
-    # Section headers to skip as data (still indexed without field_name)
-    section_header_re = re.compile(
-        r"^(physical description|personal details|document details|financial details)",
-        re.IGNORECASE,
-    )
+            elif row_type == _IR_SECTION:
+                # Flush pending field
+                _ir_flush_field(current_field, current_value, current_serial,
+                                current_section, units, metas)
+                current_field = None
+                current_value = ""
+                current_serial = ""
+                four_col_headers = None
+                # Extract section name
+                section_text = cells[-1].strip() if cells[-1].strip() else (
+                    cells[1].strip() if len(cells) > 1 else ""
+                )
+                section_text = re.sub(r"^\d+\.?\s*", "", section_text).strip().rstrip(".")
+                if section_text:
+                    current_section = section_text
 
-    for row in rows[start_idx:]:
-        raw_cells = [
-            c.text.strip().replace("\r", " ").replace("\n", " ").strip()
-            for c in row.cells
-        ]
-        # Deduplicate merged cells
-        cells = [raw_cells[i] for i in range(len(raw_cells))
-                 if i == 0 or raw_cells[i] != raw_cells[i - 1]]
+            elif row_type == _IR_FIELD_3:
+                # Flush pending field
+                _ir_flush_field(current_field, current_value, current_serial,
+                                current_section, units, metas)
+                four_col_headers = None
+                first = cells[0].strip()
+                is_serial = bool(re.match(r"^\d+\.?\s*$", first)) if first else False
+                if is_serial or first == "":
+                    current_serial = first.rstrip(". ") if is_serial else ""
+                    current_field = cells[1].strip()
+                    current_value = cells[2].strip() if len(cells) > 2 else ""
+                else:
+                    # First cell is text — treat as field_name, join rest as value
+                    current_serial = ""
+                    current_field = first
+                    current_value = " | ".join(
+                        c.strip() for c in cells[1:] if c.strip()
+                    )
 
-        if len(cells) < 2:
-            continue
+            elif row_type == _IR_FIELD_4:
+                # Flush pending field
+                _ir_flush_field(current_field, current_value, current_serial,
+                                current_section, units, metas)
+                current_field = None
+                current_value = ""
 
-        if ncols >= 3 and len(cells) >= 3:
-            serial_no = cells[0].strip()
-            field_name = cells[1].strip()
-            value = cells[2].strip()
-        else:
-            serial_no = ""
-            field_name = cells[0].strip()
-            value = cells[1].strip() if len(cells) > 1 else ""
+                first = cells[0].strip()
+                is_serial = bool(re.match(r"^\d+\.?\s*$", first)) if first else False
+                sno = first.rstrip(". ") if is_serial else ""
+                label = cells[1].strip() if len(cells) > 1 else ""
+                col2 = cells[2].strip() if len(cells) > 2 else ""
+                col3 = cells[3].strip() if len(cells) > 3 else ""
 
-        # Skip empty or pure-number field names
-        if not field_name or re.match(r"^\d+\.?\s*$", field_name):
-            continue
-        # Skip rows with no meaningful value
-        if not value or value == field_name:
-            continue
-        if re.match(r"^\d+\.?\s*$", value):
-            continue
+                # Detect sub-header row (e.g. "Present Address | Permanent Address")
+                if _ir_is_address_sub_header(col2, col3):
+                    four_col_headers = (col2, col3)
+                    continue
 
-        if section_header_re.match(field_name):
-            units.append(field_name)
-            metas.append({"page": 1})
-            continue
+                if label:
+                    if four_col_headers is not None:
+                        # Dual-column mode (address section): emit two fields
+                        if col2:
+                            fn_left = f"{label} ({four_col_headers[0]})"
+                            _ir_flush_field(fn_left, col2, sno, current_section, units, metas)
+                        if col3:
+                            fn_right = f"{label} ({four_col_headers[1]})"
+                            _ir_flush_field(fn_right, col3, sno, current_section, units, metas)
+                    else:
+                        # No dual-column context: Col1=key, Col2=qualifier/value, Col3=value
+                        if col2 and col3:
+                            fn_combined = f"{label} - {col2}"
+                            _ir_flush_field(fn_combined, col3, sno, current_section, units, metas)
+                        elif col3:
+                            _ir_flush_field(label, col3, sno, current_section, units, metas)
+                        elif col2:
+                            # col3 empty — col2 is the value
+                            _ir_flush_field(label, col2, sno, current_section, units, metas)
+                current_serial = ""
 
-        unit = f"{field_name}: {value}"
-        units.append(unit)
-        metas.append({"field_name": field_name, "serial_no": serial_no})
+            elif row_type == _IR_FIELD_2:
+                # Flush pending field
+                _ir_flush_field(current_field, current_value, current_serial,
+                                current_section, units, metas)
+                four_col_headers = None
+                current_serial = ""
+                current_field = cells[0].strip()
+                current_value = cells[1].strip()
 
-    print(f"[RAG:IR] Extracted {len(units)} field units from main data table")
-    return units, metas
+            elif row_type == _IR_CONTINUE:
+                continuation_text = cells[-1].strip()
+                if continuation_text:
+                    if current_field:
+                        current_value += " " + continuation_text
+                    elif current_section:
+                        # Orphan continuation under a section — start section-level field
+                        current_field = current_section
+                        current_value = continuation_text
+                        first = cells[0].strip()
+                        current_serial = first.rstrip(". ") if (
+                            first and re.match(r"^\d+\.?\s*$", first)
+                        ) else ""
+                    else:
+                        # No active field or section yet — merged cell with
+                        # section + field data. Store as introductory content.
+                        current_field = "Status / Introduction"
+                        current_value = continuation_text
+
+    # Flush any remaining field after all tables
+    _ir_flush_field(current_field, current_value, current_serial,
+                    current_section, units, metas)
+
+    print(f"[RAG:IR] Extracted {len(units)} field units from {len(doc.tables)} tables")
+
+    # Extract paragraph text outside tables (narrative, officer notes, etc.)
+    para_text = "\n".join(p.text.strip() for p in doc.paragraphs if p.text.strip())
+
+    return units, metas, para_text
+
+
+# -------------------------------------------------------------------
+# LLM-powered wrappers (with fallback to legacy heuristic parsers)
+# -------------------------------------------------------------------
+
+def _parse_ir_table_from_docx(docx_path: str) -> Tuple[List[str], List[dict], str]:
+    """Parse IR Form-16 DOCX using Docling + LLM, falling back to legacy parser."""
+    if USE_LLM_PARSER:
+        try:
+            units, metas, para = _llm_extract_kv_from_docx(docx_path)
+            if units:
+                print(f"[RAG:IR] Docling+LLM extraction: {len(units)} fields")
+                return units, metas, para
+            print("[RAG:IR] Docling+LLM returned 0 fields, falling back to heuristic parser")
+        except Exception as e:
+            print(f"[RAG:IR] Docling+LLM extraction failed: {e}")
+            print("[RAG:IR] Falling back to heuristic parser")
+    return _parse_ir_table_from_docx_legacy(docx_path)
+
+
+def _parse_smac_table_page(lines: List[str], page_no: int) -> Tuple[List[str], List[dict]]:
+    """Parse SMAC PDF page — delegates to legacy parser (PDF-level LLM handled in index_pdf)."""
+    return _parse_smac_table_page_legacy(lines, page_no)
 
 
 # -------------------------------------------------------------------
@@ -719,6 +963,17 @@ def index_pdf(col: str, pdf_path: str, filename: str) -> Dict[str, Any]:
 
     units: List[str] = []
     metas: List[dict] = []
+
+    # ── Try Docling+LLM for SMAC/IR PDFs (whole-file extraction) ──
+    llm_pdf_units: List[str] = []
+    llm_pdf_metas: List[dict] = []
+    if col in ("SMAC", "IR") and USE_LLM_PARSER:
+        try:
+            llm_pdf_units, llm_pdf_metas = _llm_extract_kv_from_pdf(pdf_path, collection=col)
+            if llm_pdf_units:
+                print(f"[RAG:PDF] Docling+LLM extraction: {len(llm_pdf_units)} fields from {filename}")
+        except Exception as e:
+            print(f"[RAG:PDF] Docling+LLM extraction failed: {e}, using per-page parser")
 
     MAX_PAGES = 120
     for page_no, page in enumerate(reader.pages[:MAX_PAGES], start=1):
@@ -738,17 +993,18 @@ def index_pdf(col: str, pdf_path: str, filename: str) -> Dict[str, Any]:
         lines = [ln.strip() for ln in page_text.splitlines() if ln.strip()]
 
         if col in ("SMAC", "IR"):
-            # SMAC / IR: 3-column table parser (S.No | Field | Value), handles multi-line values
-            smac_units, smac_metas = _parse_smac_table_page(lines, page_no)
-            if smac_units:
-                for u, sm in zip(smac_units, smac_metas):
-                    units.append(u)
-                    metas.append(sm)
-            else:
-                # No table rows found on this page — fall back to plain text chunks
-                for u in page_chunks:
-                    units.append(u)
-                    metas.append({"page": page_no})
+            # Always add full-page text chunks for narrative content
+            for u in page_chunks:
+                units.append(u)
+                metas.append({"page": page_no})
+
+            # If Docling+LLM already extracted fields, skip per-page parsing
+            if not llm_pdf_units:
+                smac_units, smac_metas = _parse_smac_table_page(lines, page_no)
+                if smac_units:
+                    for u, sm in zip(smac_units, smac_metas):
+                        units.append(u)
+                        metas.append(sm)
         else:
             # Generic parsing for non-SMAC collections
             tab_lines = [ln for ln in lines if (":" in ln or "|" in ln or ln.count("  ") >= 2)]
@@ -792,6 +1048,12 @@ def index_pdf(col: str, pdf_path: str, filename: str) -> Dict[str, Any]:
                     if 0 <= start_idx + i < len(metas):
                         metas[start_idx + i].update(sm)
 
+    # ── Append Docling+LLM extracted fields (if any) after page chunks ──
+    if llm_pdf_units:
+        for u, m in zip(llm_pdf_units, llm_pdf_metas):
+            units.append(u)
+            metas.append(m)
+
     stats["units_total"] = len(units)
     result = _index_text_units(col, doc_id, filename, units, doc_type="pdf", extra_stats=stats, metas=metas, min_unit_len=10)
 
@@ -799,14 +1061,25 @@ def index_pdf(col: str, pdf_path: str, filename: str) -> Dict[str, Any]:
     if col in ("SMAC", "IR") and result.get("doc_id"):
         try:
             field_values = []
+            narrative_parts = []
             for u, m in zip(units, metas):
                 fn = m.get("field_name")
                 if fn and ": " in u:
                     val = u.split(": ", 1)[1]
                     sno = m.get("serial_no", "")
                     field_values.append({"field_name": fn, "value": val, "serial_no": sno})
+                elif not fn and len(u) > 50:
+                    # Non-table text chunk (narrative/free-form) — collect it
+                    narrative_parts.append(u)
+            # Store narrative text as a special field so NL-to-SQL can find it
+            if narrative_parts:
+                narrative_text = " ".join(narrative_parts)[:4000]
+                field_values.append({"field_name": "NARRATIVE_TEXT", "value": narrative_text, "serial_no": ""})
             if field_values:
-                store_smac_report(result["doc_id"], filename, field_values)
+                if col == "IR":
+                    store_ir_report(result["doc_id"], filename, field_values)
+                else:
+                    store_smac_report(result["doc_id"], filename, field_values)
         except Exception as e:
             print(f"[StructuredTables] Store failed for {filename}: {e}")
 
@@ -820,14 +1093,24 @@ def index_docx(col: str, docx_path: str, filename: str) -> Dict[str, Any]:
     doc_id = str(uuid.uuid4())
 
     if col == "IR":
-        # IR Form-16: use structured 3-column table parser
-        ir_units, ir_metas = _parse_ir_table_from_docx(docx_path)
+        # IR Form-16: 3-column or 2-column table parser + paragraph text
+        ir_units, ir_metas, ir_narrative = _parse_ir_table_from_docx(docx_path)
         if ir_units:
-            print(f"[RAG:IR] Extracted {len(ir_units)} field units from DOCX table")
-            stats = {"type": "docx", "mode": "ir_table", "field_units": len(ir_units)}
+            # Combine table field units with narrative paragraph chunks
+            all_units = list(ir_units)
+            all_metas = list(ir_metas)
+            narrative_chunks = []
+            if ir_narrative.strip():
+                narrative_chunks = chunk_text(ir_narrative, chunk_size=2000, overlap=140)
+                for nc in narrative_chunks:
+                    all_units.append(nc)
+                    all_metas.append({"page": 1})
+
+            print(f"[RAG:IR] Extracted {len(ir_units)} field units + {len(narrative_chunks)} narrative chunks from DOCX")
+            stats = {"type": "docx", "mode": "ir_table", "field_units": len(ir_units), "narrative_chunks": len(narrative_chunks)}
             result = _index_text_units(
-                col, doc_id, filename, ir_units,
-                doc_type="docx", extra_stats=stats, metas=ir_metas, min_unit_len=5,
+                col, doc_id, filename, all_units,
+                doc_type="docx", extra_stats=stats, metas=all_metas, min_unit_len=5,
             )
 
             # ── Populate structured table (runs during indexing) ─────────
@@ -840,6 +1123,9 @@ def index_docx(col: str, docx_path: str, filename: str) -> Dict[str, Any]:
                             val = u.split(": ", 1)[1]
                             sno = m.get("serial_no", "")
                             field_values.append({"field_name": fn, "value": val, "serial_no": sno})
+                    # Store narrative text as a special field for NL-to-SQL
+                    if ir_narrative.strip():
+                        field_values.append({"field_name": "NARRATIVE_TEXT", "value": ir_narrative.strip()[:4000], "serial_no": ""})
                     if field_values:
                         store_ir_report(result["doc_id"], filename, field_values)
                 except Exception as e:
@@ -1151,8 +1437,8 @@ def _get_chunks_by_field(
 IR_FIELD_KEYWORDS: List[str] = [
     # Identity
     "name", "alias", "code name", "code number",
-    "nationality", "religion", "caste", "date of birth", "place of birth",
-    "marital", "mother tongue", "language",
+    "nationality", "religion", "caste", "date of birth", "dob", "age",
+    "place of birth", "marital", "mother tongue", "language",
     # Organisation & role
     "organization", "position", "links to other",
     # Addresses
@@ -1161,7 +1447,7 @@ IR_FIELD_KEYWORDS: List[str] = [
     "crime number", "cases registered", "surety",
     # Family & associates
     "parent", "family", "relation", "associate", "contact", "helper",
-    "advocate", "doctor",
+    "advocate", "lawyer", "doctor",
     # Occupation & education
     "occupation", "qualification", "education",
     # Communication
@@ -1195,6 +1481,18 @@ def _detect_ir_field(question: str) -> Optional[str]:
     return None
 
 
+# Abbreviation ↔ full-form mapping for compound IR field names
+_IR_ABBREV_MAP: Dict[str, List[str]] = {
+    "dob": ["date of birth", "dob"],
+    "date of birth": ["date of birth", "dob"],
+    "pob": ["place of birth", "pob"],
+    "place of birth": ["place of birth", "pob"],
+    "age": ["age"],
+    "doj": ["date of joining", "doj"],
+    "date of joining": ["date of joining", "doj"],
+}
+
+
 def _get_chunks_by_field_fuzzy(
     col: str,
     keyword: str,
@@ -1203,6 +1501,8 @@ def _get_chunks_by_field_fuzzy(
     """
     Fuzzy field lookup for IR — scans all chunk metadata and returns chunks
     where field_name contains the keyword (case-insensitive substring match).
+    Also handles compound field names split by "/" (e.g., "Age/DOB/Place of Birth")
+    and common abbreviations (e.g., "DOB" ↔ "Date of Birth").
     ChromaDB does not support LIKE queries, so we fetch all and filter in Python.
     """
     collection = _get_col(col)
@@ -1211,16 +1511,97 @@ def _get_chunks_by_field_fuzzy(
     metas = all_data.get("metadatas") or []
 
     kw_lower = keyword.lower()
-    results: List[Tuple[str, dict]] = []
+    # Build set of all search terms: the keyword itself + abbreviation equivalents
+    search_terms = {kw_lower}
+    if kw_lower in _IR_ABBREV_MAP:
+        search_terms.update(t.lower() for t in _IR_ABBREV_MAP[kw_lower])
+
+    field_results: List[Tuple[str, dict]] = []
+    text_results: List[Tuple[str, dict]] = []
 
     for doc, meta in zip(docs, metas):
         if doc_ids and meta.get("doc_id") not in doc_ids:
             continue
         field_name = (meta.get("field_name") or "").lower()
-        if field_name and kw_lower in field_name:
-            results.append((doc, meta))
 
-    print(f"[FieldRetrieval-Fuzzy] Found {len(results)} chunks for keyword '{keyword}' in '{col}'")
+        # Match against field_name metadata
+        if field_name:
+            if any(term in field_name for term in search_terms):
+                field_results.append((doc, meta))
+                continue
+            # Compound field: split by "/" and check each component
+            if "/" in field_name:
+                components = [c.strip() for c in field_name.split("/") if c.strip()]
+                matched = False
+                for comp in components:
+                    if any(term in comp or comp in term for term in search_terms):
+                        matched = True
+                        break
+                if matched:
+                    field_results.append((doc, meta))
+                    continue
+
+        # Also match against document text content (catches page text chunks)
+        doc_lower = (doc or "").lower()
+        if any(term in doc_lower for term in search_terms):
+            text_results.append((doc, meta))
+
+    # Field-name matches first (most precise), then text matches
+    results = field_results + text_results
+    print(f"[FieldRetrieval-Fuzzy] Found {len(field_results)} field + {len(text_results)} text chunks for keyword '{keyword}' (terms: {search_terms}) in '{col}'")
+    return results
+
+
+def _ir_text_search(
+    col: str,
+    question: str,
+    doc_ids: Optional[List[str]] = None,
+) -> List[Tuple[str, dict]]:
+    """
+    Direct text search across all IR chunks — finds chunks containing
+    the significant words from the question. Used when no IR field keyword
+    is detected, to catch specific document sections that hybrid search misses.
+    """
+    _q_stop = {
+        "what", "who", "where", "when", "how", "which", "is", "are", "was",
+        "were", "the", "a", "an", "of", "in", "for", "to", "and", "or",
+        "his", "her", "their", "its", "this", "that", "do", "does", "did",
+        "has", "have", "had", "be", "been", "being", "will", "can", "could",
+        "about", "from", "with", "tell", "me", "give", "show", "find",
+        "please", "details", "information", "you", "not", "them", "they",
+    }
+    words = re.findall(r"[a-zA-Z]{3,}", question.lower())
+    search_words = [w for w in words if w not in _q_stop]
+    if not search_words:
+        return []
+
+    collection = _get_col(col)
+    all_data = collection.get(include=["documents", "metadatas"])
+    docs = all_data.get("documents") or []
+    metas = all_data.get("metadatas") or []
+
+    # Score each chunk by how many search words it contains
+    scored: List[Tuple[int, str, dict]] = []
+    # Require at least 2 words to match (avoids noise from common single words like "others")
+    min_matches = max(2, (len(search_words) + 1) // 2)
+    # If only 1 search word, skip text search entirely (hybrid is better for single-word queries)
+    if len(search_words) < 2:
+        print(f"[IR-TextSearch] Skipped (only {len(search_words)} search word)")
+        return []
+
+    for doc, meta in zip(docs, metas):
+        if doc_ids and meta.get("doc_id") not in doc_ids:
+            continue
+        doc_lower = (doc or "").lower()
+        hits = sum(1 for w in search_words if w in doc_lower)
+        if hits >= min_matches:
+            scored.append((hits, doc, meta))
+
+    # Sort by match count (best first), cap at 5 to leave room for hybrid results
+    scored.sort(key=lambda x: x[0], reverse=True)
+    results = [(doc, meta) for _, doc, meta in scored[:5]]
+
+    print(f"[IR-TextSearch] Found {len(results)} chunks (>={min_matches}/{len(search_words)} words matched) for {search_words}")
     return results
 
 
@@ -1341,9 +1722,14 @@ def _answer_via_sql(question: str, collection_name: str) -> Optional[Dict[str, A
 # -------------------------------------------------------------------
 # Ask across documents
 # -------------------------------------------------------------------
-def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12, collection_name: str = "SMAC") -> Dict[str, Any]:
+def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12, collection_name: str = "SMAC", raw_question: Optional[str] = None) -> Dict[str, Any]:
+    # Use raw_question for keyword extraction/field detection (avoids conversation history pollution)
+    # Fall back to full question if raw_question is not provided
+    q_for_keywords = raw_question if raw_question else question
+    print(f"[RAG] raw_question={repr(raw_question[:80]) if raw_question else 'None'}, q_for_keywords={repr(q_for_keywords[:80])}")
+
     # ── Smart routing: aggregate/cross-document questions → NL→SQL ─────
-    if _is_aggregate_question(question):
+    if _is_aggregate_question(q_for_keywords):
         print(f"[RAG] Aggregate question detected — routing through NL→SQL pipeline")
         sql_result = _answer_via_sql(question, collection_name)
         if sql_result:
@@ -1352,7 +1738,7 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
 
     # For SMAC: detect if the question targets a specific field and use direct metadata lookup
     if collection_name == "SMAC":
-        detected_field = _detect_smac_field(question)
+        detected_field = _detect_smac_field(q_for_keywords)
         if detected_field:
             print(f"[RAG:SMAC] Field-specific query detected: '{detected_field}' — bypassing vector search")
             field_chunks = _get_chunks_by_field(collection_name, detected_field, doc_ids)
@@ -1361,25 +1747,47 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
             else:
                 # Field not found in metadata — fall back to hybrid retrieval
                 print(f"[RAG:SMAC] No chunks found for field '{detected_field}', falling back to hybrid retrieval")
-                results = _hybrid_retrieve(collection_name, question, doc_ids=doc_ids, top_k=top_k)
+                results = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=top_k)
         else:
-            results = _hybrid_retrieve(collection_name, question, doc_ids=doc_ids, top_k=top_k)
+            results = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=top_k)
 
     elif collection_name == "IR":
-        detected_keyword = _detect_ir_field(question)
+        detected_keyword = _detect_ir_field(q_for_keywords)
         if detected_keyword:
             print(f"[RAG:IR] Field keyword detected: '{detected_keyword}' — using fuzzy field retrieval")
             field_chunks = _get_chunks_by_field_fuzzy(collection_name, detected_keyword, doc_ids)
-            if field_chunks:
-                results = field_chunks[:top_k]
-            else:
-                print(f"[RAG:IR] No chunks for keyword '{detected_keyword}', falling back to hybrid retrieval")
-                results = _hybrid_retrieve(collection_name, question, doc_ids=doc_ids, top_k=top_k)
         else:
-            results = _hybrid_retrieve(collection_name, question, doc_ids=doc_ids, top_k=top_k)
+            # No known field keyword — do a direct text search for question words
+            field_chunks = _ir_text_search(collection_name, q_for_keywords, doc_ids)
+
+        # If text/field search found strong results, use them as primary context
+        # Less context = less noise = better LLM answers
+        if field_chunks:
+            # Strong text matches found — limit total results to keep context focused
+            max_results = min(top_k, 5)
+            hybrid_chunks = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=max_results)
+        else:
+            max_results = top_k
+            hybrid_chunks = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=top_k)
+
+        # Merge: text-matched chunks first (most targeted), then hybrid
+        seen_keys = set()
+        results = []
+        for d, m in (field_chunks or []):
+            key = f"{m.get('doc_id', '')}_{m.get('chunk_index', '')}"
+            if key not in seen_keys:
+                seen_keys.add(key)
+                results.append((d, m))
+        for d, m in hybrid_chunks:
+            key = f"{m.get('doc_id', '')}_{m.get('chunk_index', '')}"
+            if key not in seen_keys:
+                seen_keys.add(key)
+                results.append((d, m))
+        results = results[:max_results]
+        print(f"[RAG:IR] Merged: {len(field_chunks or [])} field/text + {len(hybrid_chunks)} hybrid → {len(results)} results (cap={max_results})")
 
     else:
-        results = _hybrid_retrieve(collection_name, question, doc_ids=doc_ids, top_k=top_k)
+        results = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=top_k)
 
     # ── Structured table keyword search ──────────────────────────────────
     # Search document_fields for matching field_keys and add as extra context
@@ -1391,6 +1799,13 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         "will", "can", "could", "should", "would", "may", "might",
         "about", "from", "with", "tell", "me", "give", "show", "find",
         "list", "all", "any", "some", "please", "details", "information",
+        # Conversation template and history noise words
+        "context", "conversation", "continuing", "ongoing", "resolve",
+        "references", "previous", "answer", "question", "section",
+        "assistant", "user", "current", "provided", "document", "documents",
+        "same", "like", "use", "not", "you", "him", "them", "they",
+        "also", "just", "get", "got", "said", "yes", "know", "found",
+        "getting", "helped", "introduced",
     }
     # Synonym expansion: user terms → field_key search terms
     _KEYWORD_SYNONYMS = {
@@ -1409,10 +1824,17 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         "travel": ["travel", "mode of travel"],
         "organization": ["organi", "affiliation"],
         "organisation": ["organi", "affiliation"],
+        "associate": ["associate", "accomplice", "helper", "co-accused", "companion", "contact"],
+        "accomplice": ["associate", "accomplice", "helper", "co-accused"],
+        "helper": ["associate", "helper", "co-accused"],
+        "companion": ["associate", "companion", "contact"],
+        "lawyer": ["advocate", "lawyer", "legal", "counsel"],
+        "advocate": ["advocate", "lawyer", "legal", "counsel"],
+        "counsel": ["advocate", "lawyer", "counsel"],
     }
     structured_context_blocks: List[str] = []
     try:
-        words = re.findall(r"[a-zA-Z]{3,}", question.lower())
+        words = re.findall(r"[a-zA-Z]{3,}", q_for_keywords.lower())
         keywords = [w for w in words if w not in _stop_words]
         # Expand with synonyms
         expanded = set(keywords)
@@ -1465,7 +1887,16 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
     if not context:
         return {"answer": "Not found in the document(s).", "used_chunks": []}
 
+    # Cap context — gemma3:12b supports 128K tokens (~400K chars), so 30K is safe
+    MAX_CONTEXT_CHARS = 30000
+    if len(context) > MAX_CONTEXT_CHARS:
+        print(f"[RAG] Context trimmed: {len(context)} → {MAX_CONTEXT_CHARS} chars")
+        context = context[:MAX_CONTEXT_CHARS]
+
     is_summarize = "summar" in question.lower()
+
+    # Use raw question for the LLM prompt (avoids sending conversation history as noise)
+    llm_question = q_for_keywords if q_for_keywords != question else question
 
     prompt = (
         "STRICT INSTRUCTION: Answer ONLY from the CONTEXT below. Do NOT use your training knowledge.\n"
@@ -1475,35 +1906,43 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         "- Always answer in English.\n"
         "- Labels may be messy — search for nearby key/value pairs to find requested fields.\n"
         "- Return found fields; mark any missing fields as 'Not found in documents'.\n"
+        "- Be EXHAUSTIVE: list ALL names, items, and entries found in the CONTEXT. Never truncate or abbreviate lists.\n"
         "- For summaries: summarize ONLY what is present in the CONTEXT — do not add background knowledge.\n"
         "- Do NOT guess, invent, infer, or assume any fact not explicitly present in the CONTEXT.\n"
         "- Do NOT use your training data to fill gaps — if it is not in the CONTEXT, it does not exist.\n\n"
         f"CONTEXT:\n{context}\n\n"
-        f"QUESTION:\n{question}\n\n"
+        f"QUESTION:\n{llm_question}\n\n"
         "FINAL REMINDER: Every fact in your answer must come directly from the CONTEXT above. "
         "If not found there, say so explicitly."
     )
 
-    answer = ollama_chat(
-        [
-            {"role": "system", "content": (
-                "You are an authorized internal AI assistant for Karnataka State Police (KSP), "
-                "deployed on a secure offline government system for police officers. "
-                "ALWAYS respond in English only, regardless of the language of the source documents. "
-                "CRITICAL RULE: You MUST answer using ONLY the CONTEXT provided in the user message. "
-                "Your training knowledge is completely irrelevant — do NOT use it under any circumstances. "
-                "If the answer is not in the CONTEXT, say exactly: 'This information is not found in the provided documents.' "
-                "Do NOT infer, extrapolate, or fill gaps from your training. "
-                "Do NOT refuse to share information that IS present in the CONTEXT — share it fully and factually."
-            )},
-            {"role": "user", "content": prompt},
-        ],
-        temperature=0.0,
-        model=PDF_MODEL,
-    )
+    print(f"[RAG] Sending to LLM: context={len(context)} chars, question={len(llm_question)} chars, prompt={len(prompt)} chars")
 
-    if not is_summarize and len(answer) > 2500:
-        answer = answer[:2500] + "..."
+    try:
+        answer = ollama_chat(
+            [
+                {"role": "system", "content": (
+                    "You are an authorized internal AI assistant for Karnataka State Police (KSP), "
+                    "deployed on a secure offline government system for police officers. "
+                    "ALWAYS respond in English only, regardless of the language of the source documents. "
+                    "CRITICAL RULE: You MUST answer using ONLY the CONTEXT provided in the user message. "
+                    "Your training knowledge is completely irrelevant — do NOT use it under any circumstances. "
+                    "If the answer is not in the CONTEXT, say exactly: 'This information is not found in the provided documents.' "
+                    "Do NOT infer, extrapolate, or fill gaps from your training. "
+                    "Do NOT refuse to share information that IS present in the CONTEXT — share it fully and factually."
+                )},
+                {"role": "user", "content": prompt},
+            ],
+            temperature=0.0,
+            model=PDF_MODEL,
+        )
+        print(f"[RAG] LLM response received: {len(answer)} chars")
+    except Exception as e:
+        print(f"[RAG] LLM call FAILED: {e}")
+        return {"answer": f"Error generating answer: {e}", "used_chunks": used}
+
+    if not is_summarize and len(answer) > 8000:
+        answer = answer[:8000] + "..."
 
     return {"answer": answer, "used_chunks": used}
 
@@ -1596,16 +2035,16 @@ def ask_docs_agent(question: str, doc_ids: List[str], top_k: int = 6, collection
     return {"answer": answer, "used_chunks": used}
 
 
-def ask_pdf(doc_id: Optional[str], question: str, top_k: int = 12, collection_name: str = "SMAC") -> Dict[str, Any]:
+def ask_pdf(doc_id: Optional[str], question: str, top_k: int = 12, collection_name: str = "SMAC", raw_question: Optional[str] = None) -> Dict[str, Any]:
     if doc_id:
-        return ask_docs(question=question, doc_ids=[doc_id], top_k=top_k, collection_name=collection_name)
-    return ask_docs(question=question, doc_ids=None, top_k=max(top_k, 10), collection_name=collection_name)
+        return ask_docs(question=question, doc_ids=[doc_id], top_k=top_k, collection_name=collection_name, raw_question=raw_question)
+    return ask_docs(question=question, doc_ids=None, top_k=max(top_k, 10), collection_name=collection_name, raw_question=raw_question)
 
 
-def ask_doc(doc_id: Optional[str], question: str, top_k: int = 10, collection_name: str = "SMAC") -> Dict[str, Any]:
+def ask_doc(doc_id: Optional[str], question: str, top_k: int = 10, collection_name: str = "SMAC", raw_question: Optional[str] = None) -> Dict[str, Any]:
     if doc_id:
-        return ask_docs(question=question, doc_ids=[doc_id], top_k=top_k, collection_name=collection_name)
-    return ask_docs(question=question, doc_ids=None, top_k=max(top_k, 10), collection_name=collection_name)
+        return ask_docs(question=question, doc_ids=[doc_id], top_k=top_k, collection_name=collection_name, raw_question=raw_question)
+    return ask_docs(question=question, doc_ids=None, top_k=max(top_k, 10), collection_name=collection_name, raw_question=raw_question)
 
 
 # -------------------------------------------------------------------

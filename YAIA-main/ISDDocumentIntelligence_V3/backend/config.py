@@ -17,6 +17,9 @@ ENABLE_HYBRID_SEARCH = os.getenv("ENABLE_HYBRID_SEARCH", "true").lower() == "tru
 ENABLE_MULTI_QUERY = os.getenv("ENABLE_MULTI_QUERY", "true").lower() == "true"
 ENABLE_RERANKING = os.getenv("ENABLE_RERANKING", "true").lower() == "true"
 
+# LLM-powered document parser (Docling + Ollama) — set false to use legacy heuristic parser
+USE_LLM_PARSER = os.getenv("USE_LLM_PARSER", "true").lower() == "true"
+
 # ── SQL Server (MSSQL) ────────────────────────────────────────────────────────
 MSSQL_SERVER = os.getenv("MSSQL_SERVER", r"localhost\SQLEXPRESS")
 MSSQL_DATABASE = os.getenv("MSSQL_DATABASE", "ISDIntelligence")

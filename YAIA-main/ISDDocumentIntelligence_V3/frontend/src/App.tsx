@@ -8,7 +8,7 @@ import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
 
-const TABS = ['Document Intelligence', 'Connections Map', 'Activity Timeline'] as const
+const TABS = ['Document Intelligence', 'Connections Map', 'Activity Timeline', 'QA Testing'] as const
 type TabName = (typeof TABS)[number]
 
 const ENTITY_COLORS: Record<string, string> = {
@@ -95,6 +95,16 @@ type LocationData = {
   lat: number
   lng: number
   address_type: string
+}
+
+// ── QA Testing types ────────────────────────────────────────────────────────
+type QAResult = {
+  index: number
+  prompt: string
+  answer: string
+  used_chunks: { doc_name: string; page?: number }[]
+  elapsed_ms: number
+  error?: string | null
 }
 
 const ADDR_TYPE_COLORS: Record<string, string> = {
@@ -203,6 +213,10 @@ export default function App() {
   const folderInputRef = useRef<HTMLInputElement | null>(null)
   const [docLoading, setDocLoading] = useState(false)
   const [docIndexing, setDocIndexing] = useState(false)
+  const abortControllerRef = useRef<AbortController | null>(null)
+  const [showQueryHelp, setShowQueryHelp] = useState(false)
+  const [spellCorrections, setSpellCorrections] = useState<Record<string, string> | null>(null)
+  const skipSpellCheckRef = useRef(false)
   const [failedDocs, setFailedDocs] = useState<{ name: string; error: string }[]>([])
   const [confirmClearDocs, setConfirmClearDocs] = useState(false)
 
@@ -277,6 +291,22 @@ export default function App() {
   const [locationExtractionDone, setLocationExtractionDone] = useState(false)
   const [selectedLocation, setSelectedLocation] = useState<LocationData | null>(null)
   const locationPollRef = useRef<number | null>(null)
+
+  // QA Testing state
+  const [qaFile, setQaFile] = useState<File | null>(null)
+  const [qaPrompts, setQaPrompts] = useState<string[]>([])
+  const [qaCollection, setQaCollection] = useState<'SMAC' | 'IR'>('SMAC')
+  const [qaSelectedDocs, setQaSelectedDocs] = useState<string[]>([])
+  const [qaDocs, setQaDocs] = useState<DocRecord[]>([])
+  const [qaRunning, setQaRunning] = useState(false)
+  const [_qaRunId, setQaRunId] = useState('')
+  const [qaResults, setQaResults] = useState<QAResult[]>([])
+  const [qaCurrent, setQaCurrent] = useState(0)
+  const [qaTotal, setQaTotal] = useState(0)
+  const [qaStatus, setQaStatus] = useState('')
+  const [qaExpandedRows, setQaExpandedRows] = useState<Set<number>>(new Set())
+  const qaFileInputRef = useRef<HTMLInputElement | null>(null)
+  const qaPollRef = useRef<number | null>(null)
 
   // Load indexed document list from backend on mount & collection change (survives page refresh)
   useEffect(() => {
@@ -408,6 +438,7 @@ export default function App() {
     setDocStatus('')
     setDocLastError('')
     setDocLastAnswer('')
+    setSpellCorrections(null)
 
     const question = docQuestion.trim()
     if (!docs.length) {
@@ -420,6 +451,29 @@ export default function App() {
       return
     }
 
+    // Spell check before asking (skip if user chose "Ask Anyway")
+    if (!skipSpellCheckRef.current) {
+      try {
+        const spellData = await apiFetch<{ corrections?: Record<string, string> }>(
+          '/spell-check',
+          {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: question }),
+          }
+        )
+        if (spellData?.corrections && Object.keys(spellData.corrections).length > 0) {
+          setSpellCorrections(spellData.corrections)
+          return  // Stop here — user decides Fix & Ask or Ask Anyway
+        }
+      } catch {
+        // Spell check failed (backend not running etc.) — proceed with Q&A anyway
+      }
+    }
+    skipSpellCheckRef.current = false
+
+    const controller = new AbortController()
+    abortControllerRef.current = controller
     setDocLoading(true)
 
     try {
@@ -439,6 +493,7 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(payload),
+        signal: controller.signal,
       })
 
       if (data?.ok === false) {
@@ -460,9 +515,45 @@ export default function App() {
         setDocStatus('OK Answer generated.')
       }
     } catch (error) {
-      setDocLastError(error instanceof Error ? error.message : 'Document query failed.')
+      if (error instanceof DOMException && error.name === 'AbortError') {
+        setDocStatus('Query stopped.')
+      } else {
+        setDocLastError(error instanceof Error ? error.message : 'Document query failed.')
+      }
     } finally {
+      abortControllerRef.current = null
       setDocLoading(false)
+    }
+  }
+
+  const handleSpellFix = () => {
+    if (!spellCorrections) return
+    let fixed = docQuestion
+    for (const [wrong, right] of Object.entries(spellCorrections)) {
+      fixed = fixed.replace(new RegExp(wrong, 'gi'), right)
+    }
+    setDocQuestion(fixed)
+    setSpellCorrections(null)
+    // Auto-submit with corrected text after a brief tick so state updates
+    setTimeout(() => {
+      const btn = document.querySelector('.btn-ask') as HTMLButtonElement
+      if (btn) btn.click()
+    }, 50)
+  }
+
+  const handleSpellIgnore = () => {
+    setSpellCorrections(null)
+    skipSpellCheckRef.current = true
+    // Proceed with original text
+    setTimeout(() => {
+      const btn = document.querySelector('.btn-ask') as HTMLButtonElement
+      if (btn) btn.click()
+    }, 50)
+  }
+
+  const handleDocStop = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
     }
   }
 
@@ -1180,6 +1271,202 @@ export default function App() {
     return () => { if (locationPollRef.current) clearInterval(locationPollRef.current) }
   }, [])
 
+  // ── QA Testing handlers ─────────────────────────────────────────────────
+
+  // Load docs for the QA collection selector
+  useEffect(() => {
+    if (activeTab !== 'QA Testing') return
+    apiFetch<{ ok: boolean; docs?: DocRecord[] }>(`/docs/list?collection=${qaCollection}`)
+      .then((data) => {
+        if (data?.ok && data.docs) {
+          setQaDocs(data.docs)
+        }
+      })
+      .catch(() => {})
+  }, [activeTab, qaCollection])
+
+  // Cleanup QA polling on unmount
+  useEffect(() => {
+    return () => { if (qaPollRef.current) clearInterval(qaPollRef.current) }
+  }, [])
+
+  const handleQaUpload = async () => {
+    if (!qaFile) {
+      setQaStatus('Please select a PDF or DOCX file containing test prompts.')
+      return
+    }
+    setQaStatus('Extracting prompts...')
+    setQaPrompts([])
+    setQaResults([])
+
+    const formData = new FormData()
+    formData.append('file', qaFile)
+
+    try {
+      const data = await apiFetch<{ ok: boolean; prompts?: string[]; count?: number; error?: string }>(
+        '/qa/upload-prompts',
+        { method: 'POST', body: formData },
+      )
+      if (data?.ok && data.prompts) {
+        setQaPrompts(data.prompts)
+        setQaStatus(`Extracted ${data.count} prompt(s). Select documents and click "Run All Tests".`)
+      } else {
+        setQaStatus(data?.error || 'Failed to extract prompts.')
+      }
+    } catch (err) {
+      setQaStatus(err instanceof Error ? err.message : 'Upload failed.')
+    }
+  }
+
+  const handleQaRun = async () => {
+    if (!qaPrompts.length) {
+      setQaStatus('No prompts extracted. Upload a file first.')
+      return
+    }
+    setQaRunning(true)
+    setQaResults([])
+    setQaCurrent(0)
+    setQaTotal(qaPrompts.length)
+    setQaStatus('Starting test run...')
+    setQaExpandedRows(new Set())
+
+    try {
+      const data = await apiFetch<{ ok: boolean; run_id?: string; total?: number; error?: string }>(
+        '/qa/run',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prompts: qaPrompts,
+            doc_ids: qaSelectedDocs.length > 0 ? qaSelectedDocs : null,
+            collection: qaCollection,
+          }),
+        },
+      )
+
+      if (!data?.ok || !data.run_id) {
+        setQaStatus(data?.error || 'Failed to start test run.')
+        setQaRunning(false)
+        return
+      }
+
+      setQaRunId(data.run_id)
+      setQaTotal(data.total || qaPrompts.length)
+
+      // Start polling for progress
+      qaPollRef.current = window.setInterval(async () => {
+        try {
+          const status = await apiFetch<{
+            ok: boolean; status?: string; current?: number; total?: number; results?: QAResult[]
+          }>(`/qa/status?run_id=${data.run_id}`)
+
+          if (status?.ok) {
+            setQaCurrent(status.current || 0)
+            setQaTotal(status.total || qaPrompts.length)
+            setQaResults(status.results || [])
+            setQaStatus(`Running... ${status.current || 0}/${status.total || qaPrompts.length} prompts completed`)
+
+            if (status.status === 'done') {
+              if (qaPollRef.current) clearInterval(qaPollRef.current)
+              qaPollRef.current = null
+              setQaRunning(false)
+              setQaStatus(`Done! ${status.total} prompt(s) completed.`)
+            }
+          }
+        } catch {
+          // Keep polling on transient errors
+        }
+      }, 2000)
+    } catch (err) {
+      setQaStatus(err instanceof Error ? err.message : 'Failed to start test run.')
+      setQaRunning(false)
+    }
+  }
+
+  const toggleQaRow = (index: number) => {
+    setQaExpandedRows((prev) => {
+      const next = new Set(prev)
+      if (next.has(index)) next.delete(index)
+      else next.add(index)
+      return next
+    })
+  }
+
+  const downloadQAReport = () => {
+    if (!qaResults.length) return
+
+    const pdf = new jsPDF()
+    const pageW = pdf.internal.pageSize.getWidth()
+    const pageH = pdf.internal.pageSize.getHeight()
+    const margin = 14
+    const maxW = pageW - 2 * margin
+
+    pdf.setFontSize(16)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setTextColor(11, 44, 74)
+    pdf.text(`QA Testing Report — ${qaCollection}`, margin, 20)
+
+    pdf.setFontSize(10)
+    pdf.setFont('helvetica', 'normal')
+    pdf.setTextColor(128, 128, 128)
+    pdf.text(`Generated: ${new Date().toLocaleString()}  |  Prompts: ${qaResults.length}`, margin, 28)
+
+    let y = 38
+
+    for (const r of qaResults) {
+      // Check if we need a new page
+      if (y > pageH - 40) {
+        pdf.addPage()
+        y = 20
+      }
+
+      // Prompt
+      pdf.setFont('helvetica', 'bold')
+      pdf.setFontSize(11)
+      pdf.setTextColor(0, 51, 153)
+      const pLines: string[] = pdf.splitTextToSize(`Q${r.index + 1}: ${r.prompt}`, maxW)
+      pdf.text(pLines, margin, y)
+      y += pLines.length * 5.5 + 2
+
+      // Answer
+      pdf.setFont('helvetica', 'normal')
+      pdf.setFontSize(10)
+      pdf.setTextColor(51, 51, 51)
+      const ansText = r.error ? `ERROR: ${r.error}` : (r.answer || 'No answer')
+      const aLines: string[] = pdf.splitTextToSize(`A: ${ansText}`, maxW)
+
+      // Check page overflow for answer
+      if (y + aLines.length * 4.5 > pageH - 20) {
+        pdf.addPage()
+        y = 20
+      }
+      pdf.text(aLines, margin, y)
+      y += aLines.length * 4.5 + 2
+
+      // Source docs + time
+      pdf.setFontSize(8)
+      pdf.setTextColor(128, 128, 128)
+      const sources = r.used_chunks?.length
+        ? r.used_chunks.map((c) => c.doc_name).filter((v, i, a) => a.indexOf(v) === i).join(', ')
+        : 'N/A'
+      pdf.text(`Sources: ${sources}  |  Time: ${r.elapsed_ms}ms`, margin, y)
+      y += 10
+    }
+
+    // Summary
+    if (y > pageH - 30) {
+      pdf.addPage()
+      y = 20
+    }
+    pdf.setFontSize(11)
+    pdf.setFont('helvetica', 'bold')
+    pdf.setTextColor(11, 44, 74)
+    const totalTime = qaResults.reduce((sum, r) => sum + (r.elapsed_ms || 0), 0)
+    pdf.text(`Summary: ${qaResults.length} prompts  |  Total time: ${(totalTime / 1000).toFixed(1)}s`, margin, y)
+
+    pdf.save(`QA_Report_${qaCollection}_${new Date().toISOString().slice(0, 10)}.pdf`)
+  }
+
   const nodeCanvasObject = useCallback(
     (node: any, ctx: CanvasRenderingContext2D, globalScale: number) => {
       const label = node.name as string
@@ -1393,13 +1680,59 @@ export default function App() {
                     </div>
                   )
                 })()}
-                <span className="ksp-chip ksp-chip-spaced ksp-chip-navy">Ask</span>
+                <div className="ask-header">
+                  <span className="ksp-chip ksp-chip-spaced ksp-chip-navy">Ask</span>
+                  <button
+                    type="button"
+                    className="help-btn"
+                    onClick={() => setShowQueryHelp(prev => !prev)}
+                    title="How to write questions"
+                  >
+                    ?
+                  </button>
+                </div>
+                {showQueryHelp && (
+                  <div className="help-popover">
+                    <strong>How to ask questions</strong>
+                    <ul>
+                      <li>Be specific &mdash; <em>&quot;Who are the associates?&quot;</em> works better than <em>&quot;Tell me about the document&quot;</em></li>
+                      <li>Use names and keywords from the document &mdash; names of people, places, dates</li>
+                      <li>Ask one question at a time for the most accurate answers</li>
+                      <li>Spell-check your question &mdash; misspelled words may lead to poor results</li>
+                    </ul>
+                    <strong>Example questions</strong>
+                    <ul>
+                      <li><em>&quot;What is the date of arrest?&quot;</em></li>
+                      <li><em>&quot;List all weapons and hideouts&quot;</em></li>
+                      <li><em>&quot;Who are the family members?&quot;</em></li>
+                      <li><em>&quot;What criminal cases are registered?&quot;</em></li>
+                    </ul>
+                  </div>
+                )}
                 <textarea
                   className="ksp-textarea"
                   value={docQuestion}
                   onChange={(event) => setDocQuestion(event.target.value)}
-                  placeholder="Ask question on uploaded documents"
+                  placeholder="Type your question here, e.g. 'Who are the associates?' or 'List all weapons found'"
+                  spellCheck={true}
+                  lang="en"
                 />
+                {spellCorrections && Object.keys(spellCorrections).length > 0 && (
+                  <div className="spell-banner">
+                    <span className="spell-banner-title">Possible spelling errors detected:</span>
+                    <div className="spell-corrections">
+                      {Object.entries(spellCorrections).map(([wrong, right]) => (
+                        <span key={wrong} className="spell-item">
+                          <span className="spell-wrong">{wrong}</span> &rarr; <span className="spell-right">{right}</span>
+                        </span>
+                      ))}
+                    </div>
+                    <div className="spell-actions">
+                      <button type="button" className="btn-spell-fix" onClick={handleSpellFix}>Fix &amp; Ask</button>
+                      <button type="button" className="btn-spell-ignore" onClick={handleSpellIgnore}>Ask Anyway</button>
+                    </div>
+                  </div>
+                )}
                 {audioDevices.length > 1 && (
                   <div className="mic-selector">
                     <label htmlFor="mic-select">Microphone: </label>
@@ -1425,8 +1758,13 @@ export default function App() {
                     disabled={docLoading || docIndexing || !docs.length}
                     title={!docs.length ? 'Index documents first' : ''}
                   >
-                    {docLoading ? 'Searching...' : 'Ask Documents'}
+                    {docLoading ? 'Searching...' : 'Ask Question'}
                   </button>
+                  {docLoading && (
+                    <button type="button" className="btn-stop" onClick={handleDocStop} title="Stop query">
+                      Stop
+                    </button>
+                  )}
                   <button
                     type="button"
                     className={`voice-btn${isRecording ? ' recording' : ''}`}
@@ -1455,6 +1793,9 @@ export default function App() {
                     <div className="history-actions">
                       <button type="button" className="btn-navy-compact" onClick={() => downloadChatAsPdf(docChat, 'Document Intelligence')}>
                         Download PDF
+                      </button>
+                      <button type="button" className="btn-navy-compact" style={{ marginLeft: 6 }} onClick={() => { setDocChat([]); setDocLastAnswer(''); setDocLastError(''); setDocStatus('') }}>
+                        Clear History
                       </button>
                     </div>
                   )}
@@ -2136,6 +2477,209 @@ export default function App() {
                 )}
               </div>
             </div>
+          </section>
+        </div>
+        )}
+
+        {activeTab === 'QA Testing' && (
+        <div className="main-panel">
+          <section className="ksp-card">
+            <span className="ksp-chip ksp-chip-navy">QA Testing Agent</span>
+            <p className="main-help">
+              Upload a PDF or Word file containing test prompts, select which indexed documents to query against,
+              and run all prompts in batch to validate data accuracy.
+            </p>
+
+            {/* Upload & Collection Row */}
+            <div className="qa-upload-row">
+              <input
+                ref={qaFileInputRef}
+                type="file"
+                accept=".pdf,.docx,.doc"
+                className="hidden-input"
+                onChange={(e) => {
+                  const f = e.target.files?.[0] || null
+                  setQaFile(f)
+                  if (f) setQaStatus(`Selected: ${f.name}`)
+                }}
+              />
+              <button
+                type="button"
+                className="btn-folder"
+                onClick={() => qaFileInputRef.current?.click()}
+              >
+                Choose Prompt File
+              </button>
+              {qaFile && (
+                <span style={{ fontSize: 13, color: '#555' }}>{qaFile.name}</span>
+              )}
+              <button
+                type="button"
+                className="btn-index"
+                onClick={handleQaUpload}
+                disabled={!qaFile || qaRunning}
+              >
+                Upload &amp; Extract
+              </button>
+              <select
+                className="qa-collection-select"
+                value={qaCollection}
+                onChange={(e) => {
+                  setQaCollection(e.target.value as 'SMAC' | 'IR')
+                  setQaSelectedDocs([])
+                }}
+              >
+                <option value="SMAC">SMAC</option>
+                <option value="IR">IR</option>
+              </select>
+            </div>
+
+            {/* Extracted Prompts Summary */}
+            {qaPrompts.length > 0 && (
+              <div className="qa-prompts-summary">
+                {qaPrompts.length} prompt(s) extracted
+              </div>
+            )}
+
+            {/* Document Selector */}
+            {qaDocs.length > 0 && qaPrompts.length > 0 && (
+              <div className="qa-doc-selector">
+                <div className="qa-doc-select-actions">
+                  <strong style={{ fontSize: 13, marginRight: 8 }}>Test against:</strong>
+                  <button type="button" onClick={() => setQaSelectedDocs(qaDocs.map((d) => d.doc_id as string).filter(Boolean))}>
+                    Select All
+                  </button>
+                  <button type="button" onClick={() => setQaSelectedDocs([])}>
+                    Deselect All
+                  </button>
+                  <span style={{ fontSize: 12, color: '#888', marginLeft: 8 }}>
+                    {qaSelectedDocs.length === 0 ? '(all documents)' : `${qaSelectedDocs.length} selected`}
+                  </span>
+                </div>
+                {qaDocs.map((d) => (
+                  <label key={d.doc_id as string}>
+                    <input
+                      type="checkbox"
+                      checked={qaSelectedDocs.includes(d.doc_id as string)}
+                      onChange={(e) => {
+                        const id = d.doc_id as string
+                        if (e.target.checked) {
+                          setQaSelectedDocs((prev) => [...prev, id])
+                        } else {
+                          setQaSelectedDocs((prev) => prev.filter((x) => x !== id))
+                        }
+                      }}
+                    />
+                    {d.doc_name as string}
+                  </label>
+                ))}
+              </div>
+            )}
+
+            {/* Action Row */}
+            <div className="qa-action-row">
+              <button
+                type="button"
+                className="btn-ask"
+                onClick={handleQaRun}
+                disabled={qaRunning || qaPrompts.length === 0}
+              >
+                {qaRunning ? 'Running...' : 'Run All Tests'}
+              </button>
+              <button
+                type="button"
+                className="btn-navy-compact"
+                onClick={downloadQAReport}
+                disabled={qaResults.length === 0}
+              >
+                Download Report PDF
+              </button>
+              {qaStatus && (
+                <span style={{ fontSize: 13, fontWeight: 600, color: '#1565c0' }}>{qaStatus}</span>
+              )}
+            </div>
+
+            {/* Progress Bar */}
+            {qaRunning && qaTotal > 0 && (
+              <div>
+                <div className="qa-progress-bar">
+                  <div className="qa-progress-fill" style={{ width: `${(qaCurrent / qaTotal) * 100}%` }} />
+                </div>
+                <div className="qa-progress-text">{qaCurrent}/{qaTotal} prompts completed</div>
+              </div>
+            )}
+
+            {/* Results Table */}
+            {(qaResults.length > 0 || qaRunning) && (
+              <table className="qa-results-table">
+                <thead>
+                  <tr>
+                    <th style={{ width: 40 }}>#</th>
+                    <th>Prompt</th>
+                    <th>Response</th>
+                    <th style={{ width: 120 }}>Source</th>
+                    <th style={{ width: 70 }}>Time</th>
+                    <th style={{ width: 40 }}></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {qaPrompts.map((prompt, idx) => {
+                    const result = qaResults.find((r) => r.index === idx)
+                    const isRunningRow = !result && idx === qaCurrent && qaRunning
+                    const isPending = !result && !isRunningRow
+                    const isError = result?.error
+                    const isExpanded = qaExpandedRows.has(idx)
+
+                    let rowClass = 'qa-row-done'
+                    if (isPending) rowClass = 'qa-row-pending'
+                    else if (isRunningRow) rowClass = 'qa-row-running'
+                    else if (isError) rowClass = 'qa-row-error'
+
+                    return (
+                      <tr key={idx} className={rowClass}>
+                        <td>{idx + 1}</td>
+                        <td className="qa-prompt-cell">{prompt}</td>
+                        <td
+                          className="qa-answer-cell"
+                          onClick={() => result && toggleQaRow(idx)}
+                        >
+                          {isRunningRow && <em>Processing...</em>}
+                          {isPending && <em>Pending</em>}
+                          {result && (
+                            <div className={isExpanded ? 'qa-answer-expanded' : 'qa-answer-truncated'}>
+                              {isError ? `Error: ${result.error}` : result.answer}
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          {result?.used_chunks?.length
+                            ? result.used_chunks
+                                .map((c) => c.doc_name)
+                                .filter((v, i, a) => a.indexOf(v) === i)
+                                .join(', ')
+                            : ''}
+                        </td>
+                        <td className="qa-time-cell">
+                          {result ? `${(result.elapsed_ms / 1000).toFixed(1)}s` : ''}
+                        </td>
+                        <td className="qa-status-icon">
+                          {isPending && '\u23F3'}
+                          {isRunningRow && '\u23F3'}
+                          {result && !isError && '\u2705'}
+                          {isError && '\u274C'}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            )}
+
+            {qaPrompts.length === 0 && qaResults.length === 0 && !qaRunning && (
+              <div className="qa-empty">
+                Upload a PDF or DOCX file containing test prompts to get started.
+              </div>
+            )}
           </section>
         </div>
         )}
