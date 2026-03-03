@@ -2107,15 +2107,15 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
     is_summarize = "summar" in question.lower()
 
     # Detect list-type questions — needs exhaustive extraction, not just top-match
+    # Use raw question for the LLM prompt (avoids sending conversation history as noise)
+    llm_question = q_for_keywords if q_for_keywords != question else question
+
     _list_patterns = re.compile(
         r'\b(list all|list the|who are|who were|names of|name all|give all|show all|'
         r'all the|how many|enumerate|what are all|tell me all)\b',
         re.IGNORECASE,
     )
-    is_list_query = bool(_list_patterns.search(llm_question if q_for_keywords != question else question))
-
-    # Use raw question for the LLM prompt (avoids sending conversation history as noise)
-    llm_question = q_for_keywords if q_for_keywords != question else question
+    is_list_query = bool(_list_patterns.search(llm_question))
 
     if is_list_query:
         print(f"[RAG] List-type query detected — using exhaustive list extraction prompt")
