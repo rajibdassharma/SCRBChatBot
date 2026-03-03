@@ -234,7 +234,17 @@ def _generate_multi_queries(question: str) -> List[str]:
                 try:
                     queries = json.loads(text[start:end], strict=False)
                     if isinstance(queries, list) and len(queries) >= 1:
-                        valid = [q for q in queries if isinstance(q, str) and q.strip()][:3]
+                        # Filter: discard queries that share no words with original question
+                        # (prevents off-topic LLM hallucinations from polluting retrieval)
+                        orig_words = set(re.findall(r"[a-zA-Z]{3,}", question.lower()))
+                        valid = []
+                        for q in queries:
+                            if not isinstance(q, str) or not q.strip():
+                                continue
+                            q_words = set(re.findall(r"[a-zA-Z]{3,}", q.lower()))
+                            if q_words & orig_words:  # must share at least one word
+                                valid.append(q)
+                        valid = valid[:3]
                         if valid:
                             print(f"[Multi-Query] Generated {len(valid)} variations")
                             return valid
@@ -1845,16 +1855,18 @@ def _verify_grounding(answer: str, context: str, question: str) -> str:
             kept.append(sent)
             continue
 
-        # Short lines (≤ 100 chars) are typically list items or direct extractions — always keep
-        if len(sent) <= 100:
-            kept.append(sent)
-            continue
-
         # Calculate grounding ratio: what fraction of the sentence's words appear in context?
         grounded_count = sum(1 for w in sent_words if w in valid_words)
         ratio = grounded_count / len(sent_words)
 
-        if ratio >= 0.35:
+        # Determine threshold based on sentence type:
+        # - List items (start with number/bullet) → lenient 0.20 (names may not repeat verbatim)
+        # - Short sentences ≤ 60 chars → standard 0.35 (hallucinations like "Corkage fees..." must be caught)
+        # - Long sentences → standard 0.35
+        is_list_item = bool(re.match(r'^[\d]+[.)]\s|^[-\*\•\–]\s', sent))
+        threshold = 0.20 if is_list_item else 0.35
+
+        if ratio >= threshold:
             kept.append(sent)
         else:
             removed.append((sent, f"{ratio:.0%}"))
