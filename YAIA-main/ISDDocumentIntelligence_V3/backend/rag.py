@@ -182,79 +182,93 @@ def _reciprocal_rank_fusion(
 # -------------------------------------------------------------------
 # Multi-Query Generation (LLM generates query variations)
 # -------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+#  Deterministic query expansion — no LLM, no randomness
+#  Maps common question words to domain synonyms for broader retrieval coverage.
+# ---------------------------------------------------------------------------
+_MQ_SYNONYMS: Dict[str, List[str]] = {
+    # Identity
+    "name":          ["name", "identity", "full name", "known as"],
+    "alias":         ["alias", "known as", "code name", "also called"],
+    "accused":       ["accused", "suspect", "subject", "offender", "person", "individual"],
+    "criminal":      ["criminal", "accused", "offender", "suspect"],
+    # Location
+    "address":       ["address", "residence", "location", "place", "village", "district"],
+    "location":      ["location", "address", "place", "area", "district", "state"],
+    "village":       ["village", "town", "locality", "place", "address"],
+    # Weapons
+    "arms":          ["arms", "weapons", "firearms", "ammunition", "pistol", "rifle", "explosive"],
+    "weapon":        ["weapon", "arms", "firearm", "pistol", "rifle", "explosive", "ammunition"],
+    "firearm":       ["firearm", "weapon", "arms", "pistol", "gun", "rifle"],
+    # Travel & arrival
+    "arrive":        ["arrive", "travel", "came", "reached", "moved", "transport"],
+    "arrival":       ["arrival", "travel", "movement", "came", "reached"],
+    "travel":        ["travel", "movement", "transport", "mode", "arrive", "journey"],
+    # Associates
+    "associate":     ["associate", "accomplice", "co-accused", "helper", "companion", "contact"],
+    "accomplice":    ["accomplice", "associate", "helper", "co-accused", "abettor"],
+    "helper":        ["helper", "associate", "accomplice", "co-accused"],
+    # Activities
+    "training":      ["training", "exercise", "practice", "indoctrination", "recruitment"],
+    "recruitment":   ["recruitment", "joining", "inducted", "enrolled"],
+    "activity":      ["activity", "operation", "work", "task", "involvement"],
+    # Organisation
+    "organization":  ["organization", "organisation", "group", "outfit", "network", "party"],
+    "organisation":  ["organisation", "organization", "group", "outfit", "network"],
+    # Legal
+    "case":          ["case", "crime", "fir", "chargesheet", "offence", "charge"],
+    "crime":         ["crime", "case", "offence", "fir", "charge", "act"],
+    "arrest":        ["arrest", "detained", "custody", "apprehended"],
+    # Finance
+    "bank":          ["bank", "account", "financial", "funds", "money"],
+    "property":      ["property", "asset", "land", "building", "vehicle"],
+    # Communication
+    "phone":         ["phone", "mobile", "landline", "contact", "number"],
+    "mobile":        ["mobile", "phone", "cell", "contact", "number"],
+    # Family
+    "family":        ["family", "father", "mother", "brother", "sister", "spouse", "relation", "kin"],
+    "relative":      ["relative", "family", "relation", "kin"],
+    # Motive
+    "motive":        ["motive", "reason", "purpose", "objective", "intention"],
+    "reason":        ["reason", "motive", "cause", "purpose", "why"],
+    # Physical
+    "height":        ["height", "physical", "build", "stature", "description"],
+    "physical":      ["physical", "height", "weight", "complexion", "description", "appearance"],
+}
+
+
 def _generate_multi_queries(question: str) -> List[str]:
-    """Generate 3 alternative phrasings of the question for broader retrieval coverage."""
-    try:
-        prompt = (
-            "Generate 3 alternative search queries for finding relevant information "
-            "in law enforcement case documents. Each query should use different keywords "
-            "or approach the topic from a different angle.\n\n"
-            f"Original question: {question}\n\n"
-            "Return ONLY a JSON array of 3 strings. No explanation, no markdown fences.\n"
-            'Example: ["arms and weapons training details", "firearms equipment used", "weapons training records"]'
-        )
+    """
+    Deterministic rule-based query expansion — no LLM, no randomness.
+    Generates up to 3 alternative queries by substituting synonyms for key words.
+    Same question always produces the same query set.
+    """
+    q_lower = question.lower()
+    words = re.findall(r"[a-zA-Z]{3,}", q_lower)
 
-        response = ollama_chat(
-            [{"role": "user", "content": prompt}],
-            temperature=0.3,
-            model=PDF_MODEL,
-        )
+    # Build alternative queries by swapping each significant word with its synonyms
+    variations: List[str] = []
+    seen: set = set()
 
-        # Robust JSON extraction — use greedy match to get the full array
-        text = response.strip()
-        # Strip markdown fences
-        text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.MULTILINE)
-        text = re.sub(r'\s*```\s*$', '', text, flags=re.MULTILINE).strip()
+    for word in words:
+        if word not in _MQ_SYNONYMS:
+            continue
+        for syn in _MQ_SYNONYMS[word]:
+            if syn == word:
+                continue
+            # Replace the word in the original question
+            new_q = re.sub(r'\b' + re.escape(word) + r'\b', syn, q_lower, count=1)
+            if new_q != q_lower and new_q not in seen:
+                seen.add(new_q)
+                variations.append(new_q)
+            if len(variations) >= 3:
+                break
+        if len(variations) >= 3:
+            break
 
-        # Find the outermost [...] using stack-based matching (handles nested/quoted brackets)
-        start = text.find('[')
-        if start != -1:
-            depth = 0
-            end = -1
-            in_string = False
-            escape_next = False
-            for i, ch in enumerate(text[start:], start):
-                if escape_next:
-                    escape_next = False
-                    continue
-                if ch == '\\' and in_string:
-                    escape_next = True
-                    continue
-                if ch == '"':
-                    in_string = not in_string
-                elif not in_string:
-                    if ch == '[':
-                        depth += 1
-                    elif ch == ']':
-                        depth -= 1
-                        if depth == 0:
-                            end = i + 1
-                            break
-            if end != -1:
-                try:
-                    queries = json.loads(text[start:end], strict=False)
-                    if isinstance(queries, list) and len(queries) >= 1:
-                        # Filter: discard queries that share no words with original question
-                        # (prevents off-topic LLM hallucinations from polluting retrieval)
-                        orig_words = set(re.findall(r"[a-zA-Z]{3,}", question.lower()))
-                        valid = []
-                        for q in queries:
-                            if not isinstance(q, str) or not q.strip():
-                                continue
-                            q_words = set(re.findall(r"[a-zA-Z]{3,}", q.lower()))
-                            if q_words & orig_words:  # must share at least one word
-                                valid.append(q)
-                        valid = valid[:3]
-                        if valid:
-                            print(f"[Multi-Query] Generated {len(valid)} variations")
-                            return valid
-                except json.JSONDecodeError:
-                    pass
-
-    except Exception as e:
-        print(f"[Multi-Query] Failed: {e}")
-
-    return []
+    if variations:
+        print(f"[Multi-Query] Deterministic expansion: {len(variations)} variation(s)")
+    return variations[:3]
 
 
 # -------------------------------------------------------------------
