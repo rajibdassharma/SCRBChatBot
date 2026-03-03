@@ -183,29 +183,64 @@ def _reciprocal_rank_fusion(
 # Multi-Query Generation (LLM generates query variations)
 # -------------------------------------------------------------------
 def _generate_multi_queries(question: str) -> List[str]:
-    """Use LLM to generate 3 alternative phrasings of the question."""
+    """Generate 3 alternative phrasings of the question for broader retrieval coverage."""
     try:
         prompt = (
             "Generate 3 alternative search queries for finding relevant information "
-            "in law enforcement case documents. Each query should approach the question "
-            "from a different angle or use different keywords.\n\n"
+            "in law enforcement case documents. Each query should use different keywords "
+            "or approach the topic from a different angle.\n\n"
             f"Original question: {question}\n\n"
-            "Return ONLY a JSON array of 3 strings, no explanation.\n"
-            'Example: ["query 1", "query 2", "query 3"]'
+            "Return ONLY a JSON array of 3 strings. No explanation, no markdown fences.\n"
+            'Example: ["arms and weapons training details", "firearms equipment used", "weapons training records"]'
         )
 
         response = ollama_chat(
             [{"role": "user", "content": prompt}],
-            temperature=0.7,
+            temperature=0.3,
             model=PDF_MODEL,
         )
 
-        match = re.search(r'\[.*?\]', response, re.DOTALL)
-        if match:
-            queries = json.loads(match.group())
-            if isinstance(queries, list) and len(queries) >= 1:
-                print(f"[Multi-Query] Generated {len(queries)} variations")
-                return [q for q in queries if isinstance(q, str) and q.strip()][:3]
+        # Robust JSON extraction — use greedy match to get the full array
+        text = response.strip()
+        # Strip markdown fences
+        text = re.sub(r'^```(?:json)?\s*', '', text, flags=re.MULTILINE)
+        text = re.sub(r'\s*```\s*$', '', text, flags=re.MULTILINE).strip()
+
+        # Find the outermost [...] using stack-based matching (handles nested/quoted brackets)
+        start = text.find('[')
+        if start != -1:
+            depth = 0
+            end = -1
+            in_string = False
+            escape_next = False
+            for i, ch in enumerate(text[start:], start):
+                if escape_next:
+                    escape_next = False
+                    continue
+                if ch == '\\' and in_string:
+                    escape_next = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                elif not in_string:
+                    if ch == '[':
+                        depth += 1
+                    elif ch == ']':
+                        depth -= 1
+                        if depth == 0:
+                            end = i + 1
+                            break
+            if end != -1:
+                try:
+                    queries = json.loads(text[start:end], strict=False)
+                    if isinstance(queries, list) and len(queries) >= 1:
+                        valid = [q for q in queries if isinstance(q, str) and q.strip()][:3]
+                        if valid:
+                            print(f"[Multi-Query] Generated {len(valid)} variations")
+                            return valid
+                except json.JSONDecodeError:
+                    pass
+
     except Exception as e:
         print(f"[Multi-Query] Failed: {e}")
 
@@ -1465,9 +1500,15 @@ IR_FIELD_KEYWORDS: List[str] = [
     "physical", "height", "weight", "complexion", "tattoo",
     "built", "identification mark", "habit", "spectacle", "manner",
     # Weapons & travel
-    "weapon", "travel", "abroad",
+    "weapon", "arms", "firearm", "explosive", "ammunition", "pistol", "rifle",
+    "travel", "abroad", "transport",
+    # Training & activities
+    "training", "exercise", "practice", "recruitment", "indoctrination",
     # Fundamentalist / intel
     "fundamentalist", "frontal organisation",
+    # Miscellaneous
+    "motive", "reason", "purpose", "objective", "ideology",
+    "radicalization", "radicalisation", "threat",
 ]
 
 
@@ -1504,7 +1545,11 @@ _IR_FIELD_SYNONYMS: Dict[str, List[str]] = {
     "helper":     ["helper", "associate", "accomplice", "co-accused"],
     "contact":    ["contact", "associate", "companion"],
     "family":     ["family", "father", "mother", "brother", "sister", "spouse", "wife", "husband", "relation"],
-    "weapon":     ["weapon", "arms", "firearm", "explosive", "ammunition"],
+    "weapon":     ["weapon", "arms", "firearm", "explosive", "ammunition", "pistol", "rifle", "equipment"],
+    "arms":       ["arms", "weapon", "firearm", "explosive", "ammunition", "equipment"],
+    "firearm":    ["firearm", "weapon", "arms", "pistol", "rifle"],
+    "training":   ["training", "exercise", "practice", "indoctrination", "recruitment"],
+    "motive":     ["motive", "reason", "purpose", "objective", "ideology"],
     "travel":     ["travel", "mode of travel", "arrive", "arrival", "transport", "vehicle"],
     "address":    ["address", "permanent address", "present address", "residence", "village"],
     "phone":      ["mobile", "phone", "landline", "contact number"],
