@@ -141,7 +141,8 @@ def extract_entities_and_relationships_from_chunks(
     for start in range(0, len(chunks), batch_size):
         batch = chunks[start : start + batch_size]
         combined_text = "\n\n---\n\n".join(
-            f"[CHUNK {start + i}]\n{chunk[:1500]}" for i, chunk in enumerate(batch)
+            # Keep most of each chunk for better recall in long IR reports.
+            f"[CHUNK {start + i}]\n{chunk[:2200]}" for i, chunk in enumerate(batch)
         )
 
         prompt = (
@@ -177,6 +178,7 @@ def extract_entities_and_relationships_from_chunks(
             "IMPORTANT FOR INTERROGATION REPORTS:\n"
             "- Extract ALL helpers mentioned (advocate, doctor, barber, financier, mechanic, receivers, etc.)\n"
             "- Extract ALL associates, accomplices, co-accused, and operatives\n"
+            "- Extract ALL hideouts/safe houses/shelters/places of stay as LOCATION entities\n"
             "- Extract handler/motivator relationships (who motivated the accused)\n"
             "- Link each helper/associate to the main accused with the appropriate relationship type\n\n"
             "Return ONLY a JSON object with two arrays:\n"
@@ -188,6 +190,8 @@ def extract_entities_and_relationships_from_chunks(
             "IMPORTANT:\n"
             "- Extract ALL relationships you can find: family ties, group memberships, employment, "
             "shared activities, shared addresses, etc.\n"
+            "- If a sentence contains multiple names in a list, output EACH name as a separate PERSON entity.\n"
+            "- Do NOT collapse multiple associates into a single combined entity string.\n"
             "- For each relationship, the context should describe WHAT connects them.\n"
             "- source and target must match entity names exactly.\n"
             '- If no entities found, return {"entities": [], "relationships": []}\n\n'
@@ -212,12 +216,14 @@ def extract_entities_and_relationships_from_chunks(
                     if etype not in ENTITY_TYPES:
                         etype = "OTHER"
                     name = e["name"].strip()
-                    if len(name) >= 2 and name.lower() not in _NOISE_NAMES:
-                        all_entities.append({
-                            "name": name,
-                            "type": etype,
-                            "context": (e.get("context") or "")[:300],
-                        })
+                    names = _split_compound_person_name(name, etype)
+                    for nm in names:
+                        if len(nm) >= 2 and nm.lower() not in _NOISE_NAMES:
+                            all_entities.append({
+                                "name": nm,
+                                "type": etype,
+                                "context": (e.get("context") or "")[:300],
+                            })
 
             for r in parsed.get("relationships", []):
                 if isinstance(r, dict) and "source" in r and "target" in r:
@@ -266,6 +272,39 @@ def _parse_extraction_response(response: str) -> Dict[str, Any]:
 
     print(f"[EntityGraph] WARNING: Could not parse LLM response ({len(response)} chars): {response[:200]}...")
     return {"entities": [], "relationships": []}
+
+
+def _split_compound_person_name(name: str, etype: str) -> List[str]:
+    """
+    Expand compact PERSON lists into individual names.
+    Example: "Amit, Rohit and Sunil" -> ["Amit", "Rohit", "Sunil"].
+    """
+    cleaned = (name or "").strip()
+    if etype != "PERSON" or not cleaned:
+        return [cleaned] if cleaned else []
+
+    # Avoid splitting obvious single names/titles.
+    if len(cleaned) < 6:
+        return [cleaned]
+
+    # Split only on common list delimiters; keep words inside a name intact.
+    parts = re.split(r"\s*(?:,|;|/| and )\s*", cleaned, flags=re.IGNORECASE)
+    parts = [p.strip(" -") for p in parts if p and p.strip(" -")]
+
+    # If split produced one usable token, keep original.
+    if len(parts) <= 1:
+        return [cleaned]
+
+    # Filter out noisy list artifacts.
+    final_parts = []
+    for p in parts:
+        if len(p) < 2:
+            continue
+        if p.lower() in _NOISE_NAMES:
+            continue
+        final_parts.append(p)
+
+    return final_parts or [cleaned]
 
 
 def _find_balanced_json_object(text: str) -> Optional[Dict[str, Any]]:
@@ -468,7 +507,11 @@ def extract_and_store_entities(
     """Full pipeline: extract entities + relationships from chunks, store in SQL Server."""
     print(f"[EntityGraph] Starting extraction for {doc_name} ({len(chunks)} chunks)")
 
-    entities, relationships = extract_entities_and_relationships_from_chunks(chunks, batch_size=5)
+    # Smaller batches improve recall for dense long-form IR narratives.
+    dynamic_batch_size = 3 if len(chunks) >= 30 else 5
+    entities, relationships = extract_entities_and_relationships_from_chunks(
+        chunks, batch_size=dynamic_batch_size
+    )
     print(f"[EntityGraph] Extracted {len(entities)} entities, {len(relationships)} relationships from {doc_name}")
 
     # Deduplicate entities by (name_lower, type) before storing
@@ -543,6 +586,7 @@ def get_graph_data(
     Nodes deduplicated by (name, type) across documents.
     """
     conn = _get_conn()
+    limit = max(100, min(limit, 2000))
 
     if search:
         # Matching entities
@@ -554,7 +598,7 @@ def get_graph_data(
             "FROM entities e "
             "WHERE e.name LIKE ? "
             "GROUP BY e.name, e.type "
-            "ORDER BY weight DESC",
+            "ORDER BY weight DESC, e.name ASC",
             (limit, f"%{search}%"),
         )
         node_rows = _fetchall(cur)
@@ -591,7 +635,7 @@ def get_graph_data(
                         f"FROM entities e "
                         f"WHERE e.id IN ({ph3}) "
                         f"GROUP BY e.name, e.type "
-                        f"ORDER BY weight DESC",
+                        f"ORDER BY weight DESC, e.name ASC",
                         [limit] + connected_eids,
                     )
                     connected_rows = _fetchall(cur4)
@@ -608,7 +652,7 @@ def get_graph_data(
             "STRING_AGG(ISNULL(e.context, ''), ',') AS contexts "
             "FROM entities e "
             "GROUP BY e.name, e.type "
-            "ORDER BY weight DESC",
+            "ORDER BY weight DESC, e.name ASC",
             (limit,),
         )
         node_rows = _fetchall(cur)
