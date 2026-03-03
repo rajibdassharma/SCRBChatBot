@@ -540,7 +540,7 @@ def graph_entities(type: Optional[str] = None):
 
 
 @app.get("/graph/data")
-def graph_data(search: Optional[str] = None, limit: int = 200):
+def graph_data(search: Optional[str] = None, limit: int = 1000):
     try:
         data = get_graph_data(search=search, limit=limit)
         return {"ok": True, **data}

@@ -20,6 +20,9 @@ ENABLE_RERANKING = os.getenv("ENABLE_RERANKING", "true").lower() == "true"
 # LLM-powered document parser (Docling + Ollama) — set false to use legacy heuristic parser
 USE_LLM_PARSER = os.getenv("USE_LLM_PARSER", "true").lower() == "true"
 
+# Max LLM calls for PDF field extraction (default 25 — enough for 84+ page documents)
+MAX_LLM_CALLS_PDF = int(os.getenv("MAX_LLM_CALLS_PDF", "25"))
+
 # ── SQL Server (MSSQL) ────────────────────────────────────────────────────────
 MSSQL_SERVER = os.getenv("MSSQL_SERVER", r"localhost\SQLEXPRESS")
 MSSQL_DATABASE = os.getenv("MSSQL_DATABASE", "ISDIntelligence")

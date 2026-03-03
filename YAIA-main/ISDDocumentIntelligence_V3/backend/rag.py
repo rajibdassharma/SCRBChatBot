@@ -469,7 +469,7 @@ def _index_text_units(
     min_unit_len: int = 25,
 ) -> Dict[str, Any]:
     MIN_UNIT_LEN = max(0, min_unit_len)
-    MAX_UNITS = 500
+    MAX_UNITS = 800
 
     cleaned_units: List[str] = []
     cleaned_metas: List[dict] = []
@@ -969,7 +969,7 @@ def index_pdf(col: str, pdf_path: str, filename: str) -> Dict[str, Any]:
     llm_pdf_metas: List[dict] = []
     if col in ("SMAC", "IR") and USE_LLM_PARSER:
         try:
-            llm_pdf_units, llm_pdf_metas = _llm_extract_kv_from_pdf(pdf_path, collection=col)
+            llm_pdf_units, llm_pdf_metas = _llm_extract_kv_from_pdf(pdf_path, collection=col, total_pages=len(reader.pages))
             if llm_pdf_units:
                 print(f"[RAG:PDF] Docling+LLM extraction: {len(llm_pdf_units)} fields from {filename}")
         except Exception as e:
@@ -1000,6 +1000,8 @@ def index_pdf(col: str, pdf_path: str, filename: str) -> Dict[str, Any]:
 
             # If Docling+LLM already extracted fields, skip per-page parsing
             if not llm_pdf_units:
+                if col == "IR" and page_no == 1:
+                    print(f"[RAG:IR] WARNING: LLM extraction unavailable, using basic per-page parser (may miss nested fields)")
                 smac_units, smac_metas = _parse_smac_table_page(lines, page_no)
                 if smac_units:
                     for u, sm in zip(smac_units, smac_metas):
@@ -1448,6 +1450,8 @@ IR_FIELD_KEYWORDS: List[str] = [
     # Family & associates
     "parent", "family", "relation", "associate", "contact", "helper",
     "advocate", "lawyer", "doctor",
+    # Hideout / shelter
+    "hideout", "hide out", "safe house", "shelter",
     # Occupation & education
     "occupation", "qualification", "education",
     # Communication
@@ -1492,6 +1496,25 @@ _IR_ABBREV_MAP: Dict[str, List[str]] = {
     "date of joining": ["date of joining", "doj"],
 }
 
+# Synonym expansion for IR field keywords used in fuzzy retrieval
+# Ensures "associate" also finds "accomplice", "co-accused", etc.
+_IR_FIELD_SYNONYMS: Dict[str, List[str]] = {
+    "associate":  ["associate", "accomplice", "co-accused", "helper", "companion", "contact", "abettor"],
+    "accomplice": ["associate", "accomplice", "co-accused", "helper", "abettor"],
+    "helper":     ["helper", "associate", "accomplice", "co-accused"],
+    "contact":    ["contact", "associate", "companion"],
+    "family":     ["family", "father", "mother", "brother", "sister", "spouse", "wife", "husband", "relation"],
+    "weapon":     ["weapon", "arms", "firearm", "explosive", "ammunition"],
+    "travel":     ["travel", "mode of travel", "arrive", "arrival", "transport", "vehicle"],
+    "address":    ["address", "permanent address", "present address", "residence", "village"],
+    "phone":      ["mobile", "phone", "landline", "contact number"],
+    "bank":       ["bank", "account", "financial"],
+    "advocate":   ["advocate", "lawyer", "legal", "counsel"],
+    "case":       ["case", "crime number", "fir", "chargesheet", "police station"],
+    "visit":      ["visit", "place of visit", "visited"],
+    "organization": ["organization", "organisation", "organi", "affiliation", "group", "outfit"],
+}
+
 
 def _get_chunks_by_field_fuzzy(
     col: str,
@@ -1503,6 +1526,7 @@ def _get_chunks_by_field_fuzzy(
     where field_name contains the keyword (case-insensitive substring match).
     Also handles compound field names split by "/" (e.g., "Age/DOB/Place of Birth")
     and common abbreviations (e.g., "DOB" ↔ "Date of Birth").
+    Expands keywords with synonyms (e.g., "associate" also finds "accomplice", "co-accused").
     ChromaDB does not support LIKE queries, so we fetch all and filter in Python.
     """
     collection = _get_col(col)
@@ -1511,10 +1535,12 @@ def _get_chunks_by_field_fuzzy(
     metas = all_data.get("metadatas") or []
 
     kw_lower = keyword.lower()
-    # Build set of all search terms: the keyword itself + abbreviation equivalents
+    # Build set of all search terms: keyword + abbreviation equivalents + synonyms
     search_terms = {kw_lower}
     if kw_lower in _IR_ABBREV_MAP:
         search_terms.update(t.lower() for t in _IR_ABBREV_MAP[kw_lower])
+    if kw_lower in _IR_FIELD_SYNONYMS:
+        search_terms.update(t.lower() for t in _IR_FIELD_SYNONYMS[kw_lower])
 
     field_results: List[Tuple[str, dict]] = []
     text_results: List[Tuple[str, dict]] = []
@@ -1546,9 +1572,9 @@ def _get_chunks_by_field_fuzzy(
         if any(term in doc_lower for term in search_terms):
             text_results.append((doc, meta))
 
-    # Field-name matches first (most precise), then text matches
-    results = field_results + text_results
-    print(f"[FieldRetrieval-Fuzzy] Found {len(field_results)} field + {len(text_results)} text chunks for keyword '{keyword}' (terms: {search_terms}) in '{col}'")
+    # Field-name matches first (most precise), then text matches (capped to avoid context flood)
+    results = field_results + text_results[:8]
+    print(f"[FieldRetrieval-Fuzzy] Found {len(field_results)} field + {min(len(text_results), 8)}/{len(text_results)} text chunks for keyword '{keyword}' (terms: {search_terms}) in '{col}'")
     return results
 
 
@@ -1582,12 +1608,12 @@ def _ir_text_search(
 
     # Score each chunk by how many search words it contains
     scored: List[Tuple[int, str, dict]] = []
-    # Require at least 2 words to match (avoids noise from common single words like "others")
-    min_matches = max(2, (len(search_words) + 1) // 2)
-    # If only 1 search word, skip text search entirely (hybrid is better for single-word queries)
-    if len(search_words) < 2:
-        print(f"[IR-TextSearch] Skipped (only {len(search_words)} search word)")
-        return []
+    # For short queries like "hideout places", require at least 1 hit for better recall.
+    # For longer queries, require roughly half of the terms.
+    if len(search_words) <= 3:
+        min_matches = 1
+    else:
+        min_matches = max(2, (len(search_words) + 1) // 2)
 
     for doc, meta in zip(docs, metas):
         if doc_ids and meta.get("doc_id") not in doc_ids:
@@ -1597,9 +1623,9 @@ def _ir_text_search(
         if hits >= min_matches:
             scored.append((hits, doc, meta))
 
-    # Sort by match count (best first), cap at 5 to leave room for hybrid results
+    # Sort by match count (best first), keep a larger candidate set for long IR docs.
     scored.sort(key=lambda x: x[0], reverse=True)
-    results = [(doc, meta) for _, doc, meta in scored[:5]]
+    results = [(doc, meta) for _, doc, meta in scored[:25]]
 
     print(f"[IR-TextSearch] Found {len(results)} chunks (>={min_matches}/{len(search_words)} words matched) for {search_words}")
     return results
@@ -1720,6 +1746,105 @@ def _answer_via_sql(question: str, collection_name: str) -> Optional[Dict[str, A
 
 
 # -------------------------------------------------------------------
+# Hallucination guard: verify LLM answer is grounded in context
+# -------------------------------------------------------------------
+_GROUNDING_STOP_WORDS = {
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "have", "has", "had", "do", "does", "did", "will", "would", "could",
+    "should", "may", "might", "shall", "can", "need", "must",
+    "and", "but", "or", "nor", "not", "so", "yet", "both", "either",
+    "for", "with", "from", "into", "about", "between", "through",
+    "this", "that", "these", "those", "which", "what", "who", "whom",
+    "there", "here", "where", "when", "how", "why", "then", "than",
+    "very", "also", "just", "only", "more", "most", "some", "any",
+    "each", "every", "such", "other", "another", "same",
+    "based", "according", "mentioned", "document", "documents",
+    "provided", "above", "below", "found", "information", "context",
+    "following", "however", "therefore", "regarding", "report",
+}
+
+
+def _verify_grounding(answer: str, context: str, question: str) -> str:
+    """
+    Post-processing hallucination guard: checks each sentence in the LLM answer
+    against the context. Sentences with very low word overlap with the context
+    are likely hallucinated from training data and are removed.
+    """
+    if not answer or not answer.strip():
+        return answer
+
+    # Build a set of significant words from the context (lowercase, >= 4 chars)
+    context_lower = context.lower()
+    context_words = set(re.findall(r"[a-zA-Z]{4,}", context_lower))
+
+    # Also include question words as valid (the answer may echo the question)
+    q_words = set(re.findall(r"[a-zA-Z]{4,}", question.lower()))
+    valid_words = context_words | q_words | _GROUNDING_STOP_WORDS
+
+    # Split answer into sentences (handle numbered lists, bullet points, newlines)
+    sentences = re.split(r'(?<=[.!?])\s+|\n+', answer.strip())
+
+    kept = []
+    removed = []
+    for sent in sentences:
+        sent = sent.strip()
+        if not sent:
+            continue
+
+        # Extract significant words from this sentence
+        sent_words = [w for w in re.findall(r"[a-zA-Z]{4,}", sent.lower())
+                       if w not in _GROUNDING_STOP_WORDS]
+
+        if not sent_words:
+            # Sentence has only short/stop words — keep it (e.g., "Yes.", "No.")
+            kept.append(sent)
+            continue
+
+        # Short lines (≤ 100 chars) are typically list items or direct extractions — always keep
+        if len(sent) <= 100:
+            kept.append(sent)
+            continue
+
+        # Calculate grounding ratio: what fraction of the sentence's words appear in context?
+        grounded_count = sum(1 for w in sent_words if w in valid_words)
+        ratio = grounded_count / len(sent_words)
+
+        if ratio >= 0.35:
+            kept.append(sent)
+        else:
+            removed.append((sent, f"{ratio:.0%}"))
+
+    if removed:
+        print(f"[RAG:Grounding] Removed {len(removed)} ungrounded sentence(s):")
+        for sent, pct in removed:
+            print(f"  - ({pct} grounded) {sent[:120]}")
+
+    if not kept:
+        return "This information is not found in the provided documents."
+
+    return "\n".join(kept)
+
+
+def _strip_non_latin(text: str) -> str:
+    """
+    Remove non-Latin script characters (Kannada, Devanagari, Tamil, etc.)
+    from LLM answers to enforce English-only output.
+    Keeps: Latin letters, digits, punctuation, common symbols, whitespace.
+    """
+    # Match runs of non-Latin script (Unicode blocks for Indian languages, CJK, Arabic, etc.)
+    # Keep: Basic Latin, Latin Extended, digits, punctuation, symbols, whitespace
+    cleaned = re.sub(r'[^\x00-\x7F\u00C0-\u024F]+', '', text)
+    # Clean up leftover artifacts: multiple spaces, empty parentheses, dangling punctuation
+    cleaned = re.sub(r'\(\s*\)', '', cleaned)       # empty ()
+    cleaned = re.sub(r'\s{2,}', ' ', cleaned)       # collapse multiple spaces
+    cleaned = re.sub(r'^\s*[,;:]\s*', '', cleaned, flags=re.MULTILINE)  # leading punctuation on lines
+    cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)    # collapse blank lines
+    if cleaned.strip() != text.strip():
+        print(f"[RAG] Stripped non-Latin characters from answer ({len(text)} → {len(cleaned)} chars)")
+    return cleaned.strip()
+
+
+# -------------------------------------------------------------------
 # Ask across documents
 # -------------------------------------------------------------------
 def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12, collection_name: str = "SMAC", raw_question: Optional[str] = None) -> Dict[str, Any]:
@@ -1760,17 +1885,16 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
             # No known field keyword — do a direct text search for question words
             field_chunks = _ir_text_search(collection_name, q_for_keywords, doc_ids)
 
-        # If text/field search found strong results, use them as primary context
-        # Less context = less noise = better LLM answers
+        # Merge field-specific results with hybrid retrieval
+        # Field/text matches are the primary answer — include ALL of them
+        # Hybrid results are supplementary context — cap those to reduce noise
         if field_chunks:
-            # Strong text matches found — limit total results to keep context focused
-            max_results = min(top_k, 5)
-            hybrid_chunks = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=max_results)
+            hybrid_cap = min(5, top_k)
+            hybrid_chunks = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=hybrid_cap)
         else:
-            max_results = top_k
             hybrid_chunks = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=top_k)
 
-        # Merge: text-matched chunks first (most targeted), then hybrid
+        # Merge: field/text-matched chunks first (most targeted), then hybrid
         seen_keys = set()
         results = []
         for d, m in (field_chunks or []):
@@ -1783,8 +1907,7 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
             if key not in seen_keys:
                 seen_keys.add(key)
                 results.append((d, m))
-        results = results[:max_results]
-        print(f"[RAG:IR] Merged: {len(field_chunks or [])} field/text + {len(hybrid_chunks)} hybrid → {len(results)} results (cap={max_results})")
+        print(f"[RAG:IR] Merged: {len(field_chunks or [])} field/text + {len(hybrid_chunks)} hybrid → {len(results)} results (no field cap)")
 
     else:
         results = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=top_k)
@@ -1821,13 +1944,19 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         "phone": ["mobile", "landline", "phone"],
         "family": ["father", "mother", "brother", "sister", "spouse", "family"],
         "weapon": ["weapon", "arms"],
-        "travel": ["travel", "mode of travel"],
+        "travel": ["travel", "mode of travel", "arrive", "arrival"],
+        "arrive": ["travel", "mode of travel", "arrive", "arrival"],
+        "arrival": ["travel", "mode of travel", "arrive", "arrival"],
         "organization": ["organi", "affiliation"],
         "organisation": ["organi", "affiliation"],
         "associate": ["associate", "accomplice", "helper", "co-accused", "companion", "contact"],
         "accomplice": ["associate", "accomplice", "helper", "co-accused"],
         "helper": ["associate", "helper", "co-accused"],
         "companion": ["associate", "companion", "contact"],
+        "hideout": ["hideout", "hide out", "safe house", "shelter", "place of hideout"],
+        "hideouts": ["hideout", "hide out", "safe house", "shelter", "place of hideout"],
+        "safehouse": ["safe house", "hideout", "hide out", "shelter"],
+        "shelter": ["shelter", "hideout", "safe house"],
         "lawyer": ["advocate", "lawyer", "legal", "counsel"],
         "advocate": ["advocate", "lawyer", "legal", "counsel"],
         "counsel": ["advocate", "lawyer", "counsel"],
@@ -1846,8 +1975,13 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         for kw in keywords:
             matches = search_fields(kw, collection=collection_name)
             for match in matches:
-                # Deduplicate by (doc_id, field_key)
-                dedup_key = (match["doc_id"], match["field_key"])
+                # Keep repeated rows with the same field_key but different values (common in IR).
+                dedup_key = (
+                    match["doc_id"],
+                    match["field_key"],
+                    (match.get("serial_no") or ""),
+                    (match.get("field_value") or ""),
+                )
                 if dedup_key not in seen_keys:
                     seen_keys.add(dedup_key)
                     structured_context_blocks.append(
@@ -1887,34 +2021,68 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
     if not context:
         return {"answer": "Not found in the document(s).", "used_chunks": []}
 
-    # Cap context — gemma3:12b supports 128K tokens (~400K chars), so 30K is safe
-    MAX_CONTEXT_CHARS = 30000
+    # Cap context — gemma3:12b supports 128K tokens (~400K chars)
+    # List queries need more context to find all entries
+    _list_detect = re.compile(
+        r'\b(list all|list the|who are|who were|names of|name all|give all|show all|'
+        r'all the|how many|enumerate|what are all|tell me all)\b',
+        re.IGNORECASE,
+    )
+    MAX_CONTEXT_CHARS = 60000 if _list_detect.search(q_for_keywords) else 30000
     if len(context) > MAX_CONTEXT_CHARS:
         print(f"[RAG] Context trimmed: {len(context)} → {MAX_CONTEXT_CHARS} chars")
         context = context[:MAX_CONTEXT_CHARS]
 
     is_summarize = "summar" in question.lower()
 
+    # Detect list-type questions — needs exhaustive extraction, not just top-match
+    _list_patterns = re.compile(
+        r'\b(list all|list the|who are|who were|names of|name all|give all|show all|'
+        r'all the|how many|enumerate|what are all|tell me all)\b',
+        re.IGNORECASE,
+    )
+    is_list_query = bool(_list_patterns.search(llm_question if q_for_keywords != question else question))
+
     # Use raw question for the LLM prompt (avoids sending conversation history as noise)
     llm_question = q_for_keywords if q_for_keywords != question else question
 
-    prompt = (
-        "STRICT INSTRUCTION: Answer ONLY from the CONTEXT below. Do NOT use your training knowledge.\n"
-        "ALWAYS respond in English only, regardless of the language of the source documents.\n"
-        "If a fact is not explicitly stated in the CONTEXT, respond: 'This information is not found in the provided documents.'\n\n"
-        "Rules:\n"
-        "- Always answer in English.\n"
-        "- Labels may be messy — search for nearby key/value pairs to find requested fields.\n"
-        "- Return found fields; mark any missing fields as 'Not found in documents'.\n"
-        "- Be EXHAUSTIVE: list ALL names, items, and entries found in the CONTEXT. Never truncate or abbreviate lists.\n"
-        "- For summaries: summarize ONLY what is present in the CONTEXT — do not add background knowledge.\n"
-        "- Do NOT guess, invent, infer, or assume any fact not explicitly present in the CONTEXT.\n"
-        "- Do NOT use your training data to fill gaps — if it is not in the CONTEXT, it does not exist.\n\n"
-        f"CONTEXT:\n{context}\n\n"
-        f"QUESTION:\n{llm_question}\n\n"
-        "FINAL REMINDER: Every fact in your answer must come directly from the CONTEXT above. "
-        "If not found there, say so explicitly."
-    )
+    if is_list_query:
+        print(f"[RAG] List-type query detected — using exhaustive list extraction prompt")
+        prompt = (
+            "STRICT INSTRUCTION: Answer ONLY from the CONTEXT below. Do NOT use your training knowledge.\n"
+            "ALWAYS respond in English only, regardless of the language of the source documents.\n\n"
+            "TASK: Extract a COMPLETE numbered list of every entry relevant to the question.\n"
+            "Instructions:\n"
+            "- Scan ALL sections and ALL context blocks below — do not stop early.\n"
+            "- Look for patterns like (i), (ii), (iii), (1), (2), (3), numbered entries, and repeated label groups.\n"
+            "- Each unique person/item must appear as a separate numbered entry.\n"
+            "- Include the name and any associated details (role, address, relationship) found in the same context block.\n"
+            "- Do NOT merge different people into one entry.\n"
+            "- Do NOT skip entries because they seem similar.\n"
+            "- Do NOT use your training data — only use what is explicitly written in the CONTEXT.\n"
+            "- If an entry has no name but has a role/description, include that.\n\n"
+            f"CONTEXT:\n{context}\n\n"
+            f"QUESTION:\n{llm_question}\n\n"
+            "Output a clean numbered list. Include ALL entries found. Do not truncate."
+        )
+    else:
+        prompt = (
+            "STRICT INSTRUCTION: Answer ONLY from the CONTEXT below. Do NOT use your training knowledge.\n"
+            "ALWAYS respond in English only, regardless of the language of the source documents.\n"
+            "If a fact is not explicitly stated in the CONTEXT, respond: 'This information is not found in the provided documents.'\n\n"
+            "Rules:\n"
+            "- Always answer in English.\n"
+            "- Labels may be messy — search for nearby key/value pairs to find requested fields.\n"
+            "- Return found fields; mark any missing fields as 'Not found in documents'.\n"
+            "- Be EXHAUSTIVE: list ALL names, items, and entries found in the CONTEXT. Never truncate or abbreviate lists.\n"
+            "- For summaries: summarize ONLY what is present in the CONTEXT — do not add background knowledge.\n"
+            "- Do NOT guess, invent, infer, or assume any fact not explicitly present in the CONTEXT.\n"
+            "- Do NOT use your training data to fill gaps — if it is not in the CONTEXT, it does not exist.\n\n"
+            f"CONTEXT:\n{context}\n\n"
+            f"QUESTION:\n{llm_question}\n\n"
+            "FINAL REMINDER: Every fact in your answer must come directly from the CONTEXT above. "
+            "If not found there, say so explicitly."
+        )
 
     print(f"[RAG] Sending to LLM: context={len(context)} chars, question={len(llm_question)} chars, prompt={len(prompt)} chars")
 
@@ -1943,6 +2111,12 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
 
     if not is_summarize and len(answer) > 8000:
         answer = answer[:8000] + "..."
+
+    # ── Hallucination guard: verify answer is grounded in context ──────
+    answer = _verify_grounding(answer, context, llm_question)
+
+    # ── Strip non-Latin characters (Kannada, Hindi, etc.) — enforce English-only output ──
+    answer = _strip_non_latin(answer)
 
     return {"answer": answer, "used_chunks": used}
 

@@ -412,7 +412,7 @@ def extract_kv_from_docx(docx_path: str) -> Tuple[List[str], List[Dict], str]:
 #  Public API: PDF extraction
 # ---------------------------------------------------------------------------
 
-def extract_kv_from_pdf(pdf_path: str, collection: str = "SMAC") -> Tuple[List[str], List[Dict]]:
+def extract_kv_from_pdf(pdf_path: str, collection: str = "SMAC", total_pages: int = 1) -> Tuple[List[str], List[Dict]]:
     """
     Extract field_key/field_value pairs from a PDF.
     Uses Docling (OCR disabled) for table structure, falls back to pypdf.
@@ -421,11 +421,14 @@ def extract_kv_from_pdf(pdf_path: str, collection: str = "SMAC") -> Tuple[List[s
     Args:
         pdf_path: path to the PDF file
         collection: "SMAC" or "IR" — determines which LLM prompt to use
+        total_pages: total pages in the PDF (for page estimation in metadata)
 
     Returns: (units, metas)
     """
+    from config import MAX_LLM_CALLS_PDF
+
     doc_type = "IR" if collection == "IR" else "SMAC"
-    print(f"[LLM-KV] Extracting from PDF ({doc_type} mode): {pdf_path}")
+    print(f"[LLM-KV] Extracting from PDF ({doc_type} mode, {total_pages} pages): {pdf_path}")
 
     table_text, paragraph_text = _extract_pdf_tables_docling(pdf_path)
 
@@ -439,14 +442,17 @@ def extract_kv_from_pdf(pdf_path: str, collection: str = "SMAC") -> Tuple[List[s
 
     # Split into chunks and send to LLM
     chunks = _split_text_for_llm(table_text, max_chars=6000)
-    print(f"[LLM-KV] PDF text: {len(table_text)} chars → {len(chunks)} LLM call(s)")
+    chunks_to_process = min(len(chunks), MAX_LLM_CALLS_PDF)
+    print(f"[LLM-KV] PDF text: {len(table_text)} chars → {len(chunks)} chunks, processing {chunks_to_process}")
 
-    # Cap LLM calls for speed — structured fields are in the first few pages
-    MAX_LLM_CALLS = 4
     seen_fields = set()
-    for chunk in chunks[:MAX_LLM_CALLS]:
+    for i, chunk in enumerate(chunks[:MAX_LLM_CALLS_PDF]):
+        print(f"[LLM-KV] Processing chunk {i+1}/{chunks_to_process}...")
         kv_pairs = _llm_extract_kv_pairs(chunk, doc_type=doc_type)
         total_llm_calls += 1
+
+        # Estimate page from chunk position
+        estimated_page = max(1, int((i / max(len(chunks), 1)) * total_pages) + 1)
 
         for kv in kv_pairs:
             fn = kv["field_name"]
@@ -459,10 +465,12 @@ def extract_kv_from_pdf(pdf_path: str, collection: str = "SMAC") -> Tuple[List[s
             seen_fields.add(dedup_key)
 
             units.append(f"{fn}: {val}")
-            metas.append({"field_name": fn, "serial_no": sno, "page": 1})
+            metas.append({"field_name": fn, "serial_no": sno, "page": estimated_page})
 
-    if len(chunks) > MAX_LLM_CALLS:
-        print(f"[LLM-KV] Processed {MAX_LLM_CALLS}/{len(chunks)} chunks (capped for speed)")
+        print(f"[LLM-KV] Chunk {i+1}: extracted {len(kv_pairs)} fields (total so far: {len(units)})")
+
+    if len(chunks) > MAX_LLM_CALLS_PDF:
+        print(f"[LLM-KV] Processed {MAX_LLM_CALLS_PDF}/{len(chunks)} chunks (capped by MAX_LLM_CALLS_PDF)")
 
     print(f"[LLM-KV] PDF extraction complete: {len(units)} fields ({total_llm_calls} LLM calls)")
     return units, metas

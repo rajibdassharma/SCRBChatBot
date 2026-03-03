@@ -787,7 +787,7 @@ export default function App() {
     try {
       const params = new URLSearchParams()
       if (search) params.set('search', search)
-      params.set('limit', '200')
+      params.set('limit', '1000')
       const data = await apiFetch<{
         ok?: boolean
         nodes?: GraphNode[]
