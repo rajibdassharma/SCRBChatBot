@@ -1,0 +1,14 @@
+fastapi
+uvicorn
+python-dotenv
+requests
+pypdf
+chromadb
+python-multipart
+python-docx
+openpyxl
+faster-whisper
+rank-bm25
+pyodbc
+python-jose[cryptography]
+passlib[bcrypt]

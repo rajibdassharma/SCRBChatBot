@@ -15,6 +15,11 @@ __pycache__/
 # Vector Database / Chroma
 **/chroma_store/
 **/chroma_db/
+**/chroma_db_v4/
+**/chroma_db_v3/
+
+# Claude internal config
+.claude/
 
 # SQLite databases
 *.db
