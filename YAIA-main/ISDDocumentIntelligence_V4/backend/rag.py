@@ -1642,8 +1642,8 @@ def _get_chunks_by_field_fuzzy(
             text_results.append((doc, meta))
 
     # Field-name matches first (most precise), then text matches (capped to avoid context flood)
-    results = field_results + text_results[:8]
-    print(f"[FieldRetrieval-Fuzzy] Found {len(field_results)} field + {min(len(text_results), 8)}/{len(text_results)} text chunks for keyword '{keyword}' (terms: {search_terms}) in '{col}'")
+    results = field_results + text_results[:20]
+    print(f"[FieldRetrieval-Fuzzy] Found {len(field_results)} field + {min(len(text_results), 20)}/{len(text_results)} text chunks for keyword '{keyword}' (terms: {search_terms}) in '{col}'")
     return results
 
 
@@ -1958,9 +1958,14 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
 
         # Merge field-specific results with hybrid retrieval
         # Field/text matches are the primary answer — include ALL of them
-        # Hybrid results are supplementary context — cap those to reduce noise
+        # Hybrid results are supplementary context — raise cap for list-type queries
+        _is_list_q = bool(re.search(
+            r'\b(list all|list the|who are|who were|names of|name all|give all|show all|'
+            r'all the|how many|enumerate|what are all|tell me all)\b',
+            q_for_keywords, re.IGNORECASE,
+        ))
         if field_chunks:
-            hybrid_cap = min(5, top_k)
+            hybrid_cap = min(20, top_k * 2) if _is_list_q else min(5, top_k)
             hybrid_chunks = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=hybrid_cap)
         else:
             hybrid_chunks = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=top_k)
@@ -2180,11 +2185,15 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         print(f"[RAG] LLM call FAILED: {e}")
         return {"answer": f"Error generating answer: {e}", "used_chunks": used}
 
-    if not is_summarize and len(answer) > 8000:
+    if not is_summarize and not is_list_query and len(answer) > 8000:
         answer = answer[:8000] + "..."
 
     # ── Hallucination guard: verify answer is grounded in context ──────
-    answer = _verify_grounding(answer, context, llm_question)
+    # Skip grounding check for list queries — the exhaustive extraction prompt
+    # already constrains the LLM to context only, and the check incorrectly
+    # strips valid entries whose Indian proper nouns don't word-match verbatim.
+    if not is_list_query:
+        answer = _verify_grounding(answer, context, llm_question)
 
     # ── Strip non-Latin characters (Kannada, Hindi, etc.) — enforce English-only output ──
     answer = _strip_non_latin(answer)

@@ -402,7 +402,10 @@ export default function App() {
     setShowSignOutDialog(false)
   }
 
-  const handleSignOutRequest = () => setShowSignOutDialog(true)
+  const handleSignOutRequest = () => {
+    if (docIndexing || graphExtracting) return   // block during active operations
+    setShowSignOutDialog(true)
+  }
 
   const handleSignOutClearAndLogout = async () => {
     try {
@@ -589,15 +592,7 @@ export default function App() {
     }
 
     if (indexedCount > 0) {
-      setDocStatus(`OK Indexed ${indexedCount} document(s). Ready for Q&A.${failures.length ? ` ${failures.length} failed.` : ''} Extracting entities...`)
-
-      // Trigger deferred entity extraction (runs in background on backend)
-      try {
-        await apiFetch<{ ok?: boolean }>('/docs/extract-entities', { method: 'POST' })
-        setDocStatus(`OK Indexed ${indexedCount} document(s). Ready for Q&A.${failures.length ? ` ${failures.length} failed.` : ''} Entity extraction started.`)
-      } catch {
-        console.warn('[EntityGraph] Failed to trigger entity extraction')
-      }
+      setDocStatus(`OK Indexed ${indexedCount} document(s). Ready for Q&A.${failures.length ? ` ${failures.length} failed.` : ''}`)
     }
 
     if (indexedCount === 0) {
@@ -1011,7 +1006,14 @@ export default function App() {
         console.log('[Graph] Poll status:', status)
 
         if (status.running) {
-          setGraphStatus(`Extracting entities... ${status.completed || 0}/${status.total || '?'} documents processed`)
+          const docPart = `Doc ${(status.completed || 0) + 1}/${status.total || '?'}`
+          const batchCurrent = (status as any).batch_current || 0
+          const batchTotal   = (status as any).batch_total   || 0
+          const batchPart    = batchTotal > 0 ? ` — Batch ${batchCurrent}/${batchTotal}` : ''
+          const docName      = (status as any).doc_name ? ` (${(status as any).doc_name})` : ''
+          setGraphStatus(`Extracting entities... ${docPart}${batchPart}${docName}`)
+          // Refresh graph on every poll so nodes/edges appear as each batch commits
+          if (batchCurrent > 0) loadGraphData()
         }
 
         // Check completion: done flag, or not running with completed work
@@ -1047,7 +1049,10 @@ export default function App() {
           } else if (status.running) {
             // Extraction is currently running (e.g. from indexing) — show progress and poll
             setGraphExtracting(true)
-            setGraphStatus(`Extracting entities... ${status.completed || 0}/${status.total || '?'} documents processed`)
+            const _batchCurrent = (status as any).batch_current || 0
+            const _batchTotal   = (status as any).batch_total   || 0
+            const _batchPart    = _batchTotal > 0 ? ` — Batch ${_batchCurrent}/${_batchTotal}` : ''
+            setGraphStatus(`Extracting entities... Doc ${(status.completed || 0) + 1}/${status.total || '?'}${_batchPart}`)
             startExtractionPolling()
           }
         })
@@ -1713,8 +1718,8 @@ export default function App() {
           {/* Yellow header with KSP logo */}
           <div style={{background:'#ffd400',padding:'24px 32px 18px',textAlign:'center',borderBottom:'3px solid #b10000'}}>
             <img src={kspLogo} alt="KSP" style={{width:96,height:76,objectFit:'contain',display:'block',margin:'0 auto 10px'}} />
-            <div style={{fontSize:20,fontWeight:700,color:'#0b2c4a',letterSpacing:0.5}}>ISD Intelligence</div>
-            <div style={{color:'#333',marginTop:3,fontSize:13,fontStyle:'italic'}}>Document Intelligence Platform V4</div>
+            <div style={{fontSize:28,fontWeight:800,color:'#b10000',letterSpacing:1}}>ISD-AI</div>
+            <div style={{color:'#0b2c4a',marginTop:4,fontSize:13,fontWeight:600,fontStyle:'italic'}}>empowering law enforcement with artificial intelligence</div>
           </div>
 
           {/* Form area */}
@@ -1758,19 +1763,22 @@ export default function App() {
   // ── Authenticated but no active case → show Case Selector ────────────────
   if (!activeCase) {
     return (
-      <div style={{minHeight:'100vh',background:'#0b2c4a',padding:'32px 16px'}}>
-        <div style={{maxWidth:680,margin:'0 auto'}}>
+      <div style={{minHeight:'100vh',background:'#0b2c4a',padding:'32px 24px'}}>
+        <div style={{maxWidth:960,margin:'0 auto'}}>
           {/* Header bar — yellow/red KSP style */}
-          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:28,background:'#ffd400',borderRadius:12,padding:'14px 20px',border:'2px solid #b10000'}}>
-            <div style={{display:'flex',alignItems:'center',gap:14}}>
-              <img src={kspLogo} alt="KSP" style={{width:60,height:48,objectFit:'contain'}} />
+          <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:28,background:'#ffd400',borderRadius:14,padding:'20px 28px',border:'3px solid #b10000'}}>
+            <div style={{display:'flex',alignItems:'center',gap:20}}>
+              <img src={kspLogo} alt="KSP" style={{width:90,height:72,objectFit:'contain'}} />
               <div>
-                <div style={{fontSize:20,fontWeight:700,color:'#0b2c4a',letterSpacing:0.5}}>ISD Intelligence</div>
-                <div style={{color:'#333',fontSize:13,marginTop:1,fontStyle:'italic'}}>Welcome, {currentUser?.full_name || currentUser?.username}</div>
+                <div style={{display:'flex',alignItems:'baseline',gap:14}}>
+                  <span style={{fontSize:34,fontWeight:800,color:'#b10000',letterSpacing:1}}>ISD-AI</span>
+                  <span style={{fontSize:15,fontWeight:600,fontStyle:'italic',color:'#0b2c4a',whiteSpace:'nowrap'}}>empowering law enforcement with artificial intelligence</span>
+                </div>
+                <div style={{color:'#333',fontSize:15,marginTop:5,fontStyle:'italic'}}>Welcome, {currentUser?.full_name || currentUser?.username}</div>
               </div>
             </div>
             <button onClick={handleLogout}
-              style={{padding:'7px 16px',borderRadius:8,border:'2px solid #b10000',background:'#b10000',color:'#ffd400',cursor:'pointer',fontSize:13,fontWeight:700}}>
+              style={{padding:'10px 20px',borderRadius:8,border:'2px solid #b10000',background:'#b10000',color:'#ffd400',cursor:'pointer',fontSize:14,fontWeight:700}}>
               Sign Out
             </button>
           </div>
@@ -1860,16 +1868,23 @@ export default function App() {
               <div style={{fontSize:17,fontWeight:700,color:'#0b2c4a'}}>Sign Out</div>
             </div>
             <div style={{padding:'24px'}}>
+              {(docIndexing || graphExtracting) && (
+                <div style={{background:'#fff3cd',border:'1px solid #e6a817',borderRadius:8,padding:'10px 14px',marginBottom:12,fontSize:13,color:'#7d4e00',fontWeight:600}}>
+                  ⚠ {docIndexing ? 'Document indexing' : 'Entity extraction'} is in progress. Please wait for it to finish before signing out.
+                </div>
+              )}
               <div style={{color:'#333',fontSize:14,marginBottom:20,lineHeight:1.6}}>
                 Do you want to <strong>clear all documents and entity data</strong> for case <strong>"{activeCase.name}"</strong> before signing out?
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:10}}>
                 <button onClick={handleSignOutClearAndLogout}
-                  style={{padding:'11px 0',borderRadius:8,border:'2px solid #b10000',background:'#b10000',color:'#fff',fontWeight:700,fontSize:14,cursor:'pointer'}}>
+                  disabled={docIndexing || graphExtracting}
+                  style={{padding:'11px 0',borderRadius:8,border:'2px solid #b10000',background: docIndexing || graphExtracting ? '#ccc':'#b10000',color:'#fff',fontWeight:700,fontSize:14,cursor: docIndexing || graphExtracting ? 'not-allowed':'pointer'}}>
                   Clear Docs &amp; Entities, then Sign Out
                 </button>
                 <button onClick={handleLogout}
-                  style={{padding:'11px 0',borderRadius:8,border:'2px solid rgba(0,0,0,0.2)',background:'#ffd400',color:'#000',fontWeight:700,fontSize:14,cursor:'pointer'}}>
+                  disabled={docIndexing || graphExtracting}
+                  style={{padding:'11px 0',borderRadius:8,border:'2px solid rgba(0,0,0,0.2)',background: docIndexing || graphExtracting ? '#ccc':'#ffd400',color:'#000',fontWeight:700,fontSize:14,cursor: docIndexing || graphExtracting ? 'not-allowed':'pointer'}}>
                   Sign Out without clearing
                 </button>
                 <button onClick={()=>setShowSignOutDialog(false)}
@@ -1927,9 +1942,12 @@ export default function App() {
               style={{padding:'4px 12px',borderRadius:6,border:'2px solid #ffd400',background:'transparent',color:'#ffd400',cursor:'pointer',fontSize:12,fontWeight:600}}>
               Switch Case
             </button>
-            <button onClick={handleSignOutRequest}
-              style={{padding:'4px 12px',borderRadius:6,border:'2px solid #b10000',background:'#b10000',color:'#ffd400',cursor:'pointer',fontSize:12,fontWeight:700}}>
-              Sign Out
+            <button
+              onClick={handleSignOutRequest}
+              disabled={docIndexing || graphExtracting}
+              title={docIndexing ? 'Indexing in progress — please wait before signing out' : graphExtracting ? 'Entity extraction in progress — please wait before signing out' : ''}
+              style={{padding:'4px 12px',borderRadius:6,border:'2px solid #b10000',background: docIndexing || graphExtracting ? '#666' : '#b10000',color:'#ffd400',cursor: docIndexing || graphExtracting ? 'not-allowed' : 'pointer',fontSize:12,fontWeight:700,opacity: docIndexing || graphExtracting ? 0.6 : 1}}>
+              {docIndexing ? 'Indexing...' : graphExtracting ? 'Extracting...' : 'Sign Out'}
             </button>
           </div>
         </div>

@@ -139,7 +139,10 @@ def health():
 _pending_entity_jobs: list = []
 
 # Extraction progress tracking (for frontend polling)
-_extraction_status = {"running": False, "completed": 0, "total": 0, "done": False, "error": ""}
+_extraction_status = {
+    "running": False, "completed": 0, "total": 0, "done": False, "error": "",
+    "batch_current": 0, "batch_total": 0, "doc_name": "",
+}
 
 # Timeline extraction progress tracking
 _timeline_extraction_status = {"running": False, "completed": 0, "total": 0, "done": False, "error": ""}
@@ -214,14 +217,29 @@ def docs_extract_entities():
     if not jobs:
         return {"ok": True, "message": "No pending entity extraction jobs.", "extracted": 0}
 
-    _extraction_status = {"running": True, "completed": 0, "total": len(jobs), "done": False, "error": ""}
+    _extraction_status.update({
+        "running": True, "completed": 0, "total": len(jobs), "done": False, "error": "",
+        "batch_current": 0, "batch_total": 0, "doc_name": "",
+    })
 
     # Run all entity extraction in a single background thread (sequential, no model swapping)
     def _run_all():
         global _extraction_status
         for i, job in enumerate(jobs):
+            _extraction_status["doc_name"] = job["doc_name"]
+            _extraction_status["batch_current"] = 0
+            _extraction_status["batch_total"] = 0
+
+            def _batch_cb(batch_done, batch_total):
+                _extraction_status["batch_current"] = batch_done
+                _extraction_status["batch_total"] = batch_total
+
             try:
-                extract_and_store_entities(job["doc_id"], job["doc_name"], job["chunks"], case_id=job.get("case_id"))
+                extract_and_store_entities(
+                    job["doc_id"], job["doc_name"], job["chunks"],
+                    case_id=job.get("case_id"),
+                    progress_callback=_batch_cb,
+                )
             except Exception as ex:
                 print(f"[EntityGraph] Failed for {job['doc_name']}: {ex}")
             _extraction_status["completed"] = i + 1
@@ -261,13 +279,28 @@ def graph_extract_all(
         # Clear existing graph data first to avoid duplicates
         clear_graph_data()
 
-        _extraction_status = {"running": True, "completed": 0, "total": len(doc_groups), "done": False, "error": ""}
+        _extraction_status.update({
+            "running": True, "completed": 0, "total": len(doc_groups), "done": False, "error": "",
+            "batch_current": 0, "batch_total": 0, "doc_name": "",
+        })
 
         def _run_all():
             global _extraction_status
             for i, dg in enumerate(doc_groups):
+                _extraction_status["doc_name"] = dg["doc_name"]
+                _extraction_status["batch_current"] = 0
+                _extraction_status["batch_total"] = 0
+
+                def _batch_cb(batch_done, batch_total):
+                    _extraction_status["batch_current"] = batch_done
+                    _extraction_status["batch_total"] = batch_total
+
                 try:
-                    extract_and_store_entities(dg["doc_id"], dg["doc_name"], dg["chunks"], case_id=case_id or None)
+                    extract_and_store_entities(
+                        dg["doc_id"], dg["doc_name"], dg["chunks"],
+                        case_id=case_id or None,
+                        progress_callback=_batch_cb,
+                    )
                 except Exception as ex:
                     print(f"[EntityGraph] Failed for {dg['doc_name']}: {ex}")
                 _extraction_status["completed"] = i + 1
@@ -284,7 +317,7 @@ def graph_extract_all(
             "total": len(doc_groups),
         }
     except Exception as e:
-        _extraction_status = {"running": False, "completed": 0, "total": 0, "done": False, "error": str(e)}
+        _extraction_status.update({"running": False, "completed": 0, "total": 0, "done": False, "error": str(e), "batch_current": 0, "batch_total": 0, "doc_name": ""})
         return {"ok": False, "error": str(e)}
 
 

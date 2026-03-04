@@ -529,43 +529,206 @@ def store_entities_and_relationships(
 
 
 # ---------------------------------------------------------------------------
-# Orchestrator
+# Orchestrator  (incremental — commits after every batch)
 # ---------------------------------------------------------------------------
+
+# Maximum chunks to process per document. For very large docs (200+ chunks),
+# we evenly sample to keep extraction time manageable on CPU hardware.
+MAX_ENTITY_CHUNKS = 60
+
+
 def extract_and_store_entities(
     doc_id: str,
     doc_name: str,
     chunks: List[str],
     case_id: Optional[int] = None,
+    progress_callback=None,
 ) -> Dict[str, Any]:
-    """Full pipeline: extract entities + relationships from chunks, store in SQL Server."""
-    print(f"[EntityGraph] Starting extraction for {doc_name} ({len(chunks)} chunks)")
+    """
+    Full pipeline: extract entities + relationships from chunks, store in SQL Server.
 
-    # Smaller batches improve recall for dense long-form IR narratives.
-    dynamic_batch_size = 3 if len(chunks) >= 30 else 5
-    entities, relationships = extract_entities_and_relationships_from_chunks(
-        chunks, batch_size=dynamic_batch_size
+    Key improvements over v1:
+    - Caps to MAX_ENTITY_CHUNKS (60) evenly-sampled chunks so large 84-page docs
+      don't take 40+ minutes on CPU.
+    - Commits to MSSQL after EVERY batch so the graph starts populating within
+      seconds rather than waiting for the entire document to finish.
+    - Accepts an optional progress_callback(batch_done, batch_total) so callers
+      can surface fine-grained progress to the frontend.
+    """
+    original_count = len(chunks)
+    if original_count > MAX_ENTITY_CHUNKS:
+        step = original_count / MAX_ENTITY_CHUNKS
+        chunks = [chunks[int(i * step)] for i in range(MAX_ENTITY_CHUNKS)]
+        print(f"[EntityGraph] {doc_name}: sampled {MAX_ENTITY_CHUNKS}/{original_count} chunks")
+
+    batch_size = 3 if len(chunks) >= 30 else 5
+    total_batches = (len(chunks) + batch_size - 1) // batch_size
+    print(f"[EntityGraph] Starting extraction for {doc_name} "
+          f"({len(chunks)} chunks, {total_batches} batches)")
+
+    # Cross-batch dedup sets — prevent the same entity/rel appearing twice
+    seen_entity_keys: set = set()
+    seen_rel_keys:    set = set()
+    total_entities_stored = 0
+    total_rels_stored     = 0
+
+    # NOTE: do NOT use str.format() on this — document text may contain { } chars.
+    # Append combined_text via concatenation in the loop instead.
+    prompt_prefix = (
+        "Extract all named entities AND their relationships from the following text.\n\n"
+        "ENTITY TYPES: PERSON, ORGANIZATION, LOCATION, PHONE, VEHICLE, OTHER\n"
+        "- PERSON: full names of individuals\n"
+        "- ORGANIZATION: companies, clubs, groups, government bodies, departments\n"
+        "- LOCATION: cities, states, addresses, places\n"
+        "- PHONE: phone numbers, mobile numbers\n"
+        "- VEHICLE: vehicle registration numbers\n"
+        "- OTHER: case numbers, account numbers, important IDs\n\n"
+        "RELATIONSHIP TYPES:\n"
+        "- MEMBER_OF, WORKS_AT, SIBLING, SPOUSE, PARENT_OF, CHILD_OF, LIVES_AT\n"
+        "- COLLEAGUE, PARTICIPATED_IN, REPORTS_TO, LOCATED_IN\n"
+        "- HELPER_OF, ADVOCATE_OF, DOCTOR_OF, FINANCIER_OF\n"
+        "- ASSOCIATE_OF, ACCOMPLICE_OF, HANDLER_OF, SYMPATHIZER_OF\n"
+        "- ACCUSED_WITH, CO_ACCUSED, RELATED_TO\n\n"
+        "IMPORTANT FOR INTERROGATION REPORTS:\n"
+        "- Extract ALL helpers (advocate, doctor, barber, financier, mechanic, etc.)\n"
+        "- Extract ALL associates, accomplices, co-accused, operatives\n"
+        "- Extract ALL hideouts/safe houses/shelters as LOCATION entities\n"
+        "- Link each helper/associate to the accused with the correct relationship type\n\n"
+        'Return ONLY valid JSON:\n'
+        '{"entities": [{"name": "...", "type": "...", "context": "..."}], '
+        '"relationships": [{"source": "...", "target": "...", "type": "...", "context": "..."}]}\n\n'
+        "RULES:\n"
+        "- List each name as a SEPARATE entity — do NOT collapse multiple names into one.\n"
+        "- source and target must match entity names exactly.\n"
+        '- If nothing found return {"entities": [], "relationships": []}\n\n'
+        "TEXT:\n"
     )
-    print(f"[EntityGraph] Extracted {len(entities)} entities, {len(relationships)} relationships from {doc_name}")
 
-    # Deduplicate entities by (name_lower, type) before storing
-    seen: set = set()
-    unique_entities: List[Dict[str, Any]] = []
-    for e in entities:
-        key = (e["name"].lower().strip(), e["type"])
-        if key not in seen:
-            seen.add(key)
-            unique_entities.append(e)
+    conn = _get_conn()
+    try:
+        for batch_idx, start in enumerate(range(0, len(chunks), batch_size)):
+            batch = chunks[start : start + batch_size]
+            combined_text = "\n\n---\n\n".join(
+                f"[CHUNK {start + i}]\n{chunk[:2200]}" for i, chunk in enumerate(batch)
+            )
 
-    # Deduplicate relationships
-    seen_rels: set = set()
-    unique_rels: List[Dict[str, Any]] = []
-    for r in relationships:
-        key = (r["source"].lower().strip(), r["target"].lower().strip(), r["type"])
-        if key not in seen_rels:
-            seen_rels.add(key)
-            unique_rels.append(r)
+            # ── LLM call ─────────────────────────────────────────────────────
+            try:
+                response = ollama_chat(
+                    [{"role": "user", "content": prompt_prefix + combined_text}],
+                    temperature=0.0,
+                    model=PDF_MODEL,
+                )
+                parsed = _parse_extraction_response(response)
+            except Exception as ex:
+                print(f"[EntityGraph] Batch {batch_idx+1}/{total_batches} LLM failed: {ex}")
+                if progress_callback:
+                    progress_callback(batch_idx + 1, total_batches)
+                continue
 
-    return store_entities_and_relationships(doc_id, doc_name, unique_entities, unique_rels, case_id=case_id)
+            # ── Deduplicate entities (cross-batch) ───────────────────────────
+            batch_entities: List[Dict[str, Any]] = []
+            for e in parsed.get("entities", []):
+                if not (isinstance(e, dict) and "name" in e and "type" in e):
+                    continue
+                etype = e["type"].upper().strip()
+                if etype not in ENTITY_TYPES:
+                    etype = "OTHER"
+                for nm in _split_compound_person_name(e["name"].strip(), etype):
+                    if len(nm) >= 2 and nm.lower() not in _NOISE_NAMES:
+                        key = (nm.lower().strip(), etype)
+                        if key not in seen_entity_keys:
+                            seen_entity_keys.add(key)
+                            batch_entities.append({
+                                "name": nm,
+                                "type": etype,
+                                "context": (e.get("context") or "")[:300],
+                            })
+
+            # ── Store batch entities → MSSQL ─────────────────────────────────
+            entity_name_to_id: Dict[str, int] = {}
+            batch_entity_ids:  List[int]       = []
+            for e in batch_entities:
+                try:
+                    eid = _insert_or_get_entity(
+                        conn, e["name"], e["type"], doc_id, doc_name,
+                        e.get("context", ""), case_id=case_id,
+                    )
+                    if eid:
+                        batch_entity_ids.append(eid)
+                        entity_name_to_id[e["name"].lower().strip()] = eid
+                        total_entities_stored += 1
+                except Exception as ex:
+                    print(f"[EntityGraph] Entity insert failed ({e['name']}): {ex}")
+
+            # ── Store batch relationships ─────────────────────────────────────
+            linked_pairs: set = set()
+            for r in parsed.get("relationships", []):
+                if not (isinstance(r, dict) and "source" in r and "target" in r):
+                    continue
+                rtype = (r.get("type") or "RELATED_TO").upper().strip()
+                if rtype not in RELATIONSHIP_TYPES:
+                    rtype = "RELATED_TO"
+                source = r["source"].strip()
+                target = r["target"].strip()
+                if (len(source) < 2 or len(target) < 2
+                        or source.lower() in _NOISE_NAMES
+                        or target.lower() in _NOISE_NAMES):
+                    continue
+                rel_key = (source.lower(), target.lower(), rtype)
+                if rel_key in seen_rel_keys:
+                    continue
+                seen_rel_keys.add(rel_key)
+
+                src_id = entity_name_to_id.get(source.lower())
+                tgt_id = entity_name_to_id.get(target.lower())
+                if not src_id:
+                    src_id = _resolve_entity_id(conn, source, doc_id, case_id=case_id)
+                if not tgt_id:
+                    tgt_id = _resolve_entity_id(conn, target, doc_id, case_id=case_id)
+                if src_id and tgt_id and src_id != tgt_id:
+                    try:
+                        _insert_relationship_if_absent(
+                            conn, src_id, tgt_id, rtype, doc_id,
+                            (r.get("context") or "")[:300], case_id=case_id,
+                        )
+                        linked_pairs.add((min(src_id, tgt_id), max(src_id, tgt_id)))
+                        total_rels_stored += 1
+                    except Exception:
+                        pass
+
+            # CO_OCCURRENCE edges for batch entity pairs not already linked
+            capped_ids = batch_entity_ids[:30]
+            for i in range(len(capped_ids)):
+                for j in range(i + 1, len(capped_ids)):
+                    pair = (min(capped_ids[i], capped_ids[j]), max(capped_ids[i], capped_ids[j]))
+                    if pair not in linked_pairs:
+                        try:
+                            _insert_relationship_if_absent(
+                                conn, capped_ids[i], capped_ids[j],
+                                "CO_OCCURRENCE", doc_id, "", case_id=case_id,
+                            )
+                        except Exception:
+                            pass
+
+            # ── COMMIT — data immediately visible in graph ────────────────────
+            conn.commit()
+            print(f"[EntityGraph] Batch {batch_idx+1}/{total_batches}: "
+                  f"+{len(batch_entities)} entities | {total_entities_stored} total for {doc_name}")
+
+            if progress_callback:
+                progress_callback(batch_idx + 1, total_batches)
+
+    finally:
+        conn.close()
+
+    print(f"[EntityGraph] Done: {total_entities_stored} entities, "
+          f"{total_rels_stored} relationships stored for {doc_name}")
+    return {
+        "entities_stored": total_entities_stored,
+        "relationships_stored": total_rels_stored,
+        "doc_id": doc_id,
+    }
 
 
 # ---------------------------------------------------------------------------
