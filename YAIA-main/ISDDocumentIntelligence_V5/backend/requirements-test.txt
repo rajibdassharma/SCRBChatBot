@@ -1,0 +1,4 @@
+# Test dependencies (install separately from main requirements.txt)
+pytest>=8.0
+requests>=2.31
+pytest-timeout>=2.2
