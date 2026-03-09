@@ -2,7 +2,7 @@
 Authentication module for ISD Document Intelligence V4.
 
 Provides:
-  - init_users_table()    — creates the users table in MSSQL (called at import)
+  - init_users_table()    — creates the users table in MySQL (called at import)
   - router                — FastAPI APIRouter with /auth/* endpoints
   - get_current_user()    — FastAPI dependency for protected routes
   - CurrentUser           — typed user object injected into protected endpoints
@@ -17,7 +17,7 @@ from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
 
-from mssql_db import get_conn, _fetchone, _fetchall
+from mysql_db import get_conn, _fetchone, _fetchall
 from config import JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRE_HOURS
 
 
@@ -59,23 +59,19 @@ def _create_token(user_id: int, username: str, role: str) -> str:
 # ---------------------------------------------------------------------------
 
 def init_users_table() -> None:
-    """Create the users table in MSSQL if it does not already exist."""
+    """Create the users table in MySQL if it does not already exist."""
     conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute("""
-            IF NOT EXISTS (
-                SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_NAME = 'users'
-            )
-            CREATE TABLE users (
-                id            INT IDENTITY(1,1) PRIMARY KEY,
-                username      NVARCHAR(100)  NOT NULL UNIQUE,
-                password_hash NVARCHAR(255)  NOT NULL,
-                full_name     NVARCHAR(200),
-                role          NVARCHAR(50)   NOT NULL DEFAULT 'user',
-                is_active     BIT            NOT NULL DEFAULT 1,
-                created_at    DATETIME       NOT NULL DEFAULT GETDATE()
+            CREATE TABLE IF NOT EXISTS users (
+                id            INT AUTO_INCREMENT PRIMARY KEY,
+                username      VARCHAR(100)  NOT NULL UNIQUE,
+                password_hash VARCHAR(255)  NOT NULL,
+                full_name     VARCHAR(200),
+                role          VARCHAR(50)   NOT NULL DEFAULT 'user',
+                is_active     TINYINT(1)    NOT NULL DEFAULT 1,
+                created_at    DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP
             )
         """)
         conn.commit()
@@ -169,21 +165,19 @@ def register(payload: RegisterRequest):
     try:
         cur = conn.cursor()
 
-        cur.execute("SELECT id FROM users WHERE username = ?", username)
+        cur.execute("SELECT id FROM users WHERE username = %s", (username,))
         if cur.fetchone():
             raise HTTPException(status_code=409, detail="Username already exists.")
 
         cur.execute(
-            "INSERT INTO users (username, password_hash, full_name) VALUES (?, ?, ?)",
-            username,
-            password_hash,
-            payload.full_name or payload.username,
+            "INSERT INTO users (username, password_hash, full_name) VALUES (%s, %s, %s)",
+            (username, password_hash, payload.full_name or payload.username),
         )
         conn.commit()
 
         cur.execute(
-            "SELECT id, username, full_name, role FROM users WHERE username = ?",
-            username,
+            "SELECT id, username, full_name, role FROM users WHERE username = %s",
+            (username,),
         )
         row = _fetchone(cur)
         token = _create_token(row["id"], row["username"], row["role"])
@@ -211,8 +205,8 @@ def login(payload: LoginRequest):
         cur = conn.cursor()
         cur.execute(
             "SELECT id, username, password_hash, full_name, role, is_active "
-            "FROM users WHERE username = ?",
-            payload.username.strip().lower(),
+            "FROM users WHERE username = %s",
+            (payload.username.strip().lower(),),
         )
         row = _fetchone(cur)
 
@@ -245,8 +239,8 @@ def me(current_user: CurrentUser = Depends(get_current_user)):
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id, username, full_name, role, created_at FROM users WHERE id = ?",
-            current_user.user_id,
+            "SELECT id, username, full_name, role, created_at FROM users WHERE id = %s",
+            (current_user.user_id,),
         )
         row = _fetchone(cur)
         if not row:
@@ -270,15 +264,14 @@ def change_password(
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT password_hash FROM users WHERE id = ?", current_user.user_id)
+        cur.execute("SELECT password_hash FROM users WHERE id = %s", (current_user.user_id,))
         row = _fetchone(cur)
         if not row or not _verify_password(payload.current_password, row["password_hash"]):
             raise HTTPException(status_code=401, detail="Current password is incorrect.")
 
         cur.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ?",
-            _hash_password(payload.new_password),
-            current_user.user_id,
+            "UPDATE users SET password_hash = %s WHERE id = %s",
+            (_hash_password(payload.new_password), current_user.user_id),
         )
         conn.commit()
         return {"ok": True, "message": "Password changed successfully."}

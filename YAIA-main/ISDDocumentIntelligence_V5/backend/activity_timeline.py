@@ -1,21 +1,19 @@
 """
-Activity Timeline — MSSQL-backed activity extraction and temporal intelligence
+Activity Timeline — MySQL-backed activity extraction and temporal intelligence
 for ISD Document Intelligence.
 
 Extracts structured activities (TMS IDs, dates, groups, participants, cross-references)
-from document chunks using the local LLM, stores them in SQL Server, and provides
+from document chunks using the local LLM, stores them in MySQL, and provides
 timeline data + Bread Crumb trail queries for visualization.
 """
 
 import json
 from typing import List, Dict, Any, Optional, Tuple
 
-import pyodbc
-
 from ollama_client import ollama_chat
 from config import PDF_MODEL
 from entity_graph import _find_balanced_json_object
-from mssql_db import get_conn, _fetchone, _fetchall
+from mysql_db import get_conn, _fetchone, _fetchall
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -24,109 +22,77 @@ TEMPORAL_STATUSES = {"PAST", "CURRENT", "FUTURE"}
 
 
 # ---------------------------------------------------------------------------
-# MSSQL Schema Setup
+# MySQL Schema Setup
 # ---------------------------------------------------------------------------
-def _get_conn() -> pyodbc.Connection:
+def _get_conn():
     return get_conn()
 
 
 def init_db():
     conn = _get_conn()
+    cur = conn.cursor()
 
     # ── activities table ─────────────────────────────────────────────────────
-    conn.execute("""
-        IF NOT EXISTS (
-            SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-            WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'activities'
-        )
-        CREATE TABLE activities (
-            id               INT IDENTITY(1,1) PRIMARY KEY,
-            tms_id           NVARCHAR(100)  NULL,
-            doc_id           NVARCHAR(500)  NOT NULL,
-            doc_name         NVARCHAR(500)  NOT NULL,
-            activity_date    NVARCHAR(100)  NULL,
-            group_name       NVARCHAR(500)  NULL,
-            subject          NVARCHAR(500)  NULL,
-            description      NVARCHAR(MAX)  NULL,
-            temporal_status  NVARCHAR(50)   NOT NULL DEFAULT 'CURRENT',
-            priority         NVARCHAR(100)  NULL,
-            theatre          NVARCHAR(200)  NULL,
-            participants     NVARCHAR(MAX)  NULL,
-            case_id          INT            NULL
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS activities (
+            id               INT AUTO_INCREMENT PRIMARY KEY,
+            tms_id           VARCHAR(100)  NULL,
+            doc_id           VARCHAR(500)  NOT NULL,
+            doc_name         VARCHAR(500)  NOT NULL,
+            activity_date    VARCHAR(100)  NULL,
+            group_name       VARCHAR(500)  NULL,
+            subject          VARCHAR(500)  NULL,
+            description      TEXT          NULL,
+            temporal_status  VARCHAR(50)   NOT NULL DEFAULT 'CURRENT',
+            priority         VARCHAR(100)  NULL,
+            theatre          VARCHAR(200)  NULL,
+            participants     TEXT          NULL,
+            case_id          INT           NULL
         )
     """)
-    # Filtered unique index: enforce uniqueness only when tms_id is not NULL
-    # (SQLite allowed multiple NULL tms_ids per doc; MSSQL needs a filtered index)
-    conn.execute("""
-        IF NOT EXISTS (
-            SELECT 1 FROM sys.indexes
-            WHERE name = 'idx_activities_tms_doc' AND object_id = OBJECT_ID('activities')
-        )
-        CREATE UNIQUE INDEX idx_activities_tms_doc
-            ON activities(tms_id, doc_id)
-            WHERE tms_id IS NOT NULL
-    """)
-    conn.execute("""
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_activities_tms_id' AND object_id = OBJECT_ID('activities'))
-            CREATE INDEX idx_activities_tms_id ON activities(tms_id)
-    """)
-    conn.execute("""
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_activities_group' AND object_id = OBJECT_ID('activities'))
-            CREATE INDEX idx_activities_group ON activities(group_name)
-    """)
-    conn.execute("""
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_activities_date' AND object_id = OBJECT_ID('activities'))
-            CREATE INDEX idx_activities_date ON activities(activity_date)
-    """)
-    conn.execute("""
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_activities_doc_id' AND object_id = OBJECT_ID('activities'))
-            CREATE INDEX idx_activities_doc_id ON activities(doc_id)
-    """)
+
+    # Unique index on (tms_id, doc_id) — MySQL doesn't support filtered indexes,
+    # so this applies to all rows (NULLs are allowed in MySQL unique indexes).
+    try:
+        cur.execute("CREATE UNIQUE INDEX idx_activities_tms_doc ON activities(tms_id, doc_id)")
+    except Exception:
+        pass
+
+    for idx_name, idx_col in [
+        ("idx_activities_tms_id", "tms_id"),
+        ("idx_activities_group", "group_name(255)"),
+        ("idx_activities_date", "activity_date"),
+        ("idx_activities_doc_id", "doc_id(255)"),
+    ]:
+        try:
+            cur.execute(f"CREATE INDEX {idx_name} ON activities({idx_col})")
+        except Exception:
+            pass
 
     # ── cross_references table ───────────────────────────────────────────────
-    conn.execute("""
-        IF NOT EXISTS (
-            SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-            WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'cross_references'
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS cross_references (
+            id              INT AUTO_INCREMENT PRIMARY KEY,
+            source_tms_id   VARCHAR(100)  NOT NULL,
+            target_tms_id   VARCHAR(100)  NOT NULL,
+            context         VARCHAR(500)  NULL,
+            doc_id          VARCHAR(500)  NOT NULL,
+            case_id         INT           NULL,
+            UNIQUE KEY uq_xref (source_tms_id, target_tms_id, doc_id)
         )
-        CREATE TABLE cross_references (
-            id              INT IDENTITY(1,1) PRIMARY KEY,
-            source_tms_id   NVARCHAR(100)  NOT NULL,
-            target_tms_id   NVARCHAR(100)  NOT NULL,
-            context         NVARCHAR(500)  NULL,
-            doc_id          NVARCHAR(500)  NOT NULL,
-            case_id         INT            NULL,
-            CONSTRAINT uq_xref UNIQUE (source_tms_id, target_tms_id, doc_id)
-        )
-    """)
-    conn.execute("""
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_xref_source' AND object_id = OBJECT_ID('cross_references'))
-            CREATE INDEX idx_xref_source ON cross_references(source_tms_id)
-    """)
-    conn.execute("""
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_xref_target' AND object_id = OBJECT_ID('cross_references'))
-            CREATE INDEX idx_xref_target ON cross_references(target_tms_id)
     """)
 
-    # Schema migration: add case_id column to activities if absent
-    conn.execute("""
-        IF NOT EXISTS (
-            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME = 'activities' AND COLUMN_NAME = 'case_id'
-        )
-        ALTER TABLE activities ADD case_id INT NULL
-    """)
-
-    # Schema migration: add case_id column to cross_references if absent
-    conn.execute("""
-        IF NOT EXISTS (
-            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME = 'cross_references' AND COLUMN_NAME = 'case_id'
-        )
-        ALTER TABLE cross_references ADD case_id INT NULL
-    """)
+    for idx_name, idx_col in [
+        ("idx_xref_source", "source_tms_id"),
+        ("idx_xref_target", "target_tms_id"),
+    ]:
+        try:
+            cur.execute(f"CREATE INDEX {idx_name} ON cross_references({idx_col})")
+        except Exception:
+            pass
 
     conn.commit()
+    cur.close()
     conn.close()
 
 
@@ -261,8 +227,9 @@ def store_activities(
     cross_references: List[Dict[str, Any]],
     case_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Store extracted activities and cross-references in SQL Server."""
+    """Store extracted activities and cross-references in MySQL."""
     conn = _get_conn()
+    cur = conn.cursor()
     act_count = 0
     xref_count = 0
 
@@ -271,17 +238,13 @@ def store_activities(
             tms_id = a.get("tms_id") or None  # store as NULL when empty
 
             if tms_id:
-                # Unique check only applies when tms_id is not NULL
-                conn.execute(
-                    """
-                    IF NOT EXISTS (SELECT 1 FROM activities WHERE tms_id = ? AND doc_id = ?)
-                    INSERT INTO activities
-                        (tms_id, doc_id, doc_name, activity_date, group_name, subject,
-                         description, temporal_status, priority, theatre, participants, case_id)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                # INSERT IGNORE skips if unique index (tms_id, doc_id) already exists
+                cur.execute(
+                    "INSERT IGNORE INTO activities "
+                    "(tms_id, doc_id, doc_name, activity_date, group_name, subject, "
+                    "description, temporal_status, priority, theatre, participants, case_id) "
+                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (
-                        tms_id, doc_id,
                         tms_id, doc_id, doc_name,
                         a.get("date", ""), a.get("group", ""),
                         a.get("subject", ""), a.get("description", ""),
@@ -292,13 +255,11 @@ def store_activities(
                 )
             else:
                 # No tms_id — always insert (no duplicate check needed)
-                conn.execute(
-                    """
-                    INSERT INTO activities
-                        (tms_id, doc_id, doc_name, activity_date, group_name, subject,
-                         description, temporal_status, priority, theatre, participants, case_id)
-                    VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
+                cur.execute(
+                    "INSERT INTO activities "
+                    "(tms_id, doc_id, doc_name, activity_date, group_name, subject, "
+                    "description, temporal_status, priority, theatre, participants, case_id) "
+                    "VALUES (NULL, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
                     (
                         doc_id, doc_name,
                         a.get("date", ""), a.get("group", ""),
@@ -314,18 +275,13 @@ def store_activities(
 
     for x in cross_references:
         try:
-            conn.execute(
-                """
-                IF NOT EXISTS (
-                    SELECT 1 FROM cross_references
-                    WHERE source_tms_id = ? AND target_tms_id = ? AND doc_id = ?
-                )
-                INSERT INTO cross_references (source_tms_id, target_tms_id, context, doc_id, case_id)
-                VALUES (?, ?, ?, ?, ?)
-                """,
+            cur.execute(
+                "INSERT IGNORE INTO cross_references "
+                "(source_tms_id, target_tms_id, context, doc_id, case_id) "
+                "VALUES (%s, %s, %s, %s, %s)",
                 (
-                    x["source_tms_id"], x["target_tms_id"], doc_id,
-                    x["source_tms_id"], x["target_tms_id"], x.get("context", ""), doc_id, case_id,
+                    x["source_tms_id"], x["target_tms_id"],
+                    x.get("context", ""), doc_id, case_id,
                 ),
             )
             xref_count += 1
@@ -333,6 +289,7 @@ def store_activities(
             print(f"[Timeline] Failed to store cross-reference: {ex}")
 
     conn.commit()
+    cur.close()
     conn.close()
     print(f"[Timeline] Stored {act_count} activities, {xref_count} cross-references for {doc_name}")
     return {"activities_stored": act_count, "xrefs_stored": xref_count, "doc_id": doc_id}
@@ -347,7 +304,7 @@ def extract_and_store_activities(
     chunks: List[str],
     case_id: Optional[int] = None,
 ) -> Dict[str, Any]:
-    """Full pipeline: extract activities + cross-references from chunks, store in SQL Server."""
+    """Full pipeline: extract activities + cross-references from chunks, store in MySQL."""
     print(f"[Timeline] Starting extraction for {doc_name} ({len(chunks)} chunks)")
 
     activities, xrefs = extract_activities_from_chunks(chunks, batch_size=3)
@@ -387,38 +344,40 @@ def get_timeline_data(
 ) -> List[Dict[str, Any]]:
     """Get activities sorted by date, with optional filters."""
     conn = _get_conn()
+    cur = conn.cursor()
 
     conditions: List[str] = []
     params: List[Any] = []
 
     if group_filter:
-        conditions.append("group_name = ?")
+        conditions.append("group_name = %s")
         params.append(group_filter)
 
     if status_filter and status_filter.upper() in TEMPORAL_STATUSES:
-        conditions.append("temporal_status = ?")
+        conditions.append("temporal_status = %s")
         params.append(status_filter.upper())
 
     if search:
         conditions.append(
-            "(subject LIKE ? OR description LIKE ? OR participants LIKE ? OR tms_id LIKE ?)"
+            "(subject LIKE %s OR description LIKE %s OR participants LIKE %s OR tms_id LIKE %s)"
         )
         params.extend([f"%{search}%"] * 4)
 
     if case_id is not None:
-        conditions.append("a.case_id = ?")
+        conditions.append("a.case_id = %s")
         params.append(case_id)
 
     where = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
-    cur = conn.execute(
+    cur.execute(
         f"SELECT a.*, "
         f"(SELECT COUNT(*) FROM cross_references WHERE source_tms_id = a.tms_id OR target_tms_id = a.tms_id) AS xref_count "
         f"FROM activities a {where} "
         f"ORDER BY a.activity_date DESC, a.id DESC",
-        params,
+        tuple(params),
     )
     rows = _fetchall(cur)
+    cur.close()
     conn.close()
     return rows
 
@@ -429,28 +388,30 @@ def get_breadcrumb_trail(tms_id: str, case_id: Optional[int] = None) -> Dict[str
     Returns the activity plus all linked activities (forward and backward references).
     """
     conn = _get_conn()
+    cur = conn.cursor()
 
     if case_id is not None:
-        cur_main = conn.execute(
-            "SELECT * FROM activities WHERE tms_id = ? AND case_id = ?",
+        cur.execute(
+            "SELECT * FROM activities WHERE tms_id = %s AND case_id = %s",
             (tms_id, case_id),
         )
     else:
-        cur_main = conn.execute(
-            "SELECT * FROM activities WHERE tms_id = ?",
+        cur.execute(
+            "SELECT * FROM activities WHERE tms_id = %s",
             (tms_id,),
         )
-    main_row = _fetchone(cur_main)
+    main_row = _fetchone(cur)
 
     if not main_row:
+        cur.close()
         conn.close()
         return {"main": None, "trail": [], "references": []}
 
-    cur_xref = conn.execute(
-        "SELECT * FROM cross_references WHERE source_tms_id = ? OR target_tms_id = ?",
+    cur.execute(
+        "SELECT * FROM cross_references WHERE source_tms_id = %s OR target_tms_id = %s",
         (tms_id, tms_id),
     )
-    xrefs = _fetchall(cur_xref)
+    xrefs = _fetchall(cur)
 
     linked_tms_ids: set = set()
     for x in xrefs:
@@ -460,21 +421,22 @@ def get_breadcrumb_trail(tms_id: str, case_id: Optional[int] = None) -> Dict[str
 
     trail_activities: List[Dict[str, Any]] = []
     if linked_tms_ids:
-        placeholders = ",".join(["?" for _ in linked_tms_ids])
+        placeholders = ",".join(["%s" for _ in linked_tms_ids])
         if case_id is not None:
-            cur_trail = conn.execute(
-                f"SELECT * FROM activities WHERE tms_id IN ({placeholders}) AND case_id = ? "
+            cur.execute(
+                f"SELECT * FROM activities WHERE tms_id IN ({placeholders}) AND case_id = %s "
                 f"ORDER BY activity_date ASC",
-                list(linked_tms_ids) + [case_id],
+                tuple(list(linked_tms_ids) + [case_id]),
             )
         else:
-            cur_trail = conn.execute(
+            cur.execute(
                 f"SELECT * FROM activities WHERE tms_id IN ({placeholders}) "
                 f"ORDER BY activity_date ASC",
-                list(linked_tms_ids),
+                tuple(linked_tms_ids),
             )
-        trail_activities = _fetchall(cur_trail)
+        trail_activities = _fetchall(cur)
 
+    cur.close()
     conn.close()
     return {
         "main": main_row,
@@ -486,19 +448,20 @@ def get_breadcrumb_trail(tms_id: str, case_id: Optional[int] = None) -> Dict[str
 def get_groups(case_id: Optional[int] = None) -> List[Dict[str, Any]]:
     """Get distinct group names with activity counts."""
     conn = _get_conn()
+    cur = conn.cursor()
     if case_id is not None:
-        cur = conn.execute(
+        cur.execute(
             "SELECT group_name, COUNT(*) AS count "
             "FROM activities "
             "WHERE group_name IS NOT NULL AND group_name != '' "
             "  AND LOWER(group_name) NOT IN ('unknown', 'n/a', 'none') "
-            "  AND case_id = ? "
+            "  AND case_id = %s "
             "GROUP BY group_name "
             "ORDER BY count DESC",
             (case_id,),
         )
     else:
-        cur = conn.execute(
+        cur.execute(
             "SELECT group_name, COUNT(*) AS count "
             "FROM activities "
             "WHERE group_name IS NOT NULL AND group_name != '' "
@@ -507,6 +470,7 @@ def get_groups(case_id: Optional[int] = None) -> List[Dict[str, Any]]:
             "ORDER BY count DESC"
         )
     rows = _fetchall(cur)
+    cur.close()
     conn.close()
     return rows
 
@@ -514,11 +478,13 @@ def get_groups(case_id: Optional[int] = None) -> List[Dict[str, Any]]:
 def get_extracted_doc_ids(case_id: Optional[int] = None) -> set:
     """Return set of doc_ids that already have activities extracted."""
     conn = _get_conn()
+    cur = conn.cursor()
     if case_id is not None:
-        cur = conn.execute("SELECT DISTINCT doc_id FROM activities WHERE case_id = ?", (case_id,))
+        cur.execute("SELECT DISTINCT doc_id FROM activities WHERE case_id = %s", (case_id,))
     else:
-        cur = conn.execute("SELECT DISTINCT doc_id FROM activities")
+        cur.execute("SELECT DISTINCT doc_id FROM activities")
     ids = {r[0] for r in cur.fetchall()}
+    cur.close()
     conn.close()
     return ids
 
@@ -526,12 +492,14 @@ def get_extracted_doc_ids(case_id: Optional[int] = None) -> set:
 def clear_timeline_data(case_id: Optional[int] = None) -> Dict[str, Any]:
     """Delete activities and cross-references. If case_id is given, only delete for that case."""
     conn = _get_conn()
+    cur = conn.cursor()
     if case_id is not None:
-        conn.execute("DELETE FROM cross_references WHERE case_id = ?", (case_id,))
-        conn.execute("DELETE FROM activities WHERE case_id = ?", (case_id,))
+        cur.execute("DELETE FROM cross_references WHERE case_id = %s", (case_id,))
+        cur.execute("DELETE FROM activities WHERE case_id = %s", (case_id,))
     else:
-        conn.execute("DELETE FROM cross_references")
-        conn.execute("DELETE FROM activities")
+        cur.execute("DELETE FROM cross_references")
+        cur.execute("DELETE FROM activities")
     conn.commit()
+    cur.close()
     conn.close()
     return {"ok": True, "message": "Timeline data cleared."}

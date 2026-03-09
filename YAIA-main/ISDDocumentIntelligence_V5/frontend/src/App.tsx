@@ -6,7 +6,7 @@ import kspLogo from './assets/ksp_logo.png'
 import bannerLogo from './assets/banner_logo.png'
 import './App.css'
 
-const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8000'
+const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8001'
 
 const TABS = ['Document Intelligence', 'Connections Map', 'Activity Timeline', 'QA Testing'] as const
 type TabName = (typeof TABS)[number]
@@ -247,6 +247,8 @@ export default function App() {
   const [docs, setDocs] = useState<DocRecord[]>([])
   const [docStatus, setDocStatus] = useState('')
   const [docLastAnswer, setDocLastAnswer] = useState('')
+  const [lastRating, setLastRating] = useState<number | null>(null)
+  const [ratingSubmitting, setRatingSubmitting] = useState(false)
   const [docLastError, setDocLastError] = useState('')
   const [activeCollection, setActiveCollection] = useState<'SMAC' | 'IR'>('SMAC')
   const [docFiles, setDocFiles] = useState<File[]>([])
@@ -689,6 +691,7 @@ export default function App() {
         setDocLastError(answer)
       } else {
         setDocLastAnswer(answer)
+        setLastRating(null)
         setDocStatus('OK Answer generated.')
       }
     } catch (error) {
@@ -700,6 +703,29 @@ export default function App() {
     } finally {
       abortControllerRef.current = null
       setDocLoading(false)
+    }
+  }
+
+  const handleRating = async (rating: number) => {
+    if (!docLastAnswer || ratingSubmitting) return
+    setRatingSubmitting(true)
+    try {
+      await apiFetch('/ratings', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          question: docChat.length >= 2 ? docChat[docChat.length - 2].content : '',
+          answer: docLastAnswer,
+          rating,
+          collection: activeCollection,
+          case_id: activeCase?.id ?? 0,
+        }),
+      })
+      setLastRating(rating)
+    } catch (e) {
+      console.error('Rating failed:', e)
+    } finally {
+      setRatingSubmitting(false)
     }
   }
 
@@ -2250,6 +2276,22 @@ export default function App() {
                         )}
                       </p>
                       <div className="doc-answer-text">{docLastAnswer}</div>
+                      <div className="rating-bar">
+                        <span className="rating-label">Rate this answer:</span>
+                        {[2, 1, 0, -1, -2].map((r) => (
+                          <button
+                            key={r}
+                            type="button"
+                            className={`rating-btn ${lastRating === r ? 'rating-active' : ''} ${r >= 1 ? 'rating-positive' : r === 0 ? 'rating-neutral' : 'rating-negative'}`}
+                            onClick={() => handleRating(r)}
+                            disabled={ratingSubmitting || lastRating !== null}
+                            title={r === 2 ? 'Excellent' : r === 1 ? 'Good' : r === 0 ? 'Neutral' : r === -1 ? 'Poor' : 'Wrong'}
+                          >
+                            {r === 2 ? '+2' : r === 1 ? '+1' : r === 0 ? '0' : r === -1 ? '-1' : '-2'}
+                          </button>
+                        ))}
+                        {lastRating !== null && <span className="rating-thanks">Thanks for your feedback!</span>}
+                      </div>
                     </>
                   ) : (
                     <p>Answers will appear here after you ask a question.</p>

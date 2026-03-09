@@ -2,7 +2,7 @@
 MSSQL connection helper for ISD Document Intelligence.
 
 Provides:
-  - ensure_database_exists()  — creates the ISDIntelligence DB if absent
+  - ensure_database_exists()  — creates the ISDIntelligenceV4 DB if absent
   - get_conn()                — returns a pyodbc.Connection (autocommit=False)
   - _fetchone(cursor)         — returns dict or None from current cursor position
   - _fetchall(cursor)         — returns list[dict] from current cursor position
@@ -53,7 +53,7 @@ def _master_conn_string() -> str:
 
 def ensure_database_exists() -> None:
     """
-    Connect to 'master' and create ISDIntelligence if it does not exist.
+    Connect to 'master' and create ISDIntelligenceV4 if it does not exist.
     Called once at module import time so all subsequent init_db() calls
     can assume the database is present.
     """

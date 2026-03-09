@@ -6,19 +6,19 @@ from mssql_db import get_conn
 from rag import _get_col
 
 print("=" * 70)
-print("1. MSSQL document_fields — IR collection")
+print("1. MSSQL ir_reports — IR collection")
 print("=" * 70)
 conn = get_conn()
 
 # Total fields per document
 cur = conn.execute(
     "SELECT doc_name, COUNT(*) as field_count "
-    "FROM document_fields WHERE collection = 'IR' "
+    "FROM ir_reports WHERE collection = 'IR' "
     "GROUP BY doc_name ORDER BY doc_name"
 )
 rows = cur.fetchall()
 if not rows:
-    print("  NO IR DOCUMENTS FOUND in document_fields!")
+    print("  NO IR DOCUMENTS FOUND in ir_reports!")
 else:
     for r in rows:
         print(f"  {r[0]}: {r[1]} fields")
@@ -28,7 +28,7 @@ print()
 # List all field_keys for IR
 cur2 = conn.execute(
     "SELECT doc_name, serial_no, field_key, LEFT(field_value, 80) as val_preview "
-    "FROM document_fields WHERE collection = 'IR' "
+    "FROM ir_reports WHERE collection = 'IR' "
     "ORDER BY doc_name, id"
 )
 rows2 = cur2.fetchall()
@@ -44,7 +44,7 @@ print()
 # Specifically check for 'associate'
 cur3 = conn.execute(
     "SELECT doc_name, field_key, field_value "
-    "FROM document_fields WHERE collection = 'IR' AND field_key LIKE '%associate%'"
+    "FROM ir_reports WHERE collection = 'IR' AND field_key LIKE '%associate%'"
 )
 assoc_rows = cur3.fetchall()
 print(f"  Fields matching 'associate': {len(assoc_rows)}")

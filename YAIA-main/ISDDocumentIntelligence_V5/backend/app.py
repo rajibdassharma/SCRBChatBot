@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
+from mysql_db import get_conn
 from ollama_client import ollama_chat
 from rag import index_document, ask_pdf, ask_docs_agent, clear_all_documents, get_all_doc_chunks, get_indexed_doc_list
 from config import WHISPER_MODEL
@@ -339,6 +340,18 @@ def docs_list(
     try:
         col = _scoped_col(collection, case_id) if case_id else collection
         docs = get_indexed_doc_list(collection_name=col)
+        # Fallback: also include docs from the global (unscoped) collection
+        if case_id:
+            try:
+                global_docs = get_indexed_doc_list(collection_name=collection)
+                if global_docs:
+                    existing_names = {d.get("doc_name") or d.get("name") for d in docs}
+                    for gd in global_docs:
+                        name = gd.get("doc_name") or gd.get("name")
+                        if name not in existing_names:
+                            docs.append(gd)
+            except Exception:
+                pass
         return {"ok": True, "docs": docs}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -386,7 +399,16 @@ def docs_ask(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     try:
+        # Try scoped collection first; fall back to global if scoped is empty
         col = _scoped_col(payload.collection, payload.case_id) if payload.case_id else payload.collection
+        # Check if scoped collection has any documents; if not, use global
+        if payload.case_id:
+            try:
+                from rag import get_indexed_doc_list as _check_docs
+                if not _check_docs(collection_name=col):
+                    col = payload.collection  # Use global unscoped collection
+            except Exception:
+                pass
         result = ask_pdf(doc_id=payload.doc_id, question=payload.question, top_k=15, collection_name=col)
 
         return {"ok": True, **result}
@@ -1064,3 +1086,95 @@ def qa_results(run_id: str):
     if result is None:
         return {"ok": False, "error": f"Test run '{run_id}' not found."}
     return result
+
+
+# ------------------------------------------------------------------------------
+# Answer Ratings
+# ------------------------------------------------------------------------------
+def _init_ratings_table():
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS answer_ratings (
+                id          INT AUTO_INCREMENT PRIMARY KEY,
+                user_id     INT           NOT NULL,
+                username    VARCHAR(100)  NOT NULL,
+                collection  VARCHAR(50)   NOT NULL DEFAULT 'SMAC',
+                case_id     INT           NOT NULL DEFAULT 0,
+                question    TEXT,
+                answer      TEXT,
+                rating      INT           NOT NULL,
+                created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.commit()
+        print("[Ratings] answer_ratings table ready")
+    except Exception as e:
+        print(f"[Ratings] Warning: {e}")
+    finally:
+        conn.close()
+
+_init_ratings_table()
+
+
+class RatingRequest(BaseModel):
+    question: str
+    answer: str
+    rating: int
+    collection: str = "SMAC"
+    case_id: int = 0
+
+
+@app.post("/ratings")
+def submit_rating(
+    payload: RatingRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Submit a rating for an answer. Ratings: 2,1,0,-1,-2. Q&A stored only for 1 and 2."""
+    if payload.rating not in (2, 1, 0, -1, -2):
+        return {"ok": False, "error": "Rating must be one of: 2, 1, 0, -1, -2"}
+
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        if payload.rating >= 1:
+            cur.execute(
+                "INSERT INTO answer_ratings (user_id, username, collection, case_id, question, answer, rating) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
+                (current_user.user_id, current_user.username,
+                 payload.collection, payload.case_id,
+                 payload.question, payload.answer, payload.rating),
+            )
+        else:
+            cur.execute(
+                "INSERT INTO answer_ratings (user_id, username, collection, case_id, rating) "
+                "VALUES (%s, %s, %s, %s, %s)",
+                (current_user.user_id, current_user.username,
+                 payload.collection, payload.case_id,
+                 payload.rating),
+            )
+        conn.commit()
+        return {"ok": True, "message": "Rating saved."}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
+
+
+@app.get("/ratings/stats")
+def rating_stats(current_user: CurrentUser = Depends(get_current_user)):
+    """Get rating statistics (admin view)."""
+    conn = get_conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT rating, COUNT(*) as cnt FROM answer_ratings GROUP BY rating ORDER BY rating DESC"
+        )
+        rows = [{"rating": r[0], "count": r[1]} for r in cur.fetchall()]
+        total = sum(r["count"] for r in rows)
+        return {"ok": True, "stats": rows, "total": total}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()

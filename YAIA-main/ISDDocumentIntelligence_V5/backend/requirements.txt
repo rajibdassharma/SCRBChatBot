@@ -9,7 +9,8 @@ python-docx
 openpyxl
 faster-whisper
 rank-bm25
-pyodbc
+pymysql
 python-jose[cryptography]
 passlib[bcrypt]
 neo4j>=5.0
+gunicorn

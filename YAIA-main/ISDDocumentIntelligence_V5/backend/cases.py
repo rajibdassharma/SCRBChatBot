@@ -5,7 +5,7 @@ A "case" is a named, isolated workspace that belongs to one user.
 All documents, vectors, and structured data are scoped to a case_id.
 
 Provides:
-  - init_cases_table()  — creates the cases table in MSSQL (called at import)
+  - init_cases_table()  — creates the cases table in MySQL (called at import)
   - router              — FastAPI APIRouter with /cases/* endpoints
   - get_active_case()   — FastAPI dependency that validates case ownership
 """
@@ -16,7 +16,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 
-from mssql_db import get_conn, _fetchone, _fetchall
+from mysql_db import get_conn, _fetchone, _fetchall
 from auth import CurrentUser, get_current_user
 
 
@@ -25,22 +25,18 @@ from auth import CurrentUser, get_current_user
 # ---------------------------------------------------------------------------
 
 def init_cases_table() -> None:
-    """Create the cases table in MSSQL if it does not already exist."""
+    """Create the cases table in MySQL if it does not already exist."""
     conn = get_conn()
     try:
         cur = conn.cursor()
         cur.execute("""
-            IF NOT EXISTS (
-                SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-                WHERE TABLE_NAME = 'cases'
-            )
-            CREATE TABLE cases (
-                id          INT IDENTITY(1,1) PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS cases (
+                id          INT AUTO_INCREMENT PRIMARY KEY,
                 user_id     INT           NOT NULL,
-                name        NVARCHAR(200) NOT NULL,
-                description NVARCHAR(500),
-                collection  NVARCHAR(50)  NOT NULL DEFAULT 'IR',
-                created_at  DATETIME      NOT NULL DEFAULT GETDATE(),
+                name        VARCHAR(200)  NOT NULL,
+                description VARCHAR(500),
+                collection  VARCHAR(50)   NOT NULL DEFAULT 'IR',
+                created_at  DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 CONSTRAINT fk_cases_user FOREIGN KEY (user_id)
                     REFERENCES users(id) ON DELETE CASCADE
             )
@@ -65,8 +61,8 @@ def _get_case_for_user(case_id: int, user_id: int) -> dict:
         cur = conn.cursor()
         cur.execute(
             "SELECT id, user_id, name, description, collection, created_at "
-            "FROM cases WHERE id = ?",
-            case_id,
+            "FROM cases WHERE id = %s",
+            (case_id,),
         )
         row = _fetchone(cur)
     finally:
@@ -127,8 +123,8 @@ def list_cases(current_user: CurrentUser = Depends(get_current_user)):
         cur = conn.cursor()
         cur.execute(
             "SELECT id, name, description, collection, created_at "
-            "FROM cases WHERE user_id = ? ORDER BY created_at DESC",
-            current_user.user_id,
+            "FROM cases WHERE user_id = %s ORDER BY created_at DESC",
+            (current_user.user_id,),
         )
         rows = _fetchall(cur)
         for r in rows:
@@ -154,21 +150,17 @@ def create_case(
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO cases (user_id, name, description, collection) VALUES (?, ?, ?, ?)",
-            current_user.user_id,
-            name,
-            payload.description or "",
-            payload.collection,
+            "INSERT INTO cases (user_id, name, description, collection) VALUES (%s, %s, %s, %s)",
+            (current_user.user_id, name, payload.description or "", payload.collection),
         )
         conn.commit()
 
         # Return the newly created case
         cur.execute(
             "SELECT id, name, description, collection, created_at "
-            "FROM cases WHERE user_id = ? AND name = ? "
+            "FROM cases WHERE user_id = %s AND name = %s "
             "ORDER BY created_at DESC",
-            current_user.user_id,
-            name,
+            (current_user.user_id, name),
         )
         row = _fetchone(cur)
         row["created_at"] = str(row["created_at"])
@@ -202,10 +194,10 @@ def update_case(
         name = payload.name.strip()
         if not name:
             raise HTTPException(status_code=400, detail="Case name cannot be empty.")
-        updates.append("name = ?")
+        updates.append("name = %s")
         params.append(name)
     if payload.description is not None:
-        updates.append("description = ?")
+        updates.append("description = %s")
         params.append(payload.description)
 
     if not updates:
@@ -215,7 +207,7 @@ def update_case(
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute(f"UPDATE cases SET {', '.join(updates)} WHERE id = ?", *params)
+        cur.execute(f"UPDATE cases SET {', '.join(updates)} WHERE id = %s", tuple(params))
         conn.commit()
         case = _get_case_for_user(case_id, current_user.user_id)
         return {"ok": True, "case": case}
@@ -249,11 +241,11 @@ def delete_case(
     except Exception as e:
         print(f"[Cases] Warning: could not purge ChromaDB for case {case_id}: {e}")
 
-    # Delete the case row (FK cascade deletes child MSSQL rows in Phase 3)
+    # Delete the case row (FK cascade deletes child MySQL rows)
     conn = get_conn()
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM cases WHERE id = ?", case_id)
+        cur.execute("DELETE FROM cases WHERE id = %s", (case_id,))
         conn.commit()
         return {"ok": True, "message": f"Case '{case['name']}' deleted."}
     finally:

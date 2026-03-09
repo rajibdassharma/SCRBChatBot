@@ -1,72 +1,54 @@
 """
 Location Extractor — extracts addresses/locations from IR document chunks,
-geocodes them using a bundled India geocoding dictionary, and stores in SQL Server.
+geocodes them using a bundled India geocoding dictionary, and stores in MySQL.
 
 Provides geographic map data for the Connections Map tab (Location Map view).
 """
 
 from typing import List, Dict, Any, Optional, Tuple
 
-import pyodbc
-
 from ollama_client import ollama_chat
 from config import PDF_MODEL
 from entity_graph import _find_balanced_json_object
-from mssql_db import get_conn, _fetchone, _fetchall
+from mysql_db import get_conn, _fetchone, _fetchall
 
 
 # ---------------------------------------------------------------------------
-# MSSQL Schema Setup
+# MySQL Schema Setup
 # ---------------------------------------------------------------------------
-def _get_conn() -> pyodbc.Connection:
+def _get_conn():
     return get_conn()
 
 
 def init_db():
     conn = _get_conn()
-
-    conn.execute("""
-        IF NOT EXISTS (
-            SELECT 1 FROM INFORMATION_SCHEMA.TABLES
-            WHERE TABLE_SCHEMA = 'dbo' AND TABLE_NAME = 'doc_locations'
-        )
-        CREATE TABLE doc_locations (
-            id            INT IDENTITY(1,1) PRIMARY KEY,
-            doc_id        NVARCHAR(500)  NOT NULL,
-            doc_name      NVARCHAR(500)  NOT NULL,
-            person_name   NVARCHAR(300)  NOT NULL DEFAULT '',
-            address_text  NVARCHAR(MAX)  NOT NULL DEFAULT '',
-            city          NVARCHAR(200)  NOT NULL DEFAULT '',
-            locality      NVARCHAR(200)  NOT NULL DEFAULT '',
-            lat           FLOAT          NULL,
-            lng           FLOAT          NULL,
-            address_type  NVARCHAR(50)   NOT NULL DEFAULT 'OTHER',
-            case_id       INT            NULL,
-            CONSTRAINT uq_doc_locations UNIQUE (doc_id, person_name, address_type)
+    cur = conn.cursor()
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS doc_locations (
+            id            INT AUTO_INCREMENT PRIMARY KEY,
+            doc_id        VARCHAR(500)  NOT NULL,
+            doc_name      VARCHAR(500)  NOT NULL,
+            person_name   VARCHAR(300)  NOT NULL DEFAULT '',
+            address_text  TEXT          NOT NULL,
+            city          VARCHAR(200)  NOT NULL DEFAULT '',
+            locality      VARCHAR(200)  NOT NULL DEFAULT '',
+            lat           DOUBLE        NULL,
+            lng           DOUBLE        NULL,
+            address_type  VARCHAR(50)   NOT NULL DEFAULT 'OTHER',
+            case_id       INT           NULL,
+            UNIQUE KEY uq_doc_locations (doc_id, person_name, address_type)
         )
     """)
-    conn.execute("""
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_loc_doc_id' AND object_id = OBJECT_ID('doc_locations'))
-            CREATE INDEX idx_loc_doc_id ON doc_locations(doc_id)
-    """)
-    conn.execute("""
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_loc_city' AND object_id = OBJECT_ID('doc_locations'))
-            CREATE INDEX idx_loc_city ON doc_locations(city)
-    """)
-    conn.execute("""
-        IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'idx_loc_lat' AND object_id = OBJECT_ID('doc_locations'))
-            CREATE INDEX idx_loc_lat ON doc_locations(lat)
-    """)
-
-    # Schema migration: add case_id column to doc_locations if absent
-    conn.execute("""
-        IF NOT EXISTS (
-            SELECT 1 FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_NAME = 'doc_locations' AND COLUMN_NAME = 'case_id'
-        )
-        ALTER TABLE doc_locations ADD case_id INT NULL
-    """)
-
+    # Indexes
+    for idx_name, idx_col in [
+        ("idx_loc_doc_id", "doc_id(255)"),
+        ("idx_loc_city", "city"),
+        ("idx_loc_lat", "lat"),
+    ]:
+        try:
+            cur.execute(f"CREATE INDEX {idx_name} ON doc_locations({idx_col})")
+        except Exception:
+            pass
     conn.commit()
     conn.close()
 
@@ -390,8 +372,9 @@ def extract_locations_from_chunks(
 def store_locations(
     doc_id: str, doc_name: str, locations: List[Dict[str, Any]], case_id: Optional[int] = None
 ) -> Dict[str, Any]:
-    """Geocode and store location records in SQL Server."""
+    """Geocode and store location records in MySQL."""
     conn = _get_conn()
+    cur = conn.cursor()
     stored = 0
     skipped_no_geo = 0
 
@@ -402,24 +385,12 @@ def store_locations(
             skipped_no_geo += 1
 
         try:
-            conn.execute(
-                """
-                IF NOT EXISTS (
-                    SELECT 1 FROM doc_locations
-                    WHERE doc_id = ? AND person_name = ? AND address_type = ?
-                )
-                INSERT INTO doc_locations
-                    (doc_id, doc_name, person_name, address_text, city, locality,
-                     lat, lng, address_type, case_id)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    doc_id, loc["person_name"], loc["address_type"],
-                    doc_id, doc_name,
-                    loc["person_name"], loc["address_text"],
-                    loc["city"], loc["locality"],
-                    lat, lng, loc["address_type"], case_id,
-                ),
+            cur.execute(
+                "INSERT IGNORE INTO doc_locations "
+                "(doc_id, doc_name, person_name, address_text, city, locality, lat, lng, address_type, case_id) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)",
+                (doc_id, doc_name, loc["person_name"], loc["address_text"],
+                 loc["city"], loc["locality"], lat, lng, loc["address_type"], case_id)
             )
             stored += 1
         except Exception as ex:
@@ -437,7 +408,7 @@ def store_locations(
 def extract_and_store_locations(
     doc_id: str, doc_name: str, chunks: List[str], case_id: Optional[int] = None
 ) -> Dict[str, Any]:
-    """Full pipeline: LLM extraction → dedup → geocoding → SQL Server storage."""
+    """Full pipeline: LLM extraction -> dedup -> geocoding -> MySQL storage."""
     print(f"[Locations] Starting for '{doc_name}' ({len(chunks)} chunks)")
     locations = extract_locations_from_chunks(chunks)
 
@@ -460,17 +431,18 @@ def extract_and_store_locations(
 def get_all_locations(case_id: Optional[int] = None) -> List[Dict[str, Any]]:
     """Return all geocoded locations (those with lat/lng)."""
     conn = _get_conn()
+    cur = conn.cursor()
     if case_id is not None:
-        cur = conn.execute(
+        cur.execute(
             "SELECT id, doc_id, doc_name, person_name, address_text, city, locality, "
             "lat, lng, address_type "
             "FROM doc_locations "
-            "WHERE lat IS NOT NULL AND case_id = ? "
+            "WHERE lat IS NOT NULL AND case_id = %s "
             "ORDER BY doc_name, person_name",
             (case_id,),
         )
     else:
-        cur = conn.execute(
+        cur.execute(
             "SELECT id, doc_id, doc_name, person_name, address_text, city, locality, "
             "lat, lng, address_type "
             "FROM doc_locations "
@@ -485,10 +457,11 @@ def get_all_locations(case_id: Optional[int] = None) -> List[Dict[str, Any]]:
 def get_extracted_doc_ids_for_locations(case_id: Optional[int] = None) -> set:
     """Return set of doc_ids that already have location records stored."""
     conn = _get_conn()
+    cur = conn.cursor()
     if case_id is not None:
-        cur = conn.execute("SELECT DISTINCT doc_id FROM doc_locations WHERE case_id = ?", (case_id,))
+        cur.execute("SELECT DISTINCT doc_id FROM doc_locations WHERE case_id = %s", (case_id,))
     else:
-        cur = conn.execute("SELECT DISTINCT doc_id FROM doc_locations")
+        cur.execute("SELECT DISTINCT doc_id FROM doc_locations")
     ids = {r[0] for r in cur.fetchall()}
     conn.close()
     return ids
@@ -497,10 +470,11 @@ def get_extracted_doc_ids_for_locations(case_id: Optional[int] = None) -> set:
 def clear_locations_data(case_id: Optional[int] = None) -> Dict[str, Any]:
     """Delete location records. If case_id is given, only delete for that case."""
     conn = _get_conn()
+    cur = conn.cursor()
     if case_id is not None:
-        conn.execute("DELETE FROM doc_locations WHERE case_id = ?", (case_id,))
+        cur.execute("DELETE FROM doc_locations WHERE case_id = %s", (case_id,))
     else:
-        conn.execute("DELETE FROM doc_locations")
+        cur.execute("DELETE FROM doc_locations")
     conn.commit()
     conn.close()
     return {"ok": True, "message": "Location data cleared."}

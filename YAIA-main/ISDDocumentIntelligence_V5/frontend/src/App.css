@@ -1965,3 +1965,54 @@ button:disabled {
   text-align: center;
   padding: 40px;
 }
+
+/* ── Answer Rating Bar ───────────────────────────────────────────── */
+.rating-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 10px;
+  padding: 8px 0;
+  border-top: 1px solid #e0e0e0;
+}
+.rating-label {
+  font-size: 12px;
+  color: #666;
+  margin-right: 4px;
+}
+.rating-btn {
+  width: 36px;
+  height: 28px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s;
+  background: #f5f5f5;
+  color: #333;
+}
+.rating-btn:hover:not(:disabled) {
+  transform: scale(1.1);
+}
+.rating-btn:disabled {
+  cursor: default;
+  opacity: 0.5;
+}
+.rating-btn.rating-positive { border-color: #4caf50; color: #2e7d32; }
+.rating-btn.rating-neutral  { border-color: #ff9800; color: #e65100; }
+.rating-btn.rating-negative { border-color: #f44336; color: #c62828; }
+.rating-btn.rating-active {
+  opacity: 1 !important;
+  transform: scale(1.15);
+  box-shadow: 0 0 6px rgba(0,0,0,0.2);
+}
+.rating-btn.rating-active.rating-positive { background: #4caf50; color: #fff; }
+.rating-btn.rating-active.rating-neutral  { background: #ff9800; color: #fff; }
+.rating-btn.rating-active.rating-negative { background: #f44336; color: #fff; }
+.rating-thanks {
+  font-size: 11px;
+  color: #4caf50;
+  margin-left: 8px;
+  font-style: italic;
+}

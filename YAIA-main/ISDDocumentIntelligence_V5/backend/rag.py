@@ -1933,7 +1933,9 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         print(f"[RAG] NL→SQL returned no results — falling back to hybrid approach")
 
     # For SMAC: detect if the question targets a specific field and use direct metadata lookup
-    if collection_name == "SMAC":
+    _is_smac = collection_name == "SMAC" or collection_name.startswith("SMAC_c")
+    _is_ir = collection_name == "IR" or collection_name.startswith("IR_c")
+    if _is_smac:
         detected_field = _detect_smac_field(q_for_keywords)
         if detected_field:
             print(f"[RAG:SMAC] Field-specific query detected: '{detected_field}' — bypassing vector search")
@@ -1947,7 +1949,7 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         else:
             results = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=top_k)
 
-    elif collection_name == "IR":
+    elif _is_ir:
         detected_keyword = _detect_ir_field(q_for_keywords)
         if detected_keyword:
             print(f"[RAG:IR] Field keyword detected: '{detected_keyword}' — using fuzzy field retrieval")
@@ -2139,7 +2141,8 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
             "- If an entry has no name but has a role/description, include that.\n\n"
             f"CONTEXT:\n{context}\n\n"
             f"QUESTION:\n{llm_question}\n\n"
-            "Output a clean numbered list. Include ALL entries found. Do not truncate."
+            "Output a clean numbered list. Include ALL entries found. Do not truncate. "
+            "For EACH entry, mention the source document name in parentheses (from the context block headers like [doc_name | ...])."
         )
     else:
         prompt = (
@@ -2156,6 +2159,8 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
             "- Do NOT use your training data to fill gaps — if it is not in the CONTEXT, it does not exist.\n\n"
             f"CONTEXT:\n{context}\n\n"
             f"QUESTION:\n{llm_question}\n\n"
+            "IMPORTANT: For each piece of information, cite the source document name in parentheses "
+            "(from the context block headers like [doc_name | ...]). "
             "FINAL REMINDER: Every fact in your answer must come directly from the CONTEXT above. "
             "If not found there, say so explicitly."
         )

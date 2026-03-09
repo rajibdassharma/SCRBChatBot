@@ -9,7 +9,7 @@ def ollama_chat(messages, temperature=0.0, model=None):
         "stream": False,
         "options": {"temperature": temperature}
     }
-    r = requests.post(url, json=payload, timeout=600)
+    r = requests.post(url, json=payload, timeout=180)
     r.raise_for_status()
     return r.json()["message"]["content"]
 
@@ -43,7 +43,7 @@ def ollama_embed_batch(texts: list, model=None, batch_size: int = 64, max_retrie
             try:
                 url1 = f"{OLLAMA_BASE_URL}/api/embed"
                 payload1 = {"model": m, "input": batch}
-                r1 = requests.post(url1, json=payload1, timeout=600)
+                r1 = requests.post(url1, json=payload1, timeout=180)
                 if r1.status_code == 200:
                     data = r1.json()
                     if "embeddings" in data and len(data["embeddings"]) == len(batch):
@@ -68,7 +68,7 @@ def ollama_embed_batch(texts: list, model=None, batch_size: int = 64, max_retrie
                 try:
                     url2 = f"{OLLAMA_BASE_URL}/api/embeddings"
                     payload2 = {"model": m, "prompt": text}
-                    r2 = requests.post(url2, json=payload2, timeout=600)
+                    r2 = requests.post(url2, json=payload2, timeout=180)
                     if r2.status_code == 200:
                         vec = r2.json().get("embedding")
                         if vec:

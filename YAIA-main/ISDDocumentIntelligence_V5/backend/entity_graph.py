@@ -1,9 +1,9 @@
 """
-Entity Graph — Neo4j-backed entity + relationship extraction and knowledge graph
+Entity Graph — MySQL-backed entity + relationship extraction and knowledge graph
 for ISD Document Intelligence V5.
 
 Extracts named entities AND typed relationships from document chunks using the local LLM,
-stores them in Neo4j graph database, and provides graph data for visualization.
+stores them in MySQL database, and provides graph data for visualization.
 
 Relationship types include: MEMBER_OF, WORKS_AT, SIBLING, SPOUSE, PARENT_OF, CHILD_OF,
 LIVES_AT, COLLEAGUE, PARTICIPATED_IN, REPORTS_TO, LOCATED_IN, RELATED_TO, CO_OCCURRENCE.
@@ -13,10 +13,10 @@ import json
 import re
 from typing import List, Dict, Any, Optional, Tuple
 
-from neo4j import GraphDatabase
+from mysql_db import get_conn, _fetchone, _fetchall
 
 from ollama_client import ollama_chat
-from config import PDF_MODEL, NEO4J_URI, NEO4J_USER, NEO4J_PASSWORD
+from config import PDF_MODEL
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -41,31 +41,69 @@ RELATIONSHIP_TYPES = {
 }
 
 # ---------------------------------------------------------------------------
-# Neo4j Driver (module-level, thread-safe)
+# MySQL Schema Setup
 # ---------------------------------------------------------------------------
-_driver = GraphDatabase.driver(NEO4J_URI, auth=(NEO4J_USER, NEO4J_PASSWORD))
+def _get_conn():
+    return get_conn()
 
 
-# ---------------------------------------------------------------------------
-# Neo4j Schema Setup
-# ---------------------------------------------------------------------------
 def init_db():
-    """Create Neo4j constraints and indexes on startup."""
-    with _driver.session() as session:
-        # Unique constraint on (name, type, doc_id) — prevents duplicate entity nodes
-        session.run("""
-            CREATE CONSTRAINT entity_unique IF NOT EXISTS
-            FOR (e:Entity) REQUIRE (e.name, e.type, e.doc_id) IS UNIQUE
-        """)
-        # Index for case-scoped queries
-        session.run("""
-            CREATE INDEX entity_case IF NOT EXISTS FOR (e:Entity) ON (e.case_id)
-        """)
-        # Index for type-filtered queries
-        session.run("""
-            CREATE INDEX entity_type IF NOT EXISTS FOR (e:Entity) ON (e.type)
-        """)
-    print("[EntityGraph] Neo4j schema initialized.")
+    """Create MySQL tables and indexes on startup."""
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS entities (
+            id         INT AUTO_INCREMENT PRIMARY KEY,
+            name       VARCHAR(500)  NOT NULL,
+            type       VARCHAR(100)  NOT NULL,
+            doc_id     VARCHAR(500)  NOT NULL,
+            doc_name   VARCHAR(500)  NOT NULL,
+            context    TEXT          NULL,
+            case_id    INT           NULL,
+            UNIQUE KEY uq_entities (name, type, doc_id)
+        )
+    """)
+
+    try:
+        cur.execute("CREATE INDEX idx_entities_name ON entities(name(255))")
+    except Exception:
+        pass
+    try:
+        cur.execute("CREATE INDEX idx_entities_type ON entities(type)")
+    except Exception:
+        pass
+    try:
+        cur.execute("CREATE INDEX idx_entities_doc_id ON entities(doc_id(255))")
+    except Exception:
+        pass
+
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS relationships (
+            id                 INT AUTO_INCREMENT PRIMARY KEY,
+            source_entity_id   INT            NOT NULL,
+            target_entity_id   INT            NOT NULL,
+            relationship_type  VARCHAR(200)   NOT NULL DEFAULT 'CO_OCCURRENCE',
+            doc_id             VARCHAR(500)   NOT NULL,
+            context            TEXT           NULL DEFAULT NULL,
+            case_id            INT            NULL,
+            FOREIGN KEY (source_entity_id) REFERENCES entities(id) ON DELETE NO ACTION,
+            FOREIGN KEY (target_entity_id) REFERENCES entities(id) ON DELETE NO ACTION,
+            UNIQUE KEY uq_relationships (source_entity_id, target_entity_id, relationship_type, doc_id)
+        )
+    """)
+    try:
+        cur.execute("CREATE INDEX idx_rel_source ON relationships(source_entity_id)")
+    except Exception:
+        pass
+    try:
+        cur.execute("CREATE INDEX idx_rel_target ON relationships(target_entity_id)")
+    except Exception:
+        pass
+
+    conn.commit()
+    conn.close()
+    print("[EntityGraph] MySQL schema initialized.")
 
 
 # Initialize on module load
@@ -292,87 +330,59 @@ def _find_balanced_json_object(text: str) -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
-# Neo4j Storage Helpers
+# MySQL Storage Helpers
 # ---------------------------------------------------------------------------
-# Entity "key" in Neo4j context: (name, type, doc_id) tuple
-EntityKey = Tuple[str, str, str]
 
-
-def _insert_or_get_entity(
-    session,
-    name: str,
-    etype: str,
-    doc_id: str,
-    doc_name: str,
-    context: str,
-    case_id=None,
-) -> EntityKey:
+def _insert_or_get_entity(conn, name, etype, doc_id, doc_name, context, case_id=None):
     """
-    MERGE entity node by (name, type, doc_id). Returns (name, type, doc_id) key.
-    ON CREATE sets doc_name, context, case_id.
+    INSERT IGNORE entity row by (name, type, doc_id). Returns integer id.
     """
-    session.run(
-        """
-        MERGE (e:Entity {name: $name, type: $type, doc_id: $doc_id})
-        ON CREATE SET e.doc_name = $doc_name, e.context = $context, e.case_id = $case_id
-        """,
-        name=name, type=etype, doc_id=doc_id,
-        doc_name=doc_name, context=context, case_id=case_id,
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT IGNORE INTO entities (name, type, doc_id, doc_name, context, case_id) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (name, etype, doc_id, doc_name, context, case_id),
     )
-    return (name, etype, doc_id)
+    if cur.rowcount > 0:
+        return cur.lastrowid
+
+    # Row already existed — fetch its id
+    cur.execute(
+        "SELECT id FROM entities WHERE name = %s AND type = %s AND doc_id = %s",
+        (name, etype, doc_id),
+    )
+    row = cur.fetchone()
+    return row["id"] if row else None
 
 
-def _insert_relationship_if_absent(
-    session,
-    src_key: EntityKey,
-    tgt_key: EntityKey,
-    rel_type: str,
-    doc_id: str,
-    context: str,
-    case_id=None,
-) -> None:
+def _insert_relationship_if_absent(conn, src_id, tgt_id, rel_type, doc_id, context, case_id=None):
     """
-    MERGE relationship between two entity nodes.
-    rel_type is validated against RELATIONSHIP_TYPES whitelist before interpolation
-    into the Cypher string (safe — no user input reaches this function directly).
+    INSERT IGNORE relationship between two entity ids.
     """
-    if rel_type not in RELATIONSHIP_TYPES:
-        rel_type = "RELATED_TO"
-
-    src_name, src_type, src_doc_id = src_key
-    tgt_name, tgt_type, tgt_doc_id = tgt_key
-
-    # rel_type is from a closed whitelist — interpolation is safe
-    cypher = f"""
-        MATCH (src:Entity {{name: $src_name, type: $src_type, doc_id: $src_doc_id}})
-        MATCH (tgt:Entity {{name: $tgt_name, type: $tgt_type, doc_id: $tgt_doc_id}})
-        MERGE (src)-[r:{rel_type} {{doc_id: $doc_id}}]->(tgt)
-        ON CREATE SET r.context = $context, r.case_id = $case_id
-    """
-    session.run(
-        cypher,
-        src_name=src_name, src_type=src_type, src_doc_id=src_doc_id,
-        tgt_name=tgt_name, tgt_type=tgt_type, tgt_doc_id=tgt_doc_id,
-        doc_id=doc_id, context=context, case_id=case_id,
+    cur = conn.cursor()
+    cur.execute(
+        "INSERT IGNORE INTO relationships "
+        "(source_entity_id, target_entity_id, relationship_type, doc_id, context, case_id) "
+        "VALUES (%s, %s, %s, %s, %s, %s)",
+        (src_id, tgt_id, rel_type, doc_id, context, case_id),
     )
 
 
-def _resolve_entity_key(
-    session, name: str, doc_id: str, case_id=None
-) -> Optional[EntityKey]:
-    """Find entity by name (case-insensitive) and doc_id. Returns (name, type, doc_id) or None."""
-    result = session.run(
-        """
-        MATCH (e:Entity)
-        WHERE toLower(e.name) = toLower($name) AND e.doc_id = $doc_id
-          AND ($case_id IS NULL OR e.case_id = $case_id)
-        RETURN e.name AS name, e.type AS type, e.doc_id AS doc_id
-        LIMIT 1
-        """,
-        name=name.strip(), doc_id=doc_id, case_id=case_id,
-    )
-    row = result.single()
-    return (row["name"], row["type"], row["doc_id"]) if row else None
+def _resolve_entity_id(conn, name, doc_id, case_id=None):
+    """Find entity id by name (case-insensitive) and doc_id. Returns int id or None."""
+    cur = conn.cursor()
+    if case_id is not None:
+        cur.execute(
+            "SELECT id FROM entities WHERE LOWER(name) = LOWER(%s) AND doc_id = %s AND case_id = %s",
+            (name.strip(), doc_id, case_id),
+        )
+    else:
+        cur.execute(
+            "SELECT id FROM entities WHERE LOWER(name) = LOWER(%s) AND doc_id = %s",
+            (name.strip(), doc_id),
+        )
+    row = cur.fetchone()
+    return row["id"] if row else None
 
 
 # ---------------------------------------------------------------------------
@@ -386,69 +396,72 @@ def store_entities_and_relationships(
     case_id: Optional[int] = None,
 ) -> Dict[str, Any]:
     """
-    Store extracted entities and typed relationships in Neo4j.
+    Store extracted entities and typed relationships in MySQL.
     Falls back to CO_OCCURRENCE edges for entity pairs without explicit relationships.
     """
-    with _driver.session() as session:
-        entity_keys: List[EntityKey] = []
-        entity_name_to_key: Dict[str, EntityKey] = {}
+    conn = _get_conn()
+    entity_ids: List[int] = []
+    entity_name_to_id: Dict[str, int] = {}
 
-        for e in entities:
-            try:
-                key = _insert_or_get_entity(
-                    session,
-                    e["name"], e["type"], doc_id, doc_name, e.get("context", ""),
-                    case_id=case_id,
-                )
-                entity_keys.append(key)
-                entity_name_to_key[e["name"].lower().strip()] = key
-            except Exception as ex:
-                print(f"[EntityGraph] Failed to store entity {e}: {ex}")
+    for e in entities:
+        try:
+            eid = _insert_or_get_entity(
+                conn,
+                e["name"], e["type"], doc_id, doc_name, e.get("context", ""),
+                case_id=case_id,
+            )
+            if eid is not None:
+                entity_ids.append(eid)
+                entity_name_to_id[e["name"].lower().strip()] = eid
+        except Exception as ex:
+            print(f"[EntityGraph] Failed to store entity {e}: {ex}")
 
-        # Store explicit typed relationships
-        linked_pairs: set = set()
-        rel_count = 0
+    # Store explicit typed relationships
+    linked_pairs: set = set()
+    rel_count = 0
 
-        if relationships:
-            for r in relationships:
-                src_name = r["source"].lower().strip()
-                tgt_name = r["target"].lower().strip()
+    if relationships:
+        for r in relationships:
+            src_name = r["source"].lower().strip()
+            tgt_name = r["target"].lower().strip()
 
-                src_key = entity_name_to_key.get(src_name)
-                tgt_key = entity_name_to_key.get(tgt_name)
+            src_id = entity_name_to_id.get(src_name)
+            tgt_id = entity_name_to_id.get(tgt_name)
 
-                if not src_key:
-                    src_key = _resolve_entity_key(session, r["source"], doc_id, case_id=case_id)
-                if not tgt_key:
-                    tgt_key = _resolve_entity_key(session, r["target"], doc_id, case_id=case_id)
+            if not src_id:
+                src_id = _resolve_entity_id(conn, r["source"], doc_id, case_id=case_id)
+            if not tgt_id:
+                tgt_id = _resolve_entity_id(conn, r["target"], doc_id, case_id=case_id)
 
-                if src_key and tgt_key and src_key != tgt_key:
-                    try:
-                        _insert_relationship_if_absent(
-                            session, src_key, tgt_key, r["type"], doc_id,
-                            r.get("context", ""), case_id=case_id,
-                        )
-                        linked_pairs.add((src_key, tgt_key))
-                        rel_count += 1
-                    except Exception:
-                        pass
+            if src_id and tgt_id and src_id != tgt_id:
+                try:
+                    _insert_relationship_if_absent(
+                        conn, src_id, tgt_id, r["type"], doc_id,
+                        r.get("context", ""), case_id=case_id,
+                    )
+                    linked_pairs.add((src_id, tgt_id))
+                    rel_count += 1
+                except Exception:
+                    pass
 
-        # CO_OCCURRENCE edges for pairs without explicit relationships (cap at 30)
-        capped_keys = entity_keys[:30]
-        for i in range(len(capped_keys)):
-            for j in range(i + 1, len(capped_keys)):
-                pair = (capped_keys[i], capped_keys[j])
-                if pair not in linked_pairs:
-                    try:
-                        _insert_relationship_if_absent(
-                            session, capped_keys[i], capped_keys[j],
-                            "CO_OCCURRENCE", doc_id, "", case_id=case_id,
-                        )
-                    except Exception:
-                        pass
+    # CO_OCCURRENCE edges for pairs without explicit relationships (cap at 30)
+    capped_ids = entity_ids[:30]
+    for i in range(len(capped_ids)):
+        for j in range(i + 1, len(capped_ids)):
+            pair = (capped_ids[i], capped_ids[j])
+            if pair not in linked_pairs:
+                try:
+                    _insert_relationship_if_absent(
+                        conn, capped_ids[i], capped_ids[j],
+                        "CO_OCCURRENCE", doc_id, "", case_id=case_id,
+                    )
+                except Exception:
+                    pass
 
-    print(f"[EntityGraph] Stored {len(entity_keys)} entities, {rel_count} typed relationships for {doc_name}")
-    return {"entities_stored": len(entity_keys), "relationships_stored": rel_count, "doc_id": doc_id}
+    conn.commit()
+    conn.close()
+    print(f"[EntityGraph] Stored {len(entity_ids)} entities, {rel_count} typed relationships for {doc_name}")
+    return {"entities_stored": len(entity_ids), "relationships_stored": rel_count, "doc_id": doc_id}
 
 
 # ---------------------------------------------------------------------------
@@ -468,10 +481,10 @@ def extract_and_store_entities(
     progress_callback=None,
 ) -> Dict[str, Any]:
     """
-    Full pipeline: extract entities + relationships from chunks, store in Neo4j.
+    Full pipeline: extract entities + relationships from chunks, store in MySQL.
 
     - Caps to MAX_ENTITY_CHUNKS (60) evenly-sampled chunks.
-    - Writes to Neo4j after EVERY batch so the graph starts populating immediately.
+    - Writes to MySQL after EVERY batch so the graph starts populating immediately.
     - Accepts an optional progress_callback(batch_done, batch_total).
     """
     original_count = len(chunks)
@@ -522,14 +535,15 @@ def extract_and_store_entities(
         "TEXT:\n"
     )
 
-    with _driver.session() as session:
+    conn = _get_conn()
+    try:
         for batch_idx, start in enumerate(range(0, len(chunks), batch_size)):
             batch = chunks[start : start + batch_size]
             combined_text = "\n\n---\n\n".join(
                 f"[CHUNK {start + i}]\n{chunk[:2200]}" for i, chunk in enumerate(batch)
             )
 
-            # ── LLM call ─────────────────────────────────────────────────────
+            # -- LLM call ---------------------------------------------------------
             try:
                 response = ollama_chat(
                     [{"role": "user", "content": prompt_prefix + combined_text}],
@@ -543,7 +557,7 @@ def extract_and_store_entities(
                     progress_callback(batch_idx + 1, total_batches)
                 continue
 
-            # ── Deduplicate entities (cross-batch) ───────────────────────────
+            # -- Deduplicate entities (cross-batch) --------------------------------
             batch_entities: List[Dict[str, Any]] = []
             for e in parsed.get("entities", []):
                 if not (isinstance(e, dict) and "name" in e and "type" in e):
@@ -562,22 +576,23 @@ def extract_and_store_entities(
                                 "context": (e.get("context") or "")[:300],
                             })
 
-            # ── Store batch entities → Neo4j ──────────────────────────────────
-            entity_name_to_key: Dict[str, EntityKey] = {}
-            batch_entity_keys:  List[EntityKey]       = []
+            # -- Store batch entities -> MySQL ------------------------------------
+            entity_name_to_id: Dict[str, int] = {}
+            batch_entity_ids:  List[int]       = []
             for e in batch_entities:
                 try:
-                    ekey = _insert_or_get_entity(
-                        session, e["name"], e["type"], doc_id, doc_name,
+                    eid = _insert_or_get_entity(
+                        conn, e["name"], e["type"], doc_id, doc_name,
                         e.get("context", ""), case_id=case_id,
                     )
-                    batch_entity_keys.append(ekey)
-                    entity_name_to_key[e["name"].lower().strip()] = ekey
-                    total_entities_stored += 1
+                    if eid is not None:
+                        batch_entity_ids.append(eid)
+                        entity_name_to_id[e["name"].lower().strip()] = eid
+                        total_entities_stored += 1
                 except Exception as ex:
                     print(f"[EntityGraph] Entity insert failed ({e['name']}): {ex}")
 
-            # ── Store batch relationships ─────────────────────────────────────
+            # -- Store batch relationships -----------------------------------------
             linked_pairs: set = set()
             for r in parsed.get("relationships", []):
                 if not (isinstance(r, dict) and "source" in r and "target" in r):
@@ -596,43 +611,45 @@ def extract_and_store_entities(
                     continue
                 seen_rel_keys.add(rel_key)
 
-                src_key = entity_name_to_key.get(source.lower())
-                tgt_key = entity_name_to_key.get(target.lower())
-                if not src_key:
-                    src_key = _resolve_entity_key(session, source, doc_id, case_id=case_id)
-                if not tgt_key:
-                    tgt_key = _resolve_entity_key(session, target, doc_id, case_id=case_id)
-                if src_key and tgt_key and src_key != tgt_key:
+                src_id = entity_name_to_id.get(source.lower())
+                tgt_id = entity_name_to_id.get(target.lower())
+                if not src_id:
+                    src_id = _resolve_entity_id(conn, source, doc_id, case_id=case_id)
+                if not tgt_id:
+                    tgt_id = _resolve_entity_id(conn, target, doc_id, case_id=case_id)
+                if src_id and tgt_id and src_id != tgt_id:
                     try:
                         _insert_relationship_if_absent(
-                            session, src_key, tgt_key, rtype, doc_id,
+                            conn, src_id, tgt_id, rtype, doc_id,
                             (r.get("context") or "")[:300], case_id=case_id,
                         )
-                        linked_pairs.add((src_key, tgt_key))
+                        linked_pairs.add((src_id, tgt_id))
                         total_rels_stored += 1
                     except Exception:
                         pass
 
             # CO_OCCURRENCE edges for batch entity pairs not already linked
-            capped_keys = batch_entity_keys[:30]
-            for i in range(len(capped_keys)):
-                for j in range(i + 1, len(capped_keys)):
-                    pair = (capped_keys[i], capped_keys[j])
+            capped_ids = batch_entity_ids[:30]
+            for i in range(len(capped_ids)):
+                for j in range(i + 1, len(capped_ids)):
+                    pair = (capped_ids[i], capped_ids[j])
                     if pair not in linked_pairs:
                         try:
                             _insert_relationship_if_absent(
-                                session, capped_keys[i], capped_keys[j],
+                                conn, capped_ids[i], capped_ids[j],
                                 "CO_OCCURRENCE", doc_id, "", case_id=case_id,
                             )
                         except Exception:
                             pass
 
-            # Neo4j auto-commits each session.run() — data immediately visible
+            conn.commit()
             print(f"[EntityGraph] Batch {batch_idx+1}/{total_batches}: "
                   f"+{len(batch_entities)} entities | {total_entities_stored} total for {doc_name}")
 
             if progress_callback:
                 progress_callback(batch_idx + 1, total_batches)
+    finally:
+        conn.close()
 
     print(f"[EntityGraph] Done: {total_entities_stored} entities, "
           f"{total_rels_stored} relationships stored for {doc_name}")
@@ -649,30 +666,40 @@ def extract_and_store_entities(
 
 def get_all_entities(type_filter: Optional[str] = None, case_id: Optional[int] = None) -> List[Dict[str, Any]]:
     """List all entities grouped by (name, type), optionally filtered by type and case."""
-    with _driver.session() as session:
-        result = session.run(
-            """
-            MATCH (e:Entity)
-            WHERE ($case_id IS NULL OR e.case_id = $case_id)
-              AND ($type_filter IS NULL OR e.type = $type_filter)
-            WITH e.name AS name, e.type AS type,
-                 collect(DISTINCT e.doc_name) AS doc_names,
-                 count(DISTINCT e.doc_id) AS mention_count
-            ORDER BY mention_count DESC, name ASC
-            RETURN name, type, doc_names, mention_count
-            """,
-            case_id=case_id,
-            type_filter=type_filter.upper() if type_filter else None,
-        )
-        rows = []
-        for r in result:
-            rows.append({
-                "name": r["name"],
-                "type": r["type"],
-                "doc_names": ",".join(r["doc_names"]),
-                "mention_count": r["mention_count"],
-            })
-    return rows
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    sql = """
+        SELECT e.name, e.type,
+               GROUP_CONCAT(DISTINCT e.doc_name SEPARATOR ',') AS doc_names,
+               COUNT(DISTINCT e.doc_id) AS mention_count
+        FROM entities e
+        WHERE 1=1
+    """
+    params = []
+
+    if case_id is not None:
+        sql += " AND e.case_id = %s"
+        params.append(case_id)
+    if type_filter:
+        sql += " AND e.type = %s"
+        params.append(type_filter.upper())
+
+    sql += " GROUP BY e.name, e.type ORDER BY mention_count DESC, e.name ASC"
+
+    cur.execute(sql, tuple(params))
+    rows = cur.fetchall()
+    conn.close()
+
+    return [
+        {
+            "name": r["name"],
+            "type": r["type"],
+            "doc_names": r["doc_names"] or "",
+            "mention_count": r["mention_count"],
+        }
+        for r in rows
+    ]
 
 
 def get_graph_data(
@@ -684,174 +711,243 @@ def get_graph_data(
     """
     limit = max(100, min(limit, 2000))
 
-    with _driver.session() as session:
+    conn = _get_conn()
+    cur = conn.cursor()
 
-        if search:
-            # Step 1: collect anchor names matching search + their 1-hop neighbors
-            nb_result = session.run(
-                """
-                MATCH (anchor:Entity)
-                WHERE ($case_id IS NULL OR anchor.case_id = $case_id)
-                  AND toLower(anchor.name) CONTAINS toLower($search)
-                WITH collect(DISTINCT anchor.name) AS anchor_names
-                MATCH (anchor:Entity)
-                WHERE anchor.name IN anchor_names
-                  AND ($case_id IS NULL OR anchor.case_id = $case_id)
-                OPTIONAL MATCH (anchor)-[]-(nbr:Entity)
-                WHERE ($case_id IS NULL OR nbr.case_id = $case_id)
-                WITH anchor_names + collect(DISTINCT nbr.name) AS all_names
-                UNWIND all_names AS nm
-                RETURN DISTINCT nm
-                """,
-                case_id=case_id, search=search,
-            )
-            visible_names = [r["nm"] for r in nb_result if r["nm"]]
+    if search:
+        # Step 1: collect entity names matching search
+        match_sql = """
+            SELECT DISTINCT e.name
+            FROM entities e
+            WHERE LOWER(e.name) LIKE %s
+        """
+        match_params = [f"%{search.lower()}%"]
+        if case_id is not None:
+            match_sql += " AND e.case_id = %s"
+            match_params.append(case_id)
 
-            if not visible_names:
-                return {"nodes": [], "edges": []}
+        cur.execute(match_sql, tuple(match_params))
+        anchor_names = [r["name"] for r in cur.fetchall()]
 
-            agg_result = session.run(
-                """
-                MATCH (e:Entity)
-                WHERE e.name IN $names
-                  AND ($case_id IS NULL OR e.case_id = $case_id)
-                WITH e.name AS name, e.type AS type,
-                     collect(DISTINCT e.doc_name) AS doc_names,
-                     count(DISTINCT e.doc_id) AS weight,
-                     collect(DISTINCT e.context)[0..5] AS contexts
-                ORDER BY weight DESC, name ASC
-                LIMIT $limit
-                RETURN name, type, doc_names, weight, contexts
-                """,
-                names=visible_names, case_id=case_id, limit=limit,
-            )
-        else:
-            agg_result = session.run(
-                """
-                MATCH (e:Entity)
-                WHERE ($case_id IS NULL OR e.case_id = $case_id)
-                WITH e.name AS name, e.type AS type,
-                     collect(DISTINCT e.doc_name) AS doc_names,
-                     count(DISTINCT e.doc_id) AS weight,
-                     collect(DISTINCT e.context)[0..5] AS contexts
-                ORDER BY weight DESC, name ASC
-                LIMIT $limit
-                RETURN name, type, doc_names, weight, contexts
-                """,
-                case_id=case_id, limit=limit,
-            )
-
-        node_rows = [dict(r) for r in agg_result]
-
-        if not node_rows:
+        if not anchor_names:
+            conn.close()
             return {"nodes": [], "edges": []}
 
-        # Filter ORGANIZATION nodes that have no PERSON relationships
-        org_names = [r["name"] for r in node_rows if r["type"] == "ORGANIZATION"]
-        orgs_with_person_rels: set = set()
-        if org_names:
-            org_result = session.run(
-                """
-                MATCH (org:Entity)-[r]-(person:Entity)
-                WHERE org.name IN $org_names
-                  AND org.type = 'ORGANIZATION'
-                  AND person.type = 'PERSON'
-                  AND ($case_id IS NULL OR org.case_id = $case_id)
-                  AND type(r) <> 'CO_OCCURRENCE'
-                RETURN DISTINCT org.name AS org_name
-                """,
-                org_names=org_names, case_id=case_id,
-            )
-            orgs_with_person_rels = {r["org_name"] for r in org_result}
+        # Step 2: get 1-hop neighbors
+        placeholders = ",".join(["%s"] * len(anchor_names))
+        nbr_sql = f"""
+            SELECT DISTINCT e2.name
+            FROM relationships r
+            JOIN entities e1 ON e1.id = r.source_entity_id
+            JOIN entities e2 ON e2.id = r.target_entity_id
+            WHERE e1.name IN ({placeholders})
+        """
+        nbr_params = list(anchor_names)
+        if case_id is not None:
+            nbr_sql += " AND e1.case_id = %s"
+            nbr_params.append(case_id)
 
-        node_rows = [
-            r for r in node_rows
-            if r["type"] != "ORGANIZATION" or r["name"] in orgs_with_person_rels
-        ]
+        cur.execute(nbr_sql, tuple(nbr_params))
+        nbr_names = [r["name"] for r in cur.fetchall()]
 
-        if not node_rows:
+        # Also get reverse direction neighbors
+        nbr_sql2 = f"""
+            SELECT DISTINCT e1.name
+            FROM relationships r
+            JOIN entities e1 ON e1.id = r.source_entity_id
+            JOIN entities e2 ON e2.id = r.target_entity_id
+            WHERE e2.name IN ({placeholders})
+        """
+        nbr_params2 = list(anchor_names)
+        if case_id is not None:
+            nbr_sql2 += " AND e2.case_id = %s"
+            nbr_params2.append(case_id)
+
+        cur.execute(nbr_sql2, tuple(nbr_params2))
+        nbr_names2 = [r["name"] for r in cur.fetchall()]
+
+        visible_names = list(set(anchor_names + nbr_names + nbr_names2))
+
+        if not visible_names:
+            conn.close()
             return {"nodes": [], "edges": []}
 
-        # Build node list
-        nodes: List[Dict[str, Any]] = []
-        name_type_to_idx: Dict[tuple, int] = {}
-        for i, row in enumerate(node_rows):
-            key = (row["name"], row["type"])
-            name_type_to_idx[key] = i
-            nodes.append({
-                "id": i,
-                "name": row["name"],
-                "type": row["type"],
-                "weight": row["weight"],
-                "doc_names": ",".join(row["doc_names"]),
-                "contexts": " | ".join((row.get("contexts") or [])[:3])[:500],
-            })
+        # Step 3: aggregate entity data for visible names
+        vn_placeholders = ",".join(["%s"] * len(visible_names))
+        agg_sql = f"""
+            SELECT e.name, e.type,
+                   GROUP_CONCAT(DISTINCT e.doc_name SEPARATOR ',') AS doc_names,
+                   COUNT(DISTINCT e.doc_id) AS weight,
+                   IFNULL(e.context, '') AS context
+            FROM entities e
+            WHERE e.name IN ({vn_placeholders})
+        """
+        agg_params = list(visible_names)
+        if case_id is not None:
+            agg_sql += " AND e.case_id = %s"
+            agg_params.append(case_id)
+        agg_sql += " GROUP BY e.name, e.type ORDER BY weight DESC, e.name ASC LIMIT %s"
+        agg_params.append(limit)
 
-        visible_names_list = list({n["name"] for n in nodes})
+        cur.execute(agg_sql, tuple(agg_params))
+    else:
+        agg_sql = """
+            SELECT e.name, e.type,
+                   GROUP_CONCAT(DISTINCT e.doc_name SEPARATOR ',') AS doc_names,
+                   COUNT(DISTINCT e.doc_id) AS weight,
+                   IFNULL(e.context, '') AS context
+            FROM entities e
+            WHERE 1=1
+        """
+        agg_params = []
+        if case_id is not None:
+            agg_sql += " AND e.case_id = %s"
+            agg_params.append(case_id)
+        agg_sql += " GROUP BY e.name, e.type ORDER BY weight DESC, e.name ASC LIMIT %s"
+        agg_params.append(limit)
 
-        # Fetch all relationships between visible nodes
-        rel_result = session.run(
-            """
-            MATCH (src:Entity)-[r]->(tgt:Entity)
-            WHERE src.name IN $names AND tgt.name IN $names
-              AND ($case_id IS NULL OR src.case_id = $case_id)
-            RETURN src.name AS src_name, src.type AS src_type,
-                   tgt.name AS tgt_name, tgt.type AS tgt_type,
-                   type(r) AS rel_type,
-                   r.context AS context
-            """,
-            names=visible_names_list, case_id=case_id,
-        )
+        cur.execute(agg_sql, tuple(agg_params))
 
-        # Merge edges by (src_node_idx, tgt_node_idx)
-        edge_map: Dict[tuple, Dict[str, Any]] = {}
-        for r in rel_result:
-            src_key = (r["src_name"], r["src_type"])
-            tgt_key = (r["tgt_name"], r["tgt_type"])
-            src_idx = name_type_to_idx.get(src_key)
-            tgt_idx = name_type_to_idx.get(tgt_key)
-            if src_idx is None or tgt_idx is None or src_idx == tgt_idx:
-                continue
-            edge_key = (min(src_idx, tgt_idx), max(src_idx, tgt_idx))
-            rtype = r["rel_type"]
-            rcontext = r["context"] or ""
+    node_rows = cur.fetchall()
 
-            if edge_key not in edge_map:
-                edge_map[edge_key] = {
-                    "source": edge_key[0],
-                    "target": edge_key[1],
-                    "types": [],
-                    "contexts": [],
-                }
-            if rtype not in edge_map[edge_key]["types"]:
-                edge_map[edge_key]["types"].append(rtype)
-            if rcontext and rcontext not in edge_map[edge_key]["contexts"]:
-                edge_map[edge_key]["contexts"].append(rcontext)
+    if not node_rows:
+        conn.close()
+        return {"nodes": [], "edges": []}
 
-        edges: List[Dict[str, Any]] = []
-        for edata in edge_map.values():
-            types = edata["types"]
-            non_cooccurrence = [t for t in types if t != "CO_OCCURRENCE"]
-            primary_type = non_cooccurrence[0] if non_cooccurrence else "CO_OCCURRENCE"
-            edges.append({
-                "source": edata["source"],
-                "target": edata["target"],
-                "type": primary_type,
-                "types": types,
-                "context": " | ".join(edata["contexts"][:3]),
-            })
+    # Filter ORGANIZATION nodes that have no PERSON relationships
+    org_names = [r["name"] for r in node_rows if r["type"] == "ORGANIZATION"]
+    orgs_with_person_rels: set = set()
+    if org_names:
+        org_placeholders = ",".join(["%s"] * len(org_names))
+        org_sql = f"""
+            SELECT DISTINCT e_org.name AS org_name
+            FROM entities e_org
+            JOIN relationships r ON (e_org.id = r.source_entity_id OR e_org.id = r.target_entity_id)
+            JOIN entities e_person ON (
+                (e_person.id = r.target_entity_id AND e_org.id = r.source_entity_id)
+                OR (e_person.id = r.source_entity_id AND e_org.id = r.target_entity_id)
+            )
+            WHERE e_org.name IN ({org_placeholders})
+              AND e_org.type = 'ORGANIZATION'
+              AND e_person.type = 'PERSON'
+              AND r.relationship_type <> 'CO_OCCURRENCE'
+        """
+        org_params = list(org_names)
+        if case_id is not None:
+            org_sql += " AND e_org.case_id = %s"
+            org_params.append(case_id)
+
+        cur.execute(org_sql, tuple(org_params))
+        orgs_with_person_rels = {r["org_name"] for r in cur.fetchall()}
+
+    node_rows = [
+        r for r in node_rows
+        if r["type"] != "ORGANIZATION" or r["name"] in orgs_with_person_rels
+    ]
+
+    if not node_rows:
+        conn.close()
+        return {"nodes": [], "edges": []}
+
+    # Build node list
+    nodes: List[Dict[str, Any]] = []
+    name_type_to_idx: Dict[tuple, int] = {}
+    for i, row in enumerate(node_rows):
+        key = (row["name"], row["type"])
+        name_type_to_idx[key] = i
+        nodes.append({
+            "id": i,
+            "name": row["name"],
+            "type": row["type"],
+            "weight": row["weight"],
+            "doc_names": row["doc_names"] or "",
+            "contexts": (row.get("context") or "")[:500],
+        })
+
+    visible_names_list = list({n["name"] for n in nodes})
+
+    # Fetch all relationships between visible nodes
+    vn_placeholders = ",".join(["%s"] * len(visible_names_list))
+    rel_sql = f"""
+        SELECT e_src.name AS src_name, e_src.type AS src_type,
+               e_tgt.name AS tgt_name, e_tgt.type AS tgt_type,
+               r.relationship_type AS rel_type,
+               r.context AS context
+        FROM relationships r
+        JOIN entities e_src ON e_src.id = r.source_entity_id
+        JOIN entities e_tgt ON e_tgt.id = r.target_entity_id
+        WHERE e_src.name IN ({vn_placeholders})
+          AND e_tgt.name IN ({vn_placeholders})
+    """
+    rel_params = list(visible_names_list) + list(visible_names_list)
+    if case_id is not None:
+        rel_sql += " AND e_src.case_id = %s"
+        rel_params.append(case_id)
+
+    cur.execute(rel_sql, tuple(rel_params))
+    rel_rows = cur.fetchall()
+
+    conn.close()
+
+    # Merge edges by (src_node_idx, tgt_node_idx)
+    edge_map: Dict[tuple, Dict[str, Any]] = {}
+    for r in rel_rows:
+        src_key = (r["src_name"], r["src_type"])
+        tgt_key = (r["tgt_name"], r["tgt_type"])
+        src_idx = name_type_to_idx.get(src_key)
+        tgt_idx = name_type_to_idx.get(tgt_key)
+        if src_idx is None or tgt_idx is None or src_idx == tgt_idx:
+            continue
+        edge_key = (min(src_idx, tgt_idx), max(src_idx, tgt_idx))
+        rtype = r["rel_type"]
+        rcontext = r["context"] or ""
+
+        if edge_key not in edge_map:
+            edge_map[edge_key] = {
+                "source": edge_key[0],
+                "target": edge_key[1],
+                "types": [],
+                "contexts": [],
+            }
+        if rtype not in edge_map[edge_key]["types"]:
+            edge_map[edge_key]["types"].append(rtype)
+        if rcontext and rcontext not in edge_map[edge_key]["contexts"]:
+            edge_map[edge_key]["contexts"].append(rcontext)
+
+    edges: List[Dict[str, Any]] = []
+    for edata in edge_map.values():
+        types = edata["types"]
+        non_cooccurrence = [t for t in types if t != "CO_OCCURRENCE"]
+        primary_type = non_cooccurrence[0] if non_cooccurrence else "CO_OCCURRENCE"
+        edges.append({
+            "source": edata["source"],
+            "target": edata["target"],
+            "type": primary_type,
+            "types": types,
+            "context": " | ".join(edata["contexts"][:3]),
+        })
 
     return {"nodes": nodes, "edges": edges}
 
 
 def clear_graph_data(case_id: Optional[int] = None) -> Dict[str, Any]:
-    """Delete entity nodes (and all their relationships). Scoped to case_id if given."""
-    with _driver.session() as session:
-        if case_id is not None:
-            session.run(
-                "MATCH (e:Entity {case_id: $case_id}) DETACH DELETE e",
-                case_id=case_id,
-            )
-        else:
-            session.run("MATCH (e:Entity) DETACH DELETE e")
+    """Delete entity and relationship rows. Scoped to case_id if given."""
+    conn = _get_conn()
+    cur = conn.cursor()
+
+    if case_id is not None:
+        # Delete relationships first (FK constraint)
+        cur.execute(
+            "DELETE r FROM relationships r "
+            "JOIN entities e ON (e.id = r.source_entity_id OR e.id = r.target_entity_id) "
+            "WHERE e.case_id = %s",
+            (case_id,),
+        )
+        cur.execute("DELETE FROM entities WHERE case_id = %s", (case_id,))
+    else:
+        cur.execute("DELETE FROM relationships")
+        cur.execute("DELETE FROM entities")
+
+    conn.commit()
+    conn.close()
     return {"ok": True, "message": "Graph data cleared."}

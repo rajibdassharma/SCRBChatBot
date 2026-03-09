@@ -30,7 +30,7 @@ USE_LLM_PARSER = os.getenv("USE_LLM_PARSER", "true").lower() == "true"
 MAX_LLM_CALLS_PDF = int(os.getenv("MAX_LLM_CALLS_PDF", "25"))
 
 # ── SQL Server (MSSQL) ────────────────────────────────────────────────────────
-MSSQL_SERVER = os.getenv("MSSQL_SERVER", r"localhost\SQLEXPRESS")
+MSSQL_SERVER = os.getenv("MSSQL_SERVER", "localhost")
 MSSQL_DATABASE = os.getenv("MSSQL_DATABASE", "ISDIntelligence")
 MSSQL_DRIVER = os.getenv("MSSQL_DRIVER", "ODBC Driver 17 for SQL Server")
 MSSQL_AUTH = os.getenv("MSSQL_AUTH", "windows")

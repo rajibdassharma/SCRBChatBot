@@ -41,8 +41,10 @@ from llm_kv_extractor import extract_kv_from_pdf as _llm_extract_kv_from_pdf
 
 # -------------------------------------------------------------------
 # Chroma persistent client — multiple named collections
+# Absolute path so it resolves correctly regardless of cwd
 # -------------------------------------------------------------------
-_client = chromadb.PersistentClient(path=CHROMA_PATH)
+_CHROMA_ABS = os.path.join(os.path.dirname(os.path.abspath(__file__)), CHROMA_PATH)
+_client = chromadb.PersistentClient(path=_CHROMA_ABS)
 _col_cache: Dict[str, chromadb.Collection] = {}
 
 
@@ -1721,7 +1723,7 @@ def _is_aggregate_question(question: str) -> bool:
 
 def _answer_via_sql(question: str, collection_name: str) -> Optional[Dict[str, Any]]:
     """
-    Answer a question using NL→SQL pipeline against document_fields table.
+    Answer a question using NL→SQL pipeline against ir_reports / smac_reports tables.
     Returns {"answer": ..., "sql": ..., "used_chunks": []} or None on failure.
     """
     try:
@@ -1739,7 +1741,7 @@ def _answer_via_sql(question: str, collection_name: str) -> Optional[Dict[str, A
             "- To find a value, search field_key with LIKE '%keyword%' and return field_value.\n"
             "- Use LIKE with '%keyword%' for text matching.\n"
             f"- Filter by collection = '{collection_name}' to limit to the right document type.\n"
-            "- To get multiple fields per document, self-join document_fields on doc_id.\n"
+            "- To get multiple fields per document, self-join ir_reports on doc_id.\n"
             "- Use LEFT JOIN when one field might be missing (show NULL instead of omitting row).\n"
             "- The name of the accused/criminal/convict/subject is stored with field_key LIKE '%Name%'.\n"
             "  Variations: 'Name', 'Name of the Subject', 'Name of the Accused'.\n"
@@ -1933,7 +1935,9 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         print(f"[RAG] NL→SQL returned no results — falling back to hybrid approach")
 
     # For SMAC: detect if the question targets a specific field and use direct metadata lookup
-    if collection_name == "SMAC":
+    _is_smac = collection_name == "SMAC" or collection_name.startswith("SMAC_c")
+    _is_ir = collection_name == "IR" or collection_name.startswith("IR_c")
+    if _is_smac:
         detected_field = _detect_smac_field(q_for_keywords)
         if detected_field:
             print(f"[RAG:SMAC] Field-specific query detected: '{detected_field}' — bypassing vector search")
@@ -1947,7 +1951,7 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         else:
             results = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=top_k)
 
-    elif collection_name == "IR":
+    elif _is_ir:
         detected_keyword = _detect_ir_field(q_for_keywords)
         if detected_keyword:
             print(f"[RAG:IR] Field keyword detected: '{detected_keyword}' — using fuzzy field retrieval")
@@ -1989,7 +1993,7 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         results = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=top_k)
 
     # ── Structured table keyword search ──────────────────────────────────
-    # Search document_fields for matching field_keys and add as extra context
+    # Search ir_reports for matching field_keys and add as extra context
     _stop_words = {
         "what", "who", "where", "when", "how", "which", "is", "are", "was",
         "were", "the", "a", "an", "of", "in", "for", "to", "and", "or",
@@ -2139,7 +2143,8 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
             "- If an entry has no name but has a role/description, include that.\n\n"
             f"CONTEXT:\n{context}\n\n"
             f"QUESTION:\n{llm_question}\n\n"
-            "Output a clean numbered list. Include ALL entries found. Do not truncate."
+            "Output a clean numbered list. Include ALL entries found. Do not truncate. "
+            "For EACH entry, mention the source document name in parentheses (from the context block headers like [doc_name | ...])."
         )
     else:
         prompt = (
@@ -2156,6 +2161,8 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
             "- Do NOT use your training data to fill gaps — if it is not in the CONTEXT, it does not exist.\n\n"
             f"CONTEXT:\n{context}\n\n"
             f"QUESTION:\n{llm_question}\n\n"
+            "IMPORTANT: For each piece of information, cite the source document name in parentheses "
+            "(from the context block headers like [doc_name | ...]). "
             "FINAL REMINDER: Every fact in your answer must come directly from the CONTEXT above. "
             "If not found there, say so explicitly."
         )

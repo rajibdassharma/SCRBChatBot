@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 
+from mssql_db import get_conn
 from ollama_client import ollama_chat
 from rag import index_document, ask_pdf, ask_docs_agent, clear_all_documents, get_all_doc_chunks, get_indexed_doc_list
 from config import WHISPER_MODEL
@@ -339,6 +340,18 @@ def docs_list(
     try:
         col = _scoped_col(collection, case_id) if case_id else collection
         docs = get_indexed_doc_list(collection_name=col)
+        # Fallback: also include docs from the global (unscoped) collection
+        if case_id:
+            try:
+                global_docs = get_indexed_doc_list(collection_name=collection)
+                if global_docs:
+                    existing_names = {d.get("doc_name") or d.get("name") for d in docs}
+                    for gd in global_docs:
+                        name = gd.get("doc_name") or gd.get("name")
+                        if name not in existing_names:
+                            docs.append(gd)
+            except Exception:
+                pass
         return {"ok": True, "docs": docs}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -386,7 +399,16 @@ def docs_ask(
     current_user: CurrentUser = Depends(get_current_user),
 ):
     try:
+        # Try scoped collection first; fall back to global if scoped is empty
         col = _scoped_col(payload.collection, payload.case_id) if payload.case_id else payload.collection
+        # Check if scoped collection has any documents; if not, use global
+        if payload.case_id:
+            try:
+                from rag import get_indexed_doc_list as _check_docs
+                if not _check_docs(collection_name=col):
+                    col = payload.collection  # Use global unscoped collection
+            except Exception:
+                pass
         result = ask_pdf(doc_id=payload.doc_id, question=payload.question, top_k=15, collection_name=col)
 
         return {"ok": True, **result}
@@ -926,7 +948,7 @@ def structured_nl_query(payload: NLSQLQuestion):
             "- Use LIKE with '%keyword%' for text matching (case-insensitive).\n"
             "- Filter by collection = 'SMAC' for SMAC reports, 'IR' for IR reports.\n"
             "- Filter by doc_name LIKE '%name%' to find specific documents.\n"
-            "- To compare fields across documents, self-join document_fields on doc_id.\n"
+            "- To compare fields across documents, self-join ir_reports on doc_id.\n"
             "- Always use SELECT, never INSERT/UPDATE/DELETE.\n"
             "- Return all relevant columns that answer the question.\n"
         )
@@ -1064,3 +1086,95 @@ def qa_results(run_id: str):
     if result is None:
         return {"ok": False, "error": f"Test run '{run_id}' not found."}
     return result
+
+
+# ------------------------------------------------------------------------------
+# Answer Ratings
+# ------------------------------------------------------------------------------
+def _init_ratings_table():
+    conn = get_conn()
+    try:
+        conn.execute("""
+            IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = 'answer_ratings')
+            CREATE TABLE answer_ratings (
+                id          INT IDENTITY(1,1) PRIMARY KEY,
+                user_id     INT           NOT NULL,
+                username    NVARCHAR(100) NOT NULL,
+                collection  NVARCHAR(50)  NOT NULL DEFAULT 'SMAC',
+                case_id     INT           NOT NULL DEFAULT 0,
+                question    NVARCHAR(MAX),
+                answer      NVARCHAR(MAX),
+                rating      INT           NOT NULL,
+                created_at  DATETIME      NOT NULL DEFAULT GETDATE()
+            )
+        """)
+        conn.commit()
+        print("[Ratings] answer_ratings table ready")
+    except Exception as e:
+        print(f"[Ratings] Warning: {e}")
+    finally:
+        conn.close()
+
+_init_ratings_table()
+
+
+class RatingRequest(BaseModel):
+    question: str
+    answer: str
+    rating: int
+    collection: str = "SMAC"
+    case_id: int = 0
+
+
+@app.post("/ratings")
+def submit_rating(
+    payload: RatingRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Submit a rating for an answer. Ratings: 2,1,0,-1,-2. Q&A stored only for 1 and 2."""
+    if payload.rating not in (2, 1, 0, -1, -2):
+        return {"ok": False, "error": "Rating must be one of: 2, 1, 0, -1, -2"}
+
+    conn = get_conn()
+    try:
+        # For positive ratings (1, 2): store question + answer
+        # For neutral/negative (0, -1, -2): store rating only (no Q&A)
+        if payload.rating >= 1:
+            conn.execute(
+                "INSERT INTO answer_ratings (user_id, username, collection, case_id, question, answer, rating) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                current_user.user_id, current_user.username,
+                payload.collection, payload.case_id,
+                payload.question, payload.answer, payload.rating,
+            )
+        else:
+            conn.execute(
+                "INSERT INTO answer_ratings (user_id, username, collection, case_id, question, answer, rating) "
+                "VALUES (?, ?, ?, ?, NULL, NULL, ?)",
+                current_user.user_id, current_user.username,
+                payload.collection, payload.case_id,
+                payload.rating,
+            )
+        conn.commit()
+        return {"ok": True, "message": "Rating saved."}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
+
+
+@app.get("/ratings/stats")
+def rating_stats(current_user: CurrentUser = Depends(get_current_user)):
+    """Get rating statistics (admin view)."""
+    conn = get_conn()
+    try:
+        cur = conn.execute(
+            "SELECT rating, COUNT(*) as cnt FROM answer_ratings GROUP BY rating ORDER BY rating DESC"
+        )
+        rows = [{"rating": r[0], "count": r[1]} for r in cur.fetchall()]
+        total = sum(r["count"] for r in rows)
+        return {"ok": True, "stats": rows, "total": total}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+    finally:
+        conn.close()
