@@ -1,7 +1,8 @@
-# ISD Document Intelligence V4 — Deployment Guide
+# ISD Document Intelligence V5 — Deployment Guide
 
-**Version:** V4
+**Version:** V5
 **Architecture:** Multi-user, case-isolated, GPU-accelerated
+**Database:** MySQL 8.x
 **Target Deployment:** On-premise H100 GPU server
 
 ---
@@ -26,7 +27,7 @@
 
 **Recommended: Ubuntu 22.04 LTS (Jammy Jellyfish) — Server Edition**
 
-Ubuntu 22.04 is the standard OS for NVIDIA GPU workloads. It has the best driver support, long-term security updates (until 2027), and runs MSSQL Server natively via the Microsoft Linux repository.
+Ubuntu 22.04 is the standard OS for NVIDIA GPU workloads. It has the best driver support, long-term security updates (until 2027), and MySQL runs natively on Linux.
 
 ```
 Download: https://ubuntu.com/download/server
@@ -47,7 +48,7 @@ Variant:  Ubuntu Server 22.04.x LTS (no GUI needed)
 ┌─────────────────▼───────────────────────────────────────┐
 │  nginx  (reverse proxy + static file server)            │
 │    /          → serves frontend/dist/ (React SPA)       │
-│    /api/      → proxies to FastAPI :8001                 │
+│    /api/      → proxies to FastAPI :8001                │
 └─────────────────┬───────────────────────────────────────┘
                   │ HTTP :8001 (localhost only)
 ┌─────────────────▼───────────────────────────────────────┐
@@ -59,16 +60,17 @@ Variant:  Ubuntu Server 22.04.x LTS (no GUI needed)
 │  • Activity timeline    (activity_timeline.py)          │
 │  • Location extractor   (location_extractor.py)         │
 │  • Structured tables    (structured_tables.py)          │
+│  • Answer ratings       (app.py)                        │
 └────────┬──────────────────────────┬─────────────────────┘
          │                          │
 ┌────────▼────────┐      ┌─────────▼──────────────────────┐
-│  Ollama :11434  │      │  Microsoft SQL Server 2022      │
-│  (LLM + Embed)  │      │  Database: ISDIntelligenceV4    │
-│  H100 GPU       │      │  Auth: SQL Auth (username/pwd)  │
+│  Ollama :11434  │      │  MySQL 8.x                      │
+│  (LLM + Embed)  │      │  Database: ISDIntelligence      │
+│  H100 GPU       │      │  Auth: username/password         │
 └─────────────────┘      └────────────────────────────────┘
          │
 ┌────────▼────────────────────────────────────────────────┐
-│  ChromaDB  (local directory: /opt/isd/chroma_db_v4)     │
+│  ChromaDB  (local directory: /opt/isd/chroma_db_v5)     │
 │  faster-whisper  (STT, CPU or GPU)                      │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -141,64 +143,39 @@ sudo systemctl enable ollama
 
 ---
 
-### 4.4 — Microsoft SQL Server 2022
+### 4.4 — MySQL 8.x
 
 ```bash
-# Add Microsoft SQL Server repo
-curl -fsSL https://packages.microsoft.com/keys/microsoft.asc | sudo gpg --dearmor -o /usr/share/keyrings/microsoft-prod.gpg
-curl https://packages.microsoft.com/config/ubuntu/22.04/mssql-server-2022.list \
-    | sudo tee /etc/apt/sources.list.d/mssql-server.list
+# Install MySQL Server
+sudo apt install -y mysql-server
 
-sudo apt update
-sudo apt install -y mssql-server
-
-# Run setup wizard (choose Developer/Express edition for on-premise)
-sudo /opt/mssql/bin/mssql-conf setup
+# Secure the installation
+sudo mysql_secure_installation
+# Set root password, remove anonymous users, disallow remote root login
 
 # Enable and start
-sudo systemctl enable mssql-server
-sudo systemctl start mssql-server
+sudo systemctl enable mysql
+sudo systemctl start mysql
 
-# Install sqlcmd tools
-curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list \
-    | sudo tee /etc/apt/sources.list.d/mssql-release.list
-sudo apt update
-sudo ACCEPT_EULA=Y apt install -y mssql-tools18 unixodbc-dev
+# Create the database and application user
+sudo mysql -u root -p <<EOF
+CREATE DATABASE IF NOT EXISTS ISDIntelligence
+    CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
 
-echo 'export PATH="$PATH:/opt/mssql-tools18/bin"' >> ~/.bashrc
-source ~/.bashrc
+CREATE USER IF NOT EXISTS 'isd_user'@'localhost' IDENTIFIED BY '<STRONG_PASSWORD>';
+GRANT ALL PRIVILEGES ON ISDIntelligence.* TO 'isd_user'@'localhost';
+FLUSH PRIVILEGES;
+EOF
+```
 
-# Create the V4 database and a SQL auth user
-sqlcmd -S localhost -U sa -P '<SA_PASSWORD>' -Q "
-CREATE DATABASE ISDIntelligenceV4;
-CREATE LOGIN isd_user WITH PASSWORD = '<STRONG_PASSWORD>';
-USE ISDIntelligenceV4;
-CREATE USER isd_user FOR LOGIN isd_user;
-ALTER ROLE db_owner ADD MEMBER isd_user;
-"
+Verify:
+```bash
+mysql -u isd_user -p ISDIntelligence -e "SELECT 1 AS test;"
 ```
 
 ---
 
-### 4.5 — ODBC Driver for Python (pyodbc)
-
-```bash
-# Add Microsoft ODBC repo (same key already added above)
-curl https://packages.microsoft.com/config/ubuntu/22.04/prod.list \
-    | sudo tee /etc/apt/sources.list.d/mssql-release.list
-sudo apt update
-sudo ACCEPT_EULA=Y apt install -y msodbcsql17 msodbcsql18
-```
-
-Test:
-```bash
-python3 -c "import pyodbc; print(pyodbc.drivers())"
-# Should list: ['ODBC Driver 17 for SQL Server', 'ODBC Driver 18 for SQL Server']
-```
-
----
-
-### 4.6 — Python Environment (Miniconda)
+### 4.5 — Python Environment (Miniconda)
 
 ```bash
 # Install Miniconda
@@ -221,7 +198,7 @@ pip install docling
 
 ---
 
-### 4.7 — Node.js (for frontend build only)
+### 4.6 — Node.js (for frontend build only)
 
 ```bash
 curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
@@ -232,7 +209,7 @@ npm --version
 
 ---
 
-### 4.8 — nginx
+### 4.7 — nginx
 
 ```bash
 sudo apt install -y nginx
@@ -251,7 +228,7 @@ From your development machine (Windows), transfer the project to the server. Exc
 ```bash
 rsync -av --exclude='node_modules' --exclude='__pycache__' \
     --exclude='chroma_db*' --exclude='*.db' --exclude='dist' \
-    "YAIA-main/ISDDocumentIntelligence_V4/" \
+    "YAIA-main/ISDDocumentIntelligence_V5/" \
     deploy_user@<SERVER_IP>:/opt/isd/
 ```
 
@@ -280,7 +257,7 @@ Production `.env` values:
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 PDF_MODEL=llama3.3:70b
 EMBED_MODEL=mxbai-embed-large
-CHROMA_PATH=/opt/isd/chroma_db_v4
+CHROMA_PATH=/opt/isd/chroma_db_v5
 
 # JWT — generate a strong random key:
 # python3 -c "import secrets; print(secrets.token_hex(48))"
@@ -295,13 +272,12 @@ ENABLE_RERANKING=true
 USE_LLM_PARSER=true
 MAX_LLM_CALLS_PDF=25
 
-# SQL Server — use SQL Auth (no Windows Auth on Linux)
-MSSQL_SERVER=localhost
-MSSQL_DATABASE=ISDIntelligenceV4
-MSSQL_DRIVER=ODBC Driver 17 for SQL Server
-MSSQL_AUTH=sql
-MSSQL_USER=isd_user
-MSSQL_PASSWORD=<STRONG_PASSWORD>
+# MySQL
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=isd_user
+MYSQL_PASSWORD=<STRONG_PASSWORD>
+MYSQL_DATABASE=ISDIntelligence
 ```
 
 Set restrictive permissions on the .env file:
@@ -330,7 +306,7 @@ npm run build
 ### 5.4 — Configure nginx
 
 ```bash
-sudo nano /etc/nginx/sites-available/isd-v4
+sudo nano /etc/nginx/sites-available/isd-v5
 ```
 
 Paste the following (replace `<SERVER_DOMAIN_OR_IP>` with your actual domain or IP):
@@ -379,7 +355,7 @@ server {
 ```
 
 ```bash
-sudo ln -s /etc/nginx/sites-available/isd-v4 /etc/nginx/sites-enabled/
+sudo ln -s /etc/nginx/sites-available/isd-v5 /etc/nginx/sites-enabled/
 sudo nginx -t           # test config
 sudo systemctl reload nginx
 ```
@@ -416,8 +392,8 @@ sudo nano /etc/systemd/system/isd-backend.service
 
 ```ini
 [Unit]
-Description=ISD Document Intelligence V4 Backend
-After=network.target mssql-server.service ollama.service
+Description=ISD Document Intelligence V5 Backend
+After=network.target mysql.service ollama.service
 
 [Service]
 Type=exec
@@ -463,8 +439,8 @@ curl -k -X POST https://<SERVER_IP>/api/auth/register \
   -H "Content-Type: application/json" \
   -d '{"username":"admin","password":"<STRONG_ADMIN_PASSWORD>","full_name":"Administrator"}'
 
-# Promote to admin in MSSQL
-sqlcmd -S localhost -U isd_user -P '<PASSWORD>' -d ISDIntelligenceV4 -Q \
+# Promote to admin in MySQL
+mysql -u isd_user -p ISDIntelligence -e \
   "UPDATE users SET role='admin' WHERE username='admin';"
 ```
 
@@ -479,7 +455,7 @@ sudo ufw allow 80/tcp       # HTTP (redirects to HTTPS)
 sudo ufw allow 443/tcp      # HTTPS (nginx)
 sudo ufw deny 8001/tcp      # block direct FastAPI access from outside
 sudo ufw deny 11434/tcp     # block direct Ollama access from outside
-sudo ufw deny 1433/tcp      # block direct MSSQL access from outside
+sudo ufw deny 3306/tcp      # block direct MySQL access from outside
 sudo ufw status
 ```
 
@@ -499,7 +475,7 @@ sudo ufw status
 │   ├── location_extractor.py
 │   ├── structured_tables.py
 │   ├── llm_kv_extractor.py
-│   ├── mssql_db.py
+│   ├── mysql_db.py
 │   ├── config.py
 │   ├── requirements.txt
 │   └── .env                  ← production secrets (chmod 600)
@@ -507,7 +483,7 @@ sudo ufw status
 │   ├── src/
 │   ├── dist/                 ← built static files served by nginx
 │   └── .env                  ← VITE_API_BASE for build
-└── chroma_db_v4/             ← ChromaDB vector store (auto-created)
+└── chroma_db_v5/             ← ChromaDB vector store (auto-created)
 ```
 
 ---
@@ -555,7 +531,7 @@ sudo systemctl restart isd-backend
 
 ```bash
 # Check backend is running
-curl -s http://127.0.0.1:8001/docs | head -5
+curl -s http://127.0.0.1:8001/health | python3 -m json.tool
 
 # Check Ollama GPU usage
 nvidia-smi
@@ -567,9 +543,9 @@ sudo journalctl -u isd-backend -f
 sudo tail -f /var/log/nginx/access.log
 sudo tail -f /var/log/nginx/error.log
 
-# Check MSSQL
-sqlcmd -S localhost -U isd_user -P '<PASSWORD>' -d ISDIntelligenceV4 \
-  -Q "SELECT COUNT(*) as users FROM users; SELECT COUNT(*) as cases FROM cases;"
+# Check MySQL
+mysql -u isd_user -p ISDIntelligence -e \
+  "SELECT COUNT(*) as users FROM users; SELECT COUNT(*) as cases FROM cases;"
 ```
 
 ---
@@ -577,13 +553,12 @@ sqlcmd -S localhost -U isd_user -P '<PASSWORD>' -d ISDIntelligenceV4 \
 ## 11. Backup Strategy
 
 ```bash
-# 1. MSSQL backup (run as cron daily)
-sqlcmd -S localhost -U sa -P '<SA_PASSWORD>' -Q \
-  "BACKUP DATABASE ISDIntelligenceV4 TO DISK='/opt/backups/isd_$(date +%Y%m%d).bak'"
+# 1. MySQL backup (run as cron daily)
+mysqldump -u isd_user -p ISDIntelligence > /opt/backups/isd_$(date +%Y%m%d).sql
 
 # 2. ChromaDB backup (stop service first to avoid corruption)
 sudo systemctl stop isd-backend
-tar -czf /opt/backups/chroma_$(date +%Y%m%d).tar.gz /opt/isd/chroma_db_v4/
+tar -czf /opt/backups/chroma_$(date +%Y%m%d).tar.gz /opt/isd/chroma_db_v5/
 sudo systemctl start isd-backend
 
 # Automate with cron
@@ -599,15 +574,15 @@ crontab -e
 [ ] Ubuntu 22.04 LTS installed, updated
 [ ] NVIDIA driver 550 + CUDA 12.4 installed, nvidia-smi works
 [ ] Ollama installed, llama3.3:70b and mxbai-embed-large pulled
-[ ] SQL Server 2022 installed, ISDIntelligenceV4 database created
-[ ] ODBC Driver 17 installed and visible to Python
+[ ] MySQL 8.x installed, ISDIntelligence database created
+[ ] Application MySQL user created with grants
 [ ] Miniconda isd environment, all pip packages installed
 [ ] /opt/isd/backend/.env configured with production secrets
 [ ] Frontend built: npm run build (dist/ created)
 [ ] nginx configured, SSL cert in place, nginx -t passes
 [ ] systemd isd-backend service enabled and running
-[ ] Firewall: 443 open, 8001/11434/1433 blocked externally
-[ ] Admin user registered and promoted in MSSQL
+[ ] Firewall: 443 open, 8001/11434/3306 blocked externally
+[ ] Admin user registered and promoted in MySQL
 [ ] Test login at https://<SERVER_IP>
 [ ] Test document upload and Q&A
 [ ] Backup cron job scheduled
@@ -615,4 +590,4 @@ crontab -e
 
 ---
 
-*Document prepared for ISD Document Intelligence V4 — March 2026*
+*Document prepared for ISD Document Intelligence V5 — March 2026*

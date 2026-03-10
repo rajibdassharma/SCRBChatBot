@@ -62,7 +62,7 @@ def get_whisper_model():
 # ------------------------------------------------------------------------------
 # App
 # ------------------------------------------------------------------------------
-app = FastAPI(title="ISD Document Intelligence V4")
+app = FastAPI(title="ISD Document Intelligence V5")
 
 app.add_middleware(
     CORSMiddleware,

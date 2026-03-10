@@ -36,15 +36,22 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS smac_reports (
             id               INT AUTO_INCREMENT PRIMARY KEY,
-            doc_id           VARCHAR(500)  NOT NULL UNIQUE,
+            doc_id           VARCHAR(255)  NOT NULL UNIQUE,
             doc_name         VARCHAR(500)  NOT NULL,
             input_id         VARCHAR(200)  NULL,
             date_of_receipt  VARCHAR(200)  NULL,
             originator       VARCHAR(500)  NULL,
             source_name      VARCHAR(500)  NULL,
             grading          VARCHAR(100)  NULL,
+            theatre          VARCHAR(200)  NULL,
+            priority         VARCHAR(100)  NULL,
             subject          TEXT          NULL,
             gist             TEXT          NULL,
+            threat_details   TEXT          NULL,
+            shared_with      TEXT          NULL,
+            classification   VARCHAR(100)  NULL,
+            raw_fields       TEXT          NULL,
+            indexed_at       DATETIME      NULL,
             comments         TEXT          NULL,
             case_id          INT           NULL
         )
@@ -67,11 +74,11 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS ir_reports (
             id           INT AUTO_INCREMENT PRIMARY KEY,
-            doc_id       VARCHAR(500)  NOT NULL,
+            doc_id       VARCHAR(255)  NOT NULL,
             doc_name     VARCHAR(500)  NOT NULL,
             collection   VARCHAR(100)  NOT NULL DEFAULT 'IR',
             serial_no    VARCHAR(50)   NULL,
-            field_key    VARCHAR(300)  NOT NULL,
+            field_key    VARCHAR(255)  NOT NULL,
             field_value  TEXT          NULL,
             case_id      INT           NULL,
             UNIQUE KEY uq_ir_reports (doc_id, field_key)

@@ -76,7 +76,7 @@ def init_db():
             source_tms_id   VARCHAR(100)  NOT NULL,
             target_tms_id   VARCHAR(100)  NOT NULL,
             context         VARCHAR(500)  NULL,
-            doc_id          VARCHAR(500)  NOT NULL,
+            doc_id          VARCHAR(255)  NOT NULL,
             case_id         INT           NULL,
             UNIQUE KEY uq_xref (source_tms_id, target_tms_id, doc_id)
         )

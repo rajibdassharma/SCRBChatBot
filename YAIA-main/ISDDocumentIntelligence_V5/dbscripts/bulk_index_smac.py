@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-bulk_index_smac.py — Bulk index SMAC PDF files into ISD Document Intelligence V4.
+bulk_index_smac.py — Bulk index SMAC PDF files into ISD Document Intelligence V5.
 
 Features:
   - Resume support  : SQLite progress DB — already-indexed files are skipped automatically
@@ -213,7 +213,7 @@ def upload_file(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Bulk index SMAC PDF files into ISD Document Intelligence V4.",
+        description="Bulk index SMAC PDF files into ISD Document Intelligence V5.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:

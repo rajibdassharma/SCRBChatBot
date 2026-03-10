@@ -2,7 +2,7 @@
 Shared pytest fixtures for ISD Document Intelligence V5 integration tests.
 
 Prerequisites:
-  - Backend must be running on localhost:8002 (start_v4_backend.ps1)
+  - Backend must be running on localhost:8002 (start_v5_backend.ps1)
   - MSSQL and ChromaDB must be accessible
 
 Fixtures:
@@ -35,7 +35,7 @@ def pytest_configure(config):
     except Exception as e:
         pytest.exit(
             f"\n\nERROR: Cannot reach backend at {BASE_URL}.\n"
-            f"Please start the backend first: .\\start_v4_backend.ps1\n"
+            f"Please start the backend first: .\\start_v5_backend.ps1\n"
             f"Detail: {e}\n",
             returncode=1,
         )

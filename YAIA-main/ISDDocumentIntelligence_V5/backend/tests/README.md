@@ -1,4 +1,4 @@
-# ISD Document Intelligence V4 — Automated Test Suite
+# ISD Document Intelligence V5 — Automated Test Suite
 
 Integration tests that run against the **live backend**. No mocking — tests the real MSSQL, ChromaDB, and API stack.
 
@@ -8,9 +8,9 @@ Integration tests that run against the **live backend**. No mocking — tests th
 
 1. **Backend running** on port 8001:
    ```powershell
-   .\start_v4_backend.ps1
+   .\start_v5_backend.ps1
    ```
-2. **MSSQL** (`ISDIntelligenceV4`) accessible
+2. **MSSQL** (`ISDIntelligence`) accessible
 3. **Anaconda Python** at `C:\Anaconda3\anaconda3\python.exe`
 
 ---
@@ -19,30 +19,30 @@ Integration tests that run against the **live backend**. No mocking — tests th
 
 ### All tests (recommended)
 ```powershell
-.\run_tests_v4.ps1
+.\run_tests_v5.ps1
 ```
 
 ### Specific test file
 ```powershell
-.\run_tests_v4.ps1 -TestFile test_auth.py
-.\run_tests_v4.ps1 -TestFile test_cases.py
-.\run_tests_v4.ps1 -TestFile test_docs.py
+.\run_tests_v5.ps1 -TestFile test_auth.py
+.\run_tests_v5.ps1 -TestFile test_cases.py
+.\run_tests_v5.ps1 -TestFile test_docs.py
 ```
 
 ### Specific test class or function
 ```powershell
-.\run_tests_v4.ps1 -TestFilter "TestCaseCRUD"
-.\run_tests_v4.ps1 -TestFilter "test_login_success"
+.\run_tests_v5.ps1 -TestFilter "TestCaseCRUD"
+.\run_tests_v5.ps1 -TestFilter "test_login_success"
 ```
 
 ### With print output visible
 ```powershell
-.\run_tests_v4.ps1 -Extra "-s"
+.\run_tests_v5.ps1 -Extra "-s"
 ```
 
 ### Manually with pytest
 ```powershell
-cd YAIA-main\ISDDocumentIntelligence_V4\backend
+cd YAIA-main\ISDDocumentIntelligence_V5\backend
 C:\Anaconda3\anaconda3\python.exe -m pytest tests/ -v
 ```
 

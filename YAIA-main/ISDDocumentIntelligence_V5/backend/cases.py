@@ -1,5 +1,5 @@
 """
-Case Management for ISD Document Intelligence V4.
+Case Management for ISD Document Intelligence V5.
 
 A "case" is a named, isolated workspace that belongs to one user.
 All documents, vectors, and structured data are scoped to a case_id.

@@ -1,5 +1,5 @@
 """
-Authentication module for ISD Document Intelligence V4.
+Authentication module for ISD Document Intelligence V5.
 
 Provides:
   - init_users_table()    — creates the users table in MySQL (called at import)

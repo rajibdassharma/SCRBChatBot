@@ -55,9 +55,9 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS entities (
             id         INT AUTO_INCREMENT PRIMARY KEY,
-            name       VARCHAR(500)  NOT NULL,
+            name       VARCHAR(255)  NOT NULL,
             type       VARCHAR(100)  NOT NULL,
-            doc_id     VARCHAR(500)  NOT NULL,
+            doc_id     VARCHAR(255)  NOT NULL,
             doc_name   VARCHAR(500)  NOT NULL,
             context    TEXT          NULL,
             case_id    INT           NULL,
@@ -84,7 +84,7 @@ def init_db():
             source_entity_id   INT            NOT NULL,
             target_entity_id   INT            NOT NULL,
             relationship_type  VARCHAR(200)   NOT NULL DEFAULT 'CO_OCCURRENCE',
-            doc_id             VARCHAR(500)   NOT NULL,
+            doc_id             VARCHAR(255)   NOT NULL,
             context            TEXT           NULL DEFAULT NULL,
             case_id            INT            NULL,
             FOREIGN KEY (source_entity_id) REFERENCES entities(id) ON DELETE NO ACTION,

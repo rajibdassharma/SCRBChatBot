@@ -26,9 +26,9 @@ def init_db():
     cur.execute("""
         CREATE TABLE IF NOT EXISTS doc_locations (
             id            INT AUTO_INCREMENT PRIMARY KEY,
-            doc_id        VARCHAR(500)  NOT NULL,
+            doc_id        VARCHAR(255)  NOT NULL,
             doc_name      VARCHAR(500)  NOT NULL,
-            person_name   VARCHAR(300)  NOT NULL DEFAULT '',
+            person_name   VARCHAR(200)  NOT NULL DEFAULT '',
             address_text  TEXT          NOT NULL,
             city          VARCHAR(200)  NOT NULL DEFAULT '',
             locality      VARCHAR(200)  NOT NULL DEFAULT '',

@@ -1,8 +1,15 @@
-# ISD Document Intelligence V3 — Architecture & Design Best Practices
+# ISD Document Intelligence V5 — Architecture & Design Best Practices
 
 ## 1. System Overview
 
-ISD Document Intelligence V3 is a standalone, fully offline AI-powered document analysis system built for Karnataka State Police (KSP). It allows officers to upload case documents (PDF, DOCX, DOC, XLSX, CSV), index them into a local vector database, store structured fields in SQL Server, extract entity relationships and activity timelines using LLM, and query them using text or voice — all without any internet connectivity or cloud dependency.
+ISD Document Intelligence V5 is a standalone, fully offline AI-powered document analysis system built for Karnataka State Police (KSP). It allows officers to upload case documents (PDF, DOCX, DOC, XLSX, CSV), index them into a local vector database, store structured fields in MySQL, extract entity relationships and activity timelines using LLM, and query them using text or voice — all without any internet connectivity or cloud dependency.
+
+**V5 Key Changes (from V4):**
+- **Database:** Migrated from MSSQL (SQL Server) to **MySQL 8.x** for cross-platform compatibility
+- **Answer Rating System:** 5-point scale (+2 to -2) for UAT feedback collection
+- **Source Citations:** LLM responses cite source document names in parentheses
+- **Case-Scoped Collection Fallback:** Queries automatically fall back to global collections when case-scoped collections are empty
+- **ChromaDB Path:** Renamed from `chroma_db_v4` to `chroma_db_v5`
 
 ### Architecture Diagram
 
@@ -18,10 +25,10 @@ ISD Document Intelligence V3 is a standalone, fully offline AI-powered document 
                     |                  |                  |
            +--------v-------+ +-------v--------+ +------v---------+
            |                | |                | |                |
-           |  ChromaDB      | |  SQL Server    | |  faster-whisper|
-           |  (Vector Store) | |  (MSSQL)       | |  (Local STT)   |
-           |  Persistent on | |  ISDIntelligence| |                |
-           |  local disk    | |  Database       | |                |
+           |  ChromaDB      | |  MySQL 8.x     | |  faster-whisper|
+           |  (Vector Store) | |  (Structured   | |  (Local STT)   |
+           |  Persistent on | |   Storage)     | |                |
+           |  local disk    | |  ISDIntelligence| |                |
            +----------------+ +----------------+ +----------------+
 ```
 
@@ -34,7 +41,8 @@ ISD Document Intelligence V3 is a standalone, fully offline AI-powered document 
 | LLM            | Ollama (local) — gemma3:12b    | Text generation, entity/activity extraction  |
 | Embeddings     | mxbai-embed-large (via Ollama) | Vector embeddings for RAG (1024 dimensions)  |
 | Vector DB      | ChromaDB (persistent)          | Document chunk storage & retrieval           |
-| Structured DB  | SQL Server (MSSQL)             | Structured fields, entities, activities, locations |
+| Structured DB  | MySQL 8.x                      | Structured fields, entities, activities, locations, ratings |
+| Auth           | JWT (PyJWT + bcrypt)           | User authentication and session management   |
 | STT            | faster-whisper (local)         | Speech-to-text transcription                 |
 | TTS            | Browser SpeechSynthesis API    | Text-to-speech (no server needed)            |
 | Audio          | PyAV (ffmpeg bindings)         | WebM to WAV audio conversion                 |
@@ -60,88 +68,131 @@ ISD Document Intelligence V3 is a standalone, fully offline AI-powered document 
 ## 2. Project Structure
 
 ```
-ISDDocumentIntelligence_V3/
+ISDDocumentIntelligence_V5/
   backend/
-    app.py                # FastAPI application with 27 endpoints
-    config.py             # Environment-based configuration (Ollama, MSSQL)
+    app.py                # FastAPI application with 30+ endpoints
+    config.py             # Environment-based configuration (Ollama, MySQL)
     rag.py                # RAG pipeline: indexing, hybrid search, NL-to-SQL
     ollama_client.py      # Ollama API client (chat + batch embedding)
-    mssql_db.py           # MSSQL connection factory & DB bootstrap
-    structured_tables.py  # EAV document_fields table (structured storage)
+    mysql_db.py           # MySQL connection factory & DB bootstrap
+    auth.py               # JWT authentication (register, login, token validation)
+    cases.py              # Case management (create, list, switch)
+    structured_tables.py  # smac_reports + ir_reports tables (structured storage)
     entity_graph.py       # Entity & relationship extraction (knowledge graph)
     activity_timeline.py  # Activity & cross-reference extraction (timeline)
     location_extractor.py # Address extraction & offline geocoding
+    llm_kv_extractor.py   # LLM-based key-value extraction (hybrid doc reading)
     requirements.txt      # Python dependencies
-    .env                  # Environment variables
-    chroma_db/            # ChromaDB persistent storage (auto-created)
+    .env                  # Environment variables (MySQL, Ollama, JWT)
+    chroma_db_v5/         # ChromaDB persistent storage (auto-created or migrated)
     debug_audio/          # Debug audio recordings (auto-created)
   frontend/
     index.html            # HTML entry point
     package.json          # Node dependencies
     vite.config.ts        # Vite build configuration
-    tsconfig.json         # TypeScript project references
-    tsconfig.app.json     # App TypeScript config
-    tsconfig.node.json    # Node TypeScript config
-    eslint.config.js      # ESLint configuration
-    .env                  # Frontend environment (API base URL)
-    public/
-      vite.svg            # Favicon
-      geo/
-        countries-110m.json  # TopoJSON for world map
     src/
       main.tsx            # React entry point
-      App.tsx             # Main application component (~2150 lines)
-      App.css             # All styles (~1650 lines)
+      App.tsx             # Main application component
+      App.css             # All styles
       index.css           # Global reset styles
       assets/
         ksp_logo.png      # KSP branding logo
         banner_logo.png   # Banner image
-        banner_logo.jpeg  # Banner image (JPEG)
+  dbscripts/
+    bulk_index_smac.py    # Bulk SMAC document indexer (multi-threaded)
+    migrate_mssql_to_mysql.py  # V4 (MSSQL) → V5 (MySQL) data migration
+  tests/
+    conftest.py           # Pytest fixtures
+    test_*.py             # Test suites
   test_data/
-    generate_test_pdfs.py    # Generate 50 employee IR test PDFs
-    generate_group_reports.py # Generate 25 SMAC log report PDFs
-    employees/               # 50 employee IR PDFs (EMP-001 to EMP-050)
-    groups/                  # 25 group log report PDFs (LOG-001 to LOG-025)
+    generate_test_pdfs.py    # Generate test IR PDFs
+    generate_group_reports.py # Generate test SMAC log report PDFs
 ```
 
 ---
 
 ## 3. Database Schema
 
-### 3.1 SQL Server (MSSQL) — ISDIntelligence Database
+### 3.1 MySQL — ISDIntelligence Database
 
-All structured data is stored in a shared MSSQL database (`ISDIntelligence`) with 6 tables:
+All structured data is stored in a MySQL database (`ISDIntelligence`) with 10 tables. All tables use `utf8mb4` character set for full Unicode support.
 
-#### document_fields (EAV — Entity-Attribute-Value)
+**Important:** VARCHAR columns used in UNIQUE KEY constraints are limited to **VARCHAR(255)** due to MySQL's 3072-byte key length limit with `utf8mb4` (4 bytes/char × 255 = 1020 bytes per column).
 
-Flat key-value storage for document fields. Simple schema enables NL-to-SQL queries.
+#### users (JWT Authentication)
+
+| Column        | Type         | Purpose                          |
+|--------------|-------------|----------------------------------|
+| id           | INT (PK)     | Auto-increment primary key       |
+| username     | VARCHAR(100) | Unique login username            |
+| password_hash| VARCHAR(255) | bcrypt-hashed password           |
+| full_name    | VARCHAR(200) | Display name                     |
+| role         | VARCHAR(50)  | User role (admin/user)           |
+| is_active    | TINYINT      | Account active flag              |
+| created_at   | DATETIME     | Registration timestamp           |
+
+#### cases (Case Isolation)
 
 | Column      | Type         | Purpose                          |
 |------------|-------------|----------------------------------|
 | id         | INT (PK)     | Auto-increment primary key       |
-| doc_id     | VARCHAR      | Document identifier              |
-| doc_name   | VARCHAR      | Original filename                |
-| collection | VARCHAR      | "SMAC" or "IR"                   |
-| serial_no  | VARCHAR      | Field serial number              |
-| field_key  | VARCHAR      | Field name (e.g., "Name of Accused") |
-| field_value| VARCHAR      | Field value (e.g., "Mohammed Ali")   |
+| user_id    | INT (FK)     | Owner user ID                    |
+| name       | VARCHAR(200) | Case name                        |
+| description| TEXT         | Case description                 |
+| collection | VARCHAR(50)  | Default collection type          |
+| created_at | DATETIME     | Creation timestamp               |
 
-#### entities
+#### smac_reports (Structured SMAC Data — Flat Columnar)
 
-Named entities extracted from documents by LLM.
+| Column         | Type         | Purpose                          |
+|---------------|-------------|----------------------------------|
+| id            | INT (PK)     | Auto-increment primary key       |
+| doc_id        | VARCHAR(255) | Document identifier (UNIQUE)     |
+| doc_name      | VARCHAR(500) | Original filename                |
+| input_id      | VARCHAR(100) | TMS input ID                     |
+| date_of_receipt| VARCHAR(100)| Date received                    |
+| originator    | VARCHAR(200) | Report originator                |
+| source_name   | VARCHAR(200) | Source name                      |
+| grading       | VARCHAR(50)  | Report grading                   |
+| theatre       | VARCHAR(200) | Activity theatre                 |
+| priority      | VARCHAR(50)  | Priority level                   |
+| subject       | TEXT         | Report subject                   |
+| gist          | TEXT         | Report gist/summary              |
+| threat_details| TEXT         | Threat details                   |
+| shared_with   | TEXT         | Distribution list                |
+| classification| VARCHAR(100) | Security classification          |
+| raw_fields    | TEXT         | Raw extracted fields (JSON)      |
+| indexed_at    | DATETIME     | Indexing timestamp               |
+
+#### ir_reports (Structured IR Data — EAV Key-Value)
+
+| Column      | Type         | Purpose                          |
+|------------|-------------|----------------------------------|
+| id         | INT (PK)     | Auto-increment primary key       |
+| doc_id     | VARCHAR(255) | Document identifier              |
+| doc_name   | VARCHAR(500) | Original filename                |
+| collection | VARCHAR(50)  | "IR"                             |
+| serial_no  | VARCHAR(50)  | Field serial number              |
+| field_key  | VARCHAR(255) | Field name (e.g., "Name of Accused") |
+| field_value| TEXT         | Field value                      |
+
+UNIQUE KEY on `(doc_id, collection, field_key(255))`
+
+#### entities (Knowledge Graph Nodes)
 
 | Column   | Type         | Purpose                          |
 |---------|-------------|----------------------------------|
 | id      | INT (PK)     | Auto-increment primary key       |
-| name    | VARCHAR      | Entity name                      |
-| type    | VARCHAR      | PERSON, ORGANIZATION, LOCATION, PHONE, VEHICLE, OTHER |
-| doc_id  | VARCHAR      | Source document                  |
-| doc_name| VARCHAR      | Source filename                  |
-| context | VARCHAR      | Surrounding text context         |
+| name    | VARCHAR(255) | Entity name                      |
+| type    | VARCHAR(50)  | PERSON, ORGANIZATION, LOCATION, PHONE, VEHICLE, OTHER |
+| doc_id  | VARCHAR(255) | Source document                  |
+| doc_name| VARCHAR(500) | Source filename                  |
+| context | TEXT         | Surrounding text context         |
+| case_id | INT          | Case isolation ID                |
 
-#### relationships
+UNIQUE KEY on `(name, type, doc_id)`
 
-Typed relationships between entities.
+#### relationships (Knowledge Graph Edges)
 
 | Column             | Type     | Purpose                          |
 |-------------------|---------|----------------------------------|
@@ -149,19 +200,18 @@ Typed relationships between entities.
 | source_entity_id  | INT (FK) | References entities.id           |
 | target_entity_id  | INT (FK) | References entities.id           |
 | relationship_type | VARCHAR  | See relationship types below     |
-| doc_id            | VARCHAR  | Source document                  |
-| context           | VARCHAR  | Surrounding text context         |
+| doc_id            | VARCHAR(255) | Source document              |
+| context           | TEXT     | Surrounding text context         |
+| case_id           | INT      | Case isolation ID                |
 
 **Relationship types:** MEMBER_OF, WORKS_AT, SIBLING, SPOUSE, PARENT_OF, CHILD_OF, LIVES_AT, COLLEAGUE, PARTICIPATED_IN, REPORTS_TO, LOCATED_IN, RELATED_TO, CO_OCCURRENCE, HELPER_OF, ADVOCATE_OF, DOCTOR_OF, FINANCIER_OF, ASSOCIATE_OF, ACCOMPLICE_OF, HANDLER_OF, SYMPATHIZER_OF, ACCUSED_WITH, CO_ACCUSED
 
-#### activities
-
-Temporal activities extracted from SMAC log reports.
+#### activities (Timeline Activities)
 
 | Column          | Type     | Purpose                          |
 |----------------|---------|----------------------------------|
 | id             | INT (PK) | Auto-increment primary key       |
-| tms_id         | VARCHAR  | TMS tracking number (e.g., TMS-2025-0412) |
+| tms_id         | VARCHAR  | TMS tracking number              |
 | doc_id         | VARCHAR  | Source document                  |
 | doc_name       | VARCHAR  | Source filename                  |
 | activity_date  | VARCHAR  | Date of activity                 |
@@ -172,10 +222,10 @@ Temporal activities extracted from SMAC log reports.
 | priority       | VARCHAR  | Priority level                   |
 | theatre        | VARCHAR  | Activity theatre/domain          |
 | participants   | TEXT     | Comma-separated participant names |
+| activity_type  | VARCHAR  | Activity classification          |
+| case_id        | INT      | Case isolation ID                |
 
-#### cross_references
-
-Bread Crumb links between activities via TMS IDs.
+#### cross_references (Bread Crumb Links)
 
 | Column         | Type     | Purpose                          |
 |---------------|---------|----------------------------------|
@@ -183,30 +233,45 @@ Bread Crumb links between activities via TMS IDs.
 | source_tms_id | VARCHAR  | Source activity TMS ID           |
 | target_tms_id | VARCHAR  | Target activity TMS ID           |
 | context       | VARCHAR  | Cross-reference context          |
-| doc_id        | VARCHAR  | Source document                  |
+| doc_id        | VARCHAR(255) | Source document              |
+| case_id       | INT      | Case isolation ID                |
 
-#### doc_locations
-
-Geocoded addresses extracted from IR documents.
+#### doc_locations (Geocoded Addresses)
 
 | Column       | Type     | Purpose                          |
 |-------------|---------|----------------------------------|
 | id          | INT (PK) | Auto-increment primary key       |
-| doc_id      | VARCHAR  | Source document                  |
+| doc_id      | VARCHAR(255) | Source document              |
 | doc_name    | VARCHAR  | Source filename                  |
-| person_name | VARCHAR  | Person associated with address   |
+| person_name | VARCHAR(200) | Person associated with address |
 | address_text| TEXT     | Full address text                |
 | city        | VARCHAR  | City/district                    |
 | locality    | VARCHAR  | Locality/area                    |
 | lat         | FLOAT    | Latitude (offline geocoded)      |
 | lng         | FLOAT    | Longitude (offline geocoded)     |
 | address_type| VARCHAR  | Address classification           |
+| case_id     | INT      | Case isolation ID                |
+
+#### answer_ratings (UAT Feedback)
+
+| Column      | Type         | Purpose                          |
+|------------|-------------|----------------------------------|
+| id         | INT (PK)     | Auto-increment primary key       |
+| user_id    | INT          | Rater's user ID                  |
+| username   | VARCHAR(100) | Rater's username                 |
+| collection | VARCHAR(50)  | SMAC or IR                       |
+| case_id    | INT          | Case context                     |
+| question   | TEXT         | Asked question (stored for +1/+2)|
+| answer     | TEXT         | LLM answer (stored for +1/+2)   |
+| rating     | INT          | -2, -1, 0, +1, or +2            |
+| created_at | DATETIME     | Rating timestamp                 |
 
 ### 3.2 ChromaDB (Vector Store)
 
-- Persistent on-disk storage at `chroma_db/`
+- Persistent on-disk storage at `chroma_db_v5/`
 - Separate collections for SMAC and IR documents
-- Each chunk stored with metadata: `doc_id`, `doc_name`, `page`, `chunk_index`
+- Case-scoped collection names: `SMAC_c1`, `IR_c2` (case_id > 0), or `SMAC`/`IR` (global, case_id=0)
+- Each chunk stored with metadata: `doc_id`, `doc_name`, `page`, `chunk_index`, `field_name` (IR)
 - Embedding model: `mxbai-embed-large` (1024 dimensions)
 - Used for semantic vector search in the RAG pipeline
 
@@ -224,6 +289,7 @@ Frontend filters to .pdf/.docx/.doc/.xlsx/.csv
         |
         v
 POST /docs/upload (one file at a time, with progress bar)
+  Authorization: Bearer <JWT token>
         |
         v
 Backend saves to temp file, detects extension
@@ -237,17 +303,16 @@ rag.py: index_document() routes to index_pdf/docx/xlsx/csv
         |         - XLSX: row-to-key-value conversion (Header: Value)
         |         - CSV: row-to-key-value conversion
         |
-        +-----> Structured field extraction (regex-based)
-        |         - Pipe-separated: "1 | Name | Mohammed Ali"
-        |         - Colon-separated: "1. Name: Mohammed Ali"
-        |         - Space-separated: "1  Name        Mohammed Ali"
-        |         Stored in MSSQL document_fields table
+        +-----> LLM key-value extraction (hybrid document reading)
+        |         - DOCX: python-docx (reads XML directly)
+        |         - PDF: Docling with OCR disabled, fallback to pypdf
+        |         Stored in MySQL smac_reports / ir_reports tables
         |
         v
 ollama_embed_batch(): embed all chunks in batches of 64
         |
         v
-ChromaDB: store embeddings + metadata
+ChromaDB: store embeddings + metadata (case-scoped collection)
  +  BM25 Index: add tokenized documents for keyword search
         |
         v
@@ -263,10 +328,15 @@ Response: { doc_id, doc_name, chunks: N }
 User types question (or speaks via microphone)
         |
         v
-POST /docs/ask (with conversation history for context)
+POST /docs/ask (with JWT auth, collection, case_id)
         |
         v
 rag.py: ask_pdf() -> ask_docs()
+        |
+        v
+COLLECTION FALLBACK:
+   If case-scoped collection (e.g., SMAC_c1) is empty,
+   automatically fall back to global collection ("SMAC")
         |
         v
 SMART ROUTING: Is this an aggregate question?
@@ -281,7 +351,7 @@ NL-to-SQL   Hybrid RAG Search
 Pipeline    (see below)
    |
    v
-LLM generates SQL query against document_fields table
+LLM generates SQL query against smac_reports / ir_reports
    |
    v
 Execute SQL -> Format results via LLM -> Return answer
@@ -295,7 +365,7 @@ Step 1: MULTI-QUERY EXPANSION (if enabled)
         |
         v
 Step 2: STRUCTURED KEYWORD SEARCH
-   Search document_fields table for matching field values
+   Search ir_reports/smac_reports for matching field values
    Uses synonym expansion (e.g., "accused" -> ["name", "accused"])
         |
         v
@@ -318,7 +388,8 @@ Step 6: LLM RE-RANKING (if enabled)
 Build context blocks with source metadata
         |
         v
-ollama_chat(): LLM generates answer from context only (temperature=0)
+ollama_chat(): LLM generates answer with source citations
+  "IMPORTANT: cite the source document name in parentheses"
         |
         v
 Response: { answer, used_chunks[] }
@@ -328,23 +399,20 @@ Response: { answer, used_chunks[] }
 
 ```
 POST /graph/extract-all (or auto after upload)
+   Authorization: Bearer <JWT token>
         |
         v
-Retrieve all document chunks from ChromaDB
+Retrieve document chunks from ChromaDB (max 60 per doc)
         |
         v
 For each document:
   Process chunks in batches of 5
         |
         v
-  LLM extracts entities + relationships as JSON:
-    {
-      "entities": [{"name": "Amit Sharma", "type": "PERSON", "context": "..."}],
-      "relationships": [{"source": "Amit Sharma", "target": "Tech Lab", "type": "MEMBER_OF"}]
-    }
+  LLM extracts entities + relationships as JSON
         |
         v
-  Store in MSSQL: entities + relationships tables
+  Store in MySQL: entities + relationships tables (with case_id)
         |
         v
 GET /graph/data -> Returns nodes + edges for force-graph visualization
@@ -363,18 +431,14 @@ For each document (not yet extracted):
   Process chunks in batches of 3
         |
         v
-  LLM extracts activities + cross-references as JSON:
-    {
-      "activities": [{"tms_id": "TMS-2025-0412", "date": "Mar 18 2025", ...}],
-      "cross_references": [{"source_tms_id": "TMS-2025-0687", "target_tms_id": "TMS-2025-0412"}]
-    }
+  LLM extracts activities + cross-references as JSON
         |
         v
-  Store in MSSQL: activities + cross_references tables
+  Store in MySQL: activities + cross_references tables (with case_id)
         |
         v
 GET /timeline/data -> Returns activities sorted by date
-GET /timeline/breadcrumb?tms_id=X -> Returns Bread Crumb trail of linked activities
+GET /timeline/breadcrumb?tms_id=X -> Returns Bread Crumb trail
 ```
 
 ### 4.5 Location Extraction Flow
@@ -383,18 +447,14 @@ GET /timeline/breadcrumb?tms_id=X -> Returns Bread Crumb trail of linked activit
 POST /locations/extract-all (incremental — IR collection only)
         |
         v
-Retrieve IR document chunks from ChromaDB
-        |
-        v
-For each document (not yet extracted):
+For each IR document (not yet extracted):
   LLM extracts addresses and person-address associations
         |
         v
   Offline geocoding using India district/city dictionary
-  (Karnataka districts, Bangalore localities, major Indian cities)
         |
         v
-  Store in MSSQL: doc_locations table
+  Store in MySQL: doc_locations table (with case_id)
         |
         v
 GET /locations/data -> Returns geocoded locations for map pins
@@ -424,9 +484,45 @@ Frontend auto-submits transcription as question via /docs/ask
 Answer displayed + spoken aloud via SpeechSynthesis API
 ```
 
+### 4.7 Answer Rating Flow
+
+```
+User reads LLM answer
+        |
+        v
+Clicks rating button: +2 (Excellent), +1 (Good), 0 (OK), -1 (Poor), -2 (Wrong)
+        |
+        v
+POST /ratings (with user_id, collection, case_id, question, answer, rating)
+        |
+        v
+Backend stores in MySQL answer_ratings table:
+  - Ratings +1 and +2: Store question + answer (training data for future fine-tuning)
+  - Ratings 0, -1, -2: Store rating only (no Q&A text)
+        |
+        v
+GET /ratings/stats -> Aggregated rating counts for analytics
+```
+
 ---
 
-## 5. API Endpoints (27 total)
+## 5. API Endpoints (30+ total)
+
+### Authentication (3 endpoints)
+
+| Method | Path              | Purpose                                    |
+|--------|------------------|--------------------------------------------|
+| POST   | `/auth/register` | Register new user                          |
+| POST   | `/auth/login`    | Login and receive JWT token                |
+| GET    | `/auth/me`       | Get current user info from token           |
+
+### Case Management (3 endpoints)
+
+| Method | Path              | Purpose                                    |
+|--------|------------------|--------------------------------------------|
+| POST   | `/cases/create`  | Create a new case                          |
+| GET    | `/cases/list`    | List user's cases                          |
+| GET    | `/cases/{id}`    | Get case details                           |
 
 ### Document Management (8 endpoints)
 
@@ -441,7 +537,7 @@ Answer displayed + spoken aloud via SpeechSynthesis API
 | POST   | `/docs/agent`      | Multi-document cross-comparison Q&A        |
 | POST   | `/docs/clear`      | Clear all documents, vectors, and related data |
 
-### Entity Graph (5 endpoints)
+### Entity Graph (6 endpoints)
 
 | Method | Path                       | Purpose                                    |
 |--------|---------------------------|--------------------------------------------|
@@ -470,7 +566,7 @@ Answer displayed + spoken aloud via SpeechSynthesis API
 | GET    | `/locations/extraction-status`| Poll location extraction progress         |
 | GET    | `/locations/data`            | Get geocoded locations for map             |
 
-### Structured Data & NL-to-SQL (6 endpoints)
+### Structured Data & NL-to-SQL (5 endpoints)
 
 | Method | Path                     | Purpose                                    |
 |--------|-------------------------|--------------------------------------------|
@@ -480,51 +576,66 @@ Answer displayed + spoken aloud via SpeechSynthesis API
 | GET    | `/structured/ir/{id}`   | Get single IR report with all fields       |
 | POST   | `/structured/query`     | Natural Language to SQL query pipeline     |
 
+### Answer Ratings (2 endpoints)
+
+| Method | Path              | Purpose                                    |
+|--------|------------------|--------------------------------------------|
+| POST   | `/ratings`       | Submit answer rating (+2 to -2)            |
+| GET    | `/ratings/stats` | Get aggregated rating statistics           |
+
 ---
 
 ## 6. Design Best Practices
 
-### 6.1 EAV Schema for Document Fields (Simple over Complex)
+### 6.1 Dual Structured Tables: Flat (SMAC) + EAV (IR)
 
-**Problem:** Police documents have varied structures — IR reports have 50+ fields, SMAC reports have 15+ fields, and field names differ across versions. A normalized schema with separate tables per document type becomes unmanageable.
+**Problem:** SMAC and IR documents have fundamentally different structures. SMAC reports have a fixed set of ~17 fields. IR reports have 50+ variable fields that differ across versions.
 
-**Solution:** Use a single Entity-Attribute-Value (EAV) table (`document_fields`) that stores each field as a key-value pair. This handles any document structure without schema changes.
+**Solution:** Two separate table designs:
+- **`smac_reports`** — Flat columnar table with one row per document. Fixed columns for each known field.
+- **`ir_reports`** — Entity-Attribute-Value (EAV) table storing each field as a key-value pair. Handles any document structure without schema changes.
 
 ```sql
--- One table handles ALL document types
-SELECT field_key, field_value FROM document_fields
+-- SMAC: Direct column access
+SELECT subject, originator, priority FROM smac_reports WHERE doc_id = 'doc123'
+
+-- IR: Key-value lookup
+SELECT field_key, field_value FROM ir_reports
 WHERE doc_id = 'doc123' ORDER BY serial_no
 ```
 
-**Why EAV over normalized tables:**
-- No schema migration when document formats change
-- Simple NL-to-SQL — LLM only needs to understand one table
-- Easy keyword search with `LIKE` queries
-- Aggregate queries across all documents work naturally
-
-**Implementation:** `structured_tables.py` -> `document_fields` table
+**Implementation:** `structured_tables.py` -> `smac_reports` + `ir_reports` tables
 
 ---
 
-### 6.2 Hybrid Search: Structured + Vector + BM25
+### 6.2 Case-Scoped ChromaDB Collections with Fallback
+
+**Problem:** Documents indexed with `case_id=0` (bulk indexing) go to global collections (`"SMAC"`, `"IR"`). But the frontend sends the active case ID, creating scoped collection names like `"SMAC_c1"`. When the scoped collection is empty, queries return no results.
+
+**Solution:** Automatic fallback logic in both `docs_list` and `docs_ask`:
+1. First query the case-scoped collection (e.g., `SMAC_c1`)
+2. If empty, fall back to the global collection (`SMAC`)
+3. Merge document lists from both scoped and global collections
+
+```python
+_is_smac = collection_name == "SMAC" or collection_name.startswith("SMAC_c")
+_is_ir = collection_name == "IR" or collection_name.startswith("IR_c")
+```
+
+**Implementation:** `app.py` -> `docs_list()`, `docs_ask()` fallback logic; `rag.py` -> `_is_smac`/`_is_ir` checks
+
+---
+
+### 6.3 Hybrid Search: Structured + Vector + BM25
 
 **Problem:** Vector (semantic) search alone misses exact matches. Searching for account number "1234567890" or name "Mohammed Ali" may fail because embedding similarity cares about meaning, not exact text.
 
 **Solution:** Run THREE search engines in parallel and merge results:
-1. **Structured Keyword Search** (MSSQL `document_fields`) — exact field value matches with synonym expansion
+1. **Structured Keyword Search** (MySQL `ir_reports`/`smac_reports`) — exact field value matches with synonym expansion
 2. **Vector Search** (ChromaDB) — semantically similar chunks
 3. **BM25 Keyword Search** (rank-bm25) — exact keyword matches in full text
 
-Results are merged using **Reciprocal Rank Fusion (RRF)**: `score = 1/(k + rank₁) + 1/(k + rank₂)`. Documents found by multiple methods get boosted.
-
-**Synonym expansion** maps user terms to likely field names:
-```python
-"accused" -> ["name", "accused", "suspect"]
-"phone"   -> ["phone", "mobile", "contact"]
-"address" -> ["address", "residence", "location"]
-```
-
-**Impact:** Catches exact case numbers, phone numbers, and names that vector search misses. Critical for law enforcement accuracy.
+Results are merged using **Reciprocal Rank Fusion (RRF)**: `score = 1/(k + rank₁) + 1/(k + rank₂)`.
 
 **Configuration:** `ENABLE_HYBRID_SEARCH=true` in `.env`
 
@@ -532,19 +643,17 @@ Results are merged using **Reciprocal Rank Fusion (RRF)**: `score = 1/(k + rank�
 
 ---
 
-### 6.3 Smart Routing: NL-to-SQL for Aggregate Questions
+### 6.4 Smart Routing: NL-to-SQL for Aggregate Questions
 
-**Problem:** Questions like "Name all accused persons" or "How many documents mention Bangalore?" require aggregating across ALL documents. RAG retrieves only top-k chunks and may miss documents.
+**Problem:** Questions like "Name all accused persons" require aggregating across ALL documents. RAG retrieves only top-k chunks and may miss documents.
 
-**Solution:** Detect aggregate questions and route them to a Natural Language-to-SQL pipeline instead of RAG.
+**Solution:** Detect aggregate questions and route them to a Natural Language-to-SQL pipeline.
 
 ```
 "Name all accused" -> LLM generates SQL:
   SELECT DISTINCT doc_name, field_value
-  FROM document_fields
+  FROM ir_reports
   WHERE field_key LIKE '%accused%'
-
-Execute SQL -> LLM formats results -> Return answer
 ```
 
 **Detection keywords:** "all", "every", "list", "how many", "count", "total", "across", "each document"
@@ -553,30 +662,112 @@ Execute SQL -> LLM formats results -> Return answer
 
 ---
 
-### 6.4 Batch Embedding (GPU Optimization)
+### 6.5 Source Document Citations
+
+**Problem:** When answers span multiple documents, users need to know which document each piece of information comes from.
+
+**Solution:** LLM prompts instruct the model to cite source document names in parentheses, using context block headers.
+
+```
+List prompt: "For EACH entry, mention the source document name in parentheses
+(from the context block headers like [doc_name | ...])."
+
+Regular prompt: "IMPORTANT: For each piece of information, cite the source
+document name in parentheses (from the context block headers like [doc_name | ...])."
+```
+
+**Implementation:** `rag.py` -> list and regular prompt templates
+
+---
+
+### 6.6 Answer Rating System (+2 to -2)
+
+**Problem:** During UAT, there's no way to collect user feedback on answer quality for future model improvement.
+
+**Solution:** 5-point rating scale with selective storage:
+- **+2 (Excellent)** and **+1 (Good)**: Store question + answer + rating (training data for fine-tuning)
+- **0 (OK)**, **-1 (Poor)**, **-2 (Wrong)**: Store rating only (feedback signal without storing potentially wrong Q&A)
+
+```
+POST /ratings
+{
+  "user_id": 1,
+  "collection": "SMAC",
+  "case_id": 0,
+  "question": "Who is the accused?",
+  "answer": "The accused is Mohammed Ali (IR_Report_001.docx)",
+  "rating": 2
+}
+```
+
+**Implementation:** `app.py` -> `_init_ratings_table()`, `POST /ratings`, `GET /ratings/stats`; `App.tsx` -> rating bar UI
+
+---
+
+### 6.7 JWT Authentication and Case Isolation
+
+**Problem:** Multiple officers may use the system simultaneously. Documents and cases must be isolated per user.
+
+**Solution:** JWT-based authentication with case-scoped data:
+- Users register and login via `/auth/register` and `/auth/login`
+- All API calls include `Authorization: Bearer <token>`
+- Documents, entities, activities, and locations are scoped by `case_id`
+- ChromaDB collections are case-scoped: `SMAC_c1`, `IR_c2`
+
+**Implementation:** `auth.py` -> JWT token generation/validation; `cases.py` -> case CRUD
+
+---
+
+### 6.8 Batch Embedding (GPU Optimization)
 
 **Problem:** Embedding text chunks one-by-one via HTTP to Ollama is slow.
 
 **Solution:** Ollama's `/api/embed` endpoint accepts a list. We send up to 64 texts per request.
 
 ```python
-# BAD: 200 chunks = 200 HTTP requests
-for chunk in chunks:
-    vec = ollama_embed(chunk)
-
 # GOOD: 200 chunks = 4 HTTP requests (batch_size=64)
 vectors = ollama_embed_batch(chunks, batch_size=64)
 ```
 
-**Impact:** 10-50x faster indexing. GPU utilization goes from ~0% to visible activity.
+**Impact:** 10-50x faster indexing.
 
 **Implementation:** `ollama_client.py` -> `ollama_embed_batch()`
 
 ---
 
-### 6.5 GPU Auto-Detection for Whisper STT
+### 6.9 LLM-Based Key-Value Extraction (Hybrid Document Reading)
 
-**Problem:** Hardcoding `device="cpu"` wastes available GPU resources.
+**Problem:** Regex-based field extraction fails on complex document layouts (merged cells, nested tables).
+
+**Solution:** Use LLM to extract structured key-value pairs, with hybrid document reading:
+- **DOCX**: python-docx (reads XML directly — fast, no ML models)
+- **PDF**: Docling with OCR disabled + PyPdfiumDocumentBackend. Falls back to pypdf if Docling fails.
+
+**Toggle:** `USE_LLM_PARSER` in `config.py` (default: true)
+
+**Implementation:** `llm_kv_extractor.py` -> `extract_fields()`, `_read_document()`
+
+---
+
+### 6.10 MySQL VARCHAR(255) Constraint for UNIQUE Keys
+
+**Problem:** MySQL's InnoDB with `utf8mb4` uses 4 bytes per character. A `VARCHAR(500)` in a UNIQUE KEY requires 2000 bytes per column, and multi-column keys easily exceed the 3072-byte limit.
+
+**Solution:** All VARCHAR columns participating in UNIQUE KEY constraints are limited to `VARCHAR(255)` (1020 bytes). Non-keyed columns can remain `VARCHAR(500)` or `TEXT`.
+
+```sql
+-- BAD: Exceeds 3072-byte key limit
+UNIQUE KEY (name VARCHAR(500), type VARCHAR(100), doc_id VARCHAR(500))
+
+-- GOOD: Within limit (255*4 + 50*4 + 255*4 = 2240 bytes)
+UNIQUE KEY (name VARCHAR(255), type VARCHAR(50), doc_id VARCHAR(255))
+```
+
+**Implementation:** All table definitions in `entity_graph.py`, `activity_timeline.py`, `location_extractor.py`, `structured_tables.py`
+
+---
+
+### 6.11 GPU Auto-Detection for Whisper STT
 
 **Solution:** Auto-detect CUDA at runtime and select the best device.
 
@@ -588,336 +779,108 @@ else:
     model = WhisperModel(name, device="cpu", compute_type="int8")
 ```
 
-**Impact:** 3-5x faster speech transcription on NVIDIA GPUs.
+**Implementation:** `app.py` -> `get_whisper_model()`
+
+---
+
+### 6.12 Lazy Model Loading
+
+**Solution:** Singleton pattern that loads models on first use. Fast server startup (< 2 seconds).
 
 **Implementation:** `app.py` -> `get_whisper_model()`
 
 ---
 
-### 6.6 Lazy Model Loading
+### 6.13 Audio Pipeline: WebM to WAV Conversion
 
-**Problem:** Loading large ML models (Whisper ~500MB, embedding model ~274MB) at server startup slows boot time.
-
-**Solution:** Singleton pattern that loads models on first use.
-
-```python
-_whisper_model = None
-def get_whisper_model():
-    global _whisper_model
-    if _whisper_model is None:
-        _whisper_model = WhisperModel(...)
-    return _whisper_model
-```
-
-**Impact:** Fast server startup (< 2 seconds). Memory used only when features are invoked.
-
-**Implementation:** `app.py` -> `get_whisper_model()`
-
----
-
-### 6.7 Audio Pipeline: WebM to WAV Conversion
-
-**Problem:** Browser MediaRecorder outputs WebM/Opus format. Whisper works best with 16kHz mono WAV.
-
-**Solution:** Convert audio server-side using PyAV (Python ffmpeg bindings).
-
-**Why PyAV instead of subprocess ffmpeg:** PyAV is a Python library (no system ffmpeg install needed), works on Windows without PATH issues, and handles the conversion in-memory.
+**Solution:** Convert audio server-side using PyAV (Python ffmpeg bindings). No system ffmpeg install needed.
 
 **Implementation:** `app.py` -> `_convert_to_wav16k()`
 
 ---
 
-### 6.8 Microphone Device Selection & Audio Level Monitoring
+### 6.14 Whisper Hallucination Filtering
 
-**Problem:** Laptops often have multiple audio input devices. The browser may default to one that captures silence.
-
-**Solution:**
-1. Enumerate all `audioinput` devices via `navigator.mediaDevices.enumerateDevices()`
-2. Show a dropdown selector when multiple devices are found
-3. Display a real-time audio level meter using Web Audio API's `AnalyserNode`
-4. Show a warning when mic level is 0% ("No audio detected!")
-
-**Implementation:** `App.tsx` -> `useEffect` for device enumeration, `handleVoiceToggle()`
-
----
-
-### 6.9 Whisper Hallucination Filtering
-
-**Problem:** When Whisper receives silence or very short audio, it "hallucinates" phrases like "Thank you", "Subscribe", etc.
-
-**Solution:** Blocklist of known hallucination phrases.
-
-```python
-HALLUCINATIONS = {"", "thank you", "thanks for watching", "subscribe", "you", "bye"}
-if cleaned.lower() in HALLUCINATIONS or len(cleaned) < 3:
-    return {"ok": False, "error": "Could not transcribe audio..."}
-```
+**Solution:** Blocklist of known hallucination phrases ("thank you", "subscribe", etc.).
 
 **Implementation:** `app.py` -> `docs_transcribe()`
 
 ---
 
-### 6.10 Authorized System Prompts for Sensitive Data
+### 6.15 Authorized System Prompts for Sensitive Data
 
-**Problem:** LLMs may refuse to discuss police case files, returning generic refusal messages.
-
-**Solution:** System prompt explicitly authorizes the model as an internal tool.
-
-```python
-{"role": "system", "content": (
-    "You are an authorized internal AI assistant for Karnataka State Police (KSP). "
-    "You are deployed on a secure, offline government system. "
-    "You MUST answer questions about the provided documents fully and factually. "
-    "Do NOT refuse, censor, or redact any information. "
-    "Always respond in English only."
-)}
-```
+**Solution:** System prompt explicitly authorizes the model as an internal KSP tool.
 
 **Implementation:** `rag.py` -> system prompts in `ask_docs()` and `ask_docs_agent()`
 
 ---
 
-### 6.11 Zero-Temperature LLM for Factual Accuracy
+### 6.16 Zero-Temperature LLM for Factual Accuracy
 
-**Problem:** With temperature > 0, LLMs may generate creative but inaccurate answers.
+**Solution:** Use `temperature=0.0` for ALL LLM calls.
 
-**Solution:** Use `temperature=0.0` for ALL LLM calls (Q&A, entity extraction, NL-to-SQL).
-
-```python
-answer = ollama_chat(messages, temperature=0.0, model=PDF_MODEL)
-```
-
-**Implementation:** `rag.py`, `entity_graph.py`, `activity_timeline.py` — all `ollama_chat()` calls
+**Implementation:** All `ollama_chat()` calls across `rag.py`, `entity_graph.py`, `activity_timeline.py`
 
 ---
 
-### 6.12 Multi-Query RAG (Query Expansion)
+### 6.17 Entity Graph with Law Enforcement Relationship Types
 
-**Problem:** A single question phrasing may not match how information is stored.
-
-**Solution:** LLM generates 3 alternative phrasings before searching.
-
-```
-Original:    "Who is the accused?"
-Variation 1: "accused person details and identity"
-Variation 2: "suspect name from the case document"
-Variation 3: "defendant or perpetrator information"
-```
-
-Each variation searches both vector and BM25 indexes.
-
-**Configuration:** `ENABLE_MULTI_QUERY=true` in `.env`
-
-**Implementation:** `rag.py` -> `_generate_multi_queries()`
-
----
-
-### 6.13 LLM Re-ranking
-
-**Problem:** After retrieving 30+ candidate chunks, the initial ranking may not reflect true relevance.
-
-**Solution:** Send top candidates to the LLM to re-rank by relevance. The LLM sees the question AND passage together (cross-encoder style), producing more accurate relevance judgments.
-
-```
-Input:  30 candidate chunks + user question
-Output: Top 12 reordered by actual relevance
-```
-
-**Configuration:** `ENABLE_RERANKING=true` in `.env`
-
-**Implementation:** `rag.py` -> `_rerank_with_llm()`
-
----
-
-### 6.14 Entity Graph with Helper/Associate Relationships
-
-**Problem:** Standard entity extraction only captures basic relationships (WORKS_AT, MEMBER_OF). Law enforcement needs to identify helpers, accomplices, handlers, and financial connections.
-
-**Solution:** Extended relationship type system with 23 types including law-enforcement-specific types:
-
-- **Standard:** MEMBER_OF, WORKS_AT, SIBLING, SPOUSE, PARENT_OF, CHILD_OF, COLLEAGUE
-- **Law Enforcement:** HELPER_OF, ADVOCATE_OF, DOCTOR_OF, FINANCIER_OF, ASSOCIATE_OF, ACCOMPLICE_OF, HANDLER_OF, SYMPATHIZER_OF, ACCUSED_WITH, CO_ACCUSED
-
-The LLM prompt explicitly lists these types so the model assigns the most specific relationship.
+**Solution:** 23 relationship types including law-enforcement-specific: HELPER_OF, ADVOCATE_OF, DOCTOR_OF, FINANCIER_OF, ASSOCIATE_OF, ACCOMPLICE_OF, HANDLER_OF, SYMPATHIZER_OF, ACCUSED_WITH, CO_ACCUSED.
 
 **Implementation:** `entity_graph.py` -> `extract_entities_and_relationships_from_chunks()`
 
 ---
 
-### 6.15 Offline Geocoding for Location Map
+### 6.18 Offline Geocoding for Location Map
 
-**Problem:** Law enforcement systems cannot use online geocoding APIs (Google Maps, OpenStreetMap) due to offline requirement.
-
-**Solution:** Bundled India geocoding dictionary with coordinates for:
-- All Karnataka districts
-- Major Bangalore localities
-- Major Indian cities
-
-Address text is matched against this dictionary to produce lat/lng coordinates.
+**Solution:** Bundled India geocoding dictionary (Karnataka districts, Bangalore localities, major Indian cities).
 
 **Implementation:** `location_extractor.py` -> `geocode()`
 
 ---
 
-### 6.16 Incremental Extraction (Skip Already-Processed Documents)
+### 6.19 Incremental Extraction (Skip Already-Processed Documents)
 
-**Problem:** Re-extracting entities/activities/locations from all documents after adding one new document wastes time.
+**Solution:** Track which documents have been processed. On extract-all, skip already-done documents.
 
-**Solution:** Track which documents have been processed. On extract-all, skip documents that already have extracted data.
-
-```python
-already_done = get_extracted_doc_ids()
-for doc in all_docs:
-    if doc['doc_id'] in already_done:
-        continue  # Skip
-    extract_and_store(doc)
-```
-
-**Implementation:** `activity_timeline.py` -> `get_extracted_doc_ids()`, `location_extractor.py` -> `get_extracted_doc_ids_for_locations()`
+**Implementation:** `activity_timeline.py`, `location_extractor.py` -> `get_extracted_doc_ids()`
 
 ---
 
-### 6.17 Persistent State Across Page Refresh
+### 6.20 Stateless Q&A (No Conversation History)
 
-**Problem:** Refreshing the browser page loses the indexed document list and status information.
+**Problem:** Prepending conversation history caused keyword extraction noise, zero-vector embeddings, and garbage retrieval.
 
-**Solution:** On app mount (and collection switch), fetch the document list from the backend and restore the status line.
+**Solution:** Each Q&A call is stateless — `payload.question` goes directly to `ask_pdf()`.
 
-```typescript
-useEffect(() => {
-  apiFetch(`/docs/list?collection=${activeCollection}`)
-    .then((data) => {
-      if (data?.ok && data.docs) {
-        setDocs(data.docs)
-        if (data.docs.length > 0) {
-          setDocStatus(`OK ${data.docs.length} document(s) indexed. Ready for Q&A.`)
-        }
-      }
-    })
-}, [activeCollection])
-```
-
-**Implementation:** `App.tsx` -> `useEffect` on mount with `activeCollection` dependency
+**Implementation:** `app.py` -> `/docs/ask` endpoint
 
 ---
 
-### 6.18 Stateless Q&A (No Conversation History)
+### 6.21 LLM Accuracy Optimizations (Q&A Pipeline)
 
-**Problem:** Prepending conversation history to the user question caused three cascading failures: (a) keyword extraction pulled dozens of irrelevant words from history text (e.g., "conversation", "resolve", "assistant"), (b) the embedding model choked on the massive combined string and produced zero-vector embeddings, and (c) irrelevant fields matched the noise keywords, drowning relevant results in garbage context.
+A comprehensive set of fixes for the RAG Q&A pipeline:
 
-**Solution:** Removed conversation history prepending entirely. Each Q&A call is stateless — `payload.question` goes directly to `ask_pdf()`. This is appropriate for a simple document Q&A tool where each question should stand on its own.
+#### A. Retrieval Accuracy
+- **Clean question for keywords** (`raw_question` parameter) — prevents noise from history
+- **Expanded stop-word filtering** — ~30 noise words blocked
+- **Keyword synonym expansion** — "lawyer" → ["advocate", "lawyer", "legal", "counsel"]
+- **IR fuzzy retrieval** — searches both `field_name` metadata AND document text
+- **Direct text search** (`_ir_text_search`) — scoring-based search with majority-match
+- **Always merge field/text + hybrid retrieval for IR**
+- **Clean question for embedding** — prevents zero-vector embeddings
 
-**Implementation:** `app.py` -> `/docs/ask` endpoint passes `payload.question` directly (no `build_context_from_history()`)
-
----
-
-### 6.19 English-Only Responses
-
-**Problem:** When processing documents in regional languages (Kannada, Hindi), the LLM sometimes responds in the document's language instead of English.
-
-**Solution:** All system prompts include "Always respond in English only."
-
-**Implementation:** `rag.py` -> all system prompt strings
-
----
-
-### 6.20 LLM Accuracy Optimizations (Q&A Pipeline)
-
-A comprehensive set of fixes applied to the RAG Q&A pipeline to eliminate hallucination, ensure complete answers, and improve retrieval accuracy. These are grouped into three categories.
-
-#### A. Document Parsing & Indexing
-
-**1. Hybrid document reading (Docling + python-docx)**
-Uses python-docx for DOCX files (reads XML directly, fast) and Docling with OCR disabled for PDFs (table structure detection only). Falls back to pypdf if Docling fails. Saves ~4-6GB RAM.
-`llm_kv_extractor.py` -> `_read_document()`
-
-**2. LLM-based key-value extraction**
-Uses the LLM to extract structured field key-value pairs from documents, producing richer metadata for ChromaDB chunks. Toggle: `USE_LLM_PARSER` in `config.py`.
-`llm_kv_extractor.py` -> `extract_fields()`
-
-**3. Robust JSON recovery**
-Handles truncated JSON, markdown code fences, and control characters from LLM output. Uses `strict=False` parsing with multiple fallback strategies.
-`llm_kv_extractor.py` -> `_parse_json_response()`
-
-#### B. Retrieval Accuracy
-
-**4. Clean question for keyword extraction (`raw_question`)**
-Added `raw_question` parameter to `ask_docs()`, `ask_pdf()`, `ask_doc()`. The clean user question (without history or template boilerplate) is used for keyword extraction, field detection, and embedding — while the full context can be used for the LLM prompt if needed.
-`rag.py` -> `q_for_keywords = raw_question if raw_question else question`
-
-**5. Expanded stop-word filtering**
-Added ~30 conversation-template noise words to the stop-word set as defense-in-depth: "context", "conversation", "continuing", "resolve", "references", "assistant", "user", "document", "provided", etc. Prevents these from becoming search keywords.
-`rag.py` -> `_stop_words` set
-
-**6. Keyword synonym expansion**
-Maps user search terms to document field terms. For example, "lawyer" maps to ["advocate", "lawyer", "legal", "counsel"]; "associate" maps to ["associate", "accomplice", "helper", "co-accused", "companion", "contact"].
-`rag.py` -> `_KEYWORD_SYNONYMS` dict
-
-**7. IR field keyword additions**
-Added domain-specific keywords like "lawyer" to `IR_FIELD_KEYWORDS` so they trigger the specialized fuzzy field retrieval path.
-`rag.py` -> `IR_FIELD_KEYWORDS` list
-
-**8. Fuzzy retrieval searches document text (not just field_name metadata)**
-The original `_get_chunks_by_field_fuzzy()` only matched `field_name` metadata, skipping page-text chunks that contained relevant data but had no `field_name`. Now searches both `field_name` metadata AND document text content, returning `field_results + text_results`.
-`rag.py` -> `_get_chunks_by_field_fuzzy()`
-
-**9. Direct text search function (`_ir_text_search`)**
-New scoring-based text search that scans all ChromaDB chunks for significant words from the question. Uses majority-match scoring (`min_matches = max(2, (len+1)//2)`) rather than requiring all words, tolerating typos and partial matches. Results sorted by score, capped at 5.
-`rag.py` -> `_ir_text_search()`
-
-**10. Always merge field/text + hybrid retrieval for IR**
-IR queries now always run both text/field search AND hybrid (vector + BM25) retrieval, merging results with deduplication. Text-matched chunks are placed first (higher relevance), then hybrid fills remaining slots.
-`rag.py` -> `ask_docs()` IR branch
-
-**11. Clean question for embedding**
-All `_hybrid_retrieve()` calls use the clean `q_for_keywords` instead of the full question string. This prevents the embedding model from choking on long history-enhanced strings (which produced zero-vector embeddings and garbage retrieval).
-`rag.py` -> all `_hybrid_retrieve()` call sites
-
-**12. Embedding batch retry with fallback**
-`ollama_embed_batch()` retries failed batches up to 3 times with exponential backoff, then falls back to one-by-one embedding. Uses zero-vector placeholders for chunks that still fail, so indexing doesn't break.
-`ollama_client.py` -> `ollama_embed_batch()`
-
-#### C. LLM Answer Generation
-
-**13. Focused context window (5-chunk cap)**
-When text/field search finds strong matches, total results are capped at 5 chunks instead of 15. This dramatically reduces noise and hallucination — gemma3:12b performs much better with focused, relevant context than with large volumes of loosely-related text.
-`rag.py` -> `max_results = min(top_k, 5)` when `field_chunks` exist
-
-**14. Context size cap (30K chars)**
-Hard limit of 30,000 characters on the context sent to the LLM. Well within gemma3:12b's 128K token limit but prevents pathological cases from overwhelming the model.
-`rag.py` -> `MAX_CONTEXT_CHARS = 30000`
-
-**15. Temperature = 0**
-All LLM calls use `temperature=0.0` for deterministic, factual responses. Eliminates creative/random variation in answers.
-`ollama_client.py` -> `ollama_chat(temperature=0.0)`
-
-**16. Anti-hallucination system prompt**
-System prompt includes explicit instructions: "ONLY use information from the CONTEXT below", "If the answer is not found, say so", "Do NOT make up information."
-`rag.py` -> system prompt string
-
-**17. Exhaustive listing instruction**
-Prompt includes: "Be EXHAUSTIVE: list ALL names, items, and entries found in the CONTEXT. Never truncate or abbreviate lists." Ensures the LLM doesn't summarize or skip items in multi-item answers.
-`rag.py` -> system prompt string
-
-**18. Clean question sent to LLM**
-The `QUESTION:` field in the LLM prompt uses `q_for_keywords` (the clean user question) rather than the history-enhanced string. This focuses the LLM on the actual question being asked.
-`rag.py` -> `llm_question = q_for_keywords`
-
-**19. Answer truncation raised to 8K chars**
-Increased from 2,500 to 8,000 characters to avoid cutting off long lists (e.g., 16 associates with details). The focused context (fix #13) naturally limits answer length, so the higher cap doesn't cause bloat.
-`rag.py` -> answer truncation threshold
-
-**20. Error handling and diagnostic logging**
-Added comprehensive logging around the LLM call: context size, question size, prompt size before the call; response size after; and try/except with error return instead of crash. Diagnostic script `_diagnose_index.py` checks MSSQL + ChromaDB contents.
-`rag.py` -> print statements around `ollama_chat()`, `_diagnose_index.py`
+#### B. LLM Answer Generation
+- **Focused context window** — 5 chunks when text search finds strong matches (vs 15 fallback)
+- **Context size cap** — 30K chars hard limit (60K for list queries)
+- **Anti-hallucination prompt** — "ONLY use information from CONTEXT", "Do NOT make up information"
+- **Exhaustive listing instruction** — "list ALL names, items found in CONTEXT"
+- **Answer truncation at 8K chars** — prevents cutting off long lists
 
 #### Key Insight: Less Context = Better Answers
+With gemma3:12b, 5 focused chunks dramatically outperform 15 loosely-related chunks. Smaller LLMs need aggressive retrieval filtering.
 
-The single most impactful optimization was **reducing context from 12-15 chunks to 5 focused chunks** when text search finds strong matches. With gemma3:12b:
-- 15 chunks (~17K chars): LLM hallucinated ("Milwaukee, WI - 53207"), returned only 1-3 of 7 names
-- 5 chunks (~7K chars): LLM returned all 7 names correctly, zero hallucination
-
-This is a fundamental property of smaller LLMs — they perform dramatically better with focused, relevant context than with large volumes of loosely-related text. The retrieval pipeline should aggressively filter and rank rather than passing everything to the LLM.
+**Implementation:** `rag.py` — various functions documented in code comments
 
 ---
 
@@ -931,33 +894,36 @@ PDF_MODEL=gemma3:12b
 EMBED_MODEL=mxbai-embed-large
 WHISPER_MODEL=small
 
-# RAG Accuracy Features (set to false to disable any)
+# RAG Accuracy Features
 ENABLE_HYBRID_SEARCH=true
 ENABLE_MULTI_QUERY=true
 ENABLE_RERANKING=true
 
-# SQL Server (MSSQL)
-MSSQL_SERVER=localhost
-MSSQL_DATABASE=ISDIntelligence
-MSSQL_DRIVER=ODBC Driver 17 for SQL Server
-MSSQL_AUTH=windows
-MSSQL_USER=
-MSSQL_PASSWORD=
+# MySQL
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=<your-password>
+MYSQL_DATABASE=ISDIntelligence
+
+# JWT
+JWT_SECRET=<your-secret-key>
+
+# LLM Parser
+USE_LLM_PARSER=true
 ```
 
 ### Frontend (.env)
 
 ```
-VITE_API_BASE=http://localhost:8000
+VITE_API_BASE=http://localhost:8001
 ```
-
-All values have sensible defaults in `config.py` and can be overridden via environment variables.
 
 ---
 
 ## 8. Document Processing Limits
 
-| Parameter                  | Default | Configurable                       |
+| Parameter                  | Default | Location                           |
 |---------------------------|---------|-------------------------------------|
 | Max chunks per document   | 500     | `rag.py` -> `MAX_UNITS`            |
 | Max pages per PDF         | 120     | `rag.py` -> `MAX_PAGES`            |
@@ -966,13 +932,13 @@ All values have sensible defaults in `config.py` and can be overridden via envir
 | Max rows per CSV          | 500     | `rag.py` -> `max_rows`             |
 | Chunk size (chars)        | 2000    | `rag.py` -> `chunk_text()`         |
 | Chunk overlap (chars)     | 120-140 | `rag.py` -> `chunk_text()`         |
-| Min unit length           | 10-25   | `rag.py` -> `min_unit_len`         |
 | Embedding batch size      | 64      | `ollama_client.py` -> `batch_size` |
 | Entity extraction batch   | 5 chunks| `entity_graph.py` -> `batch_size`  |
+| Max entity chunks per doc | 60      | `entity_graph.py` -> `MAX_ENTITY_CHUNKS` |
 | Activity extraction batch | 3 chunks| `activity_timeline.py` -> `batch_size` |
 | RAG top_k results         | 5 (focused) / 15 (fallback) | `rag.py` -> `max_results` |
-| Conversation history kept | None (stateless) | Removed — see 6.18    |
-| Number of documents       | No limit| Disk space only                    |
+| Context size cap          | 30K chars (60K for lists) | `rag.py` -> `MAX_CONTEXT_CHARS` |
+| Ollama timeout            | 90s     | `ollama_client.py` -> `timeout`    |
 
 ---
 
@@ -980,11 +946,11 @@ All values have sensible defaults in `config.py` and can be overridden via envir
 
 ### Prerequisites
 
-- Python 3.10+ with pip
+- Python 3.10+ (Anaconda recommended on Windows)
 - Node.js 18+ with npm
 - Ollama installed and running (`ollama serve`)
-- SQL Server (MSSQL) with ODBC Driver 17 or 18
-- NVIDIA GPU with CUDA drivers (recommended, for faster processing)
+- MySQL 8.x running
+- NVIDIA GPU with CUDA drivers (recommended)
 
 ### Pull Required Ollama Models
 
@@ -996,15 +962,15 @@ ollama pull mxbai-embed-large
 ### Backend
 
 ```bash
-cd ISDDocumentIntelligence_V3/backend
+cd ISDDocumentIntelligence_V5/backend
 pip install -r requirements.txt
-uvicorn app:app --reload --port 8000
+uvicorn app:app --reload --port 8001
 ```
 
 ### Frontend
 
 ```bash
-cd ISDDocumentIntelligence_V3/frontend
+cd ISDDocumentIntelligence_V5/frontend
 npm install
 npm run dev
 ```
@@ -1012,24 +978,94 @@ npm run dev
 ### Verify GPU Usage
 
 ```bash
-# While a model is loaded (during a query):
-curl -s http://localhost:11434/api/ps | python -c "
-import sys, json
-for m in json.load(sys.stdin).get('models', []):
-    pct = round(m.get('size_vram',0)/m.get('size',1)*100)
-    print(f\"{m['name']}: {pct}% GPU\")
-"
+ollama ps
+# Should show "100% GPU"
+
+nvidia-smi
+# Should show ~10GB VRAM used when models are loaded
+```
+
+### GPU Recovery After Reboot
+
+Ollama may fall back to CPU after reboot. Fix:
+```bash
+set OLLAMA_GPU_LAYERS=999
+ollama serve
+```
+
+Warm up models:
+```bash
+ollama run gemma3:12b "hello"
+ollama run mxbai-embed-large "hello"
 ```
 
 ---
 
-## 10. Security Considerations
+## 10. Migration from V4 (MSSQL) to V5 (MySQL)
+
+A migration script is provided at `dbscripts/migrate_mssql_to_mysql.py`.
+
+### What It Does
+1. **Copies ChromaDB** from V4 `chroma_db_v4` → V5 `chroma_db_v5` (skips if exists)
+2. **Creates all MySQL tables** by importing V5 backend module init functions
+3. **Migrates 10 tables**: users, cases, smac_reports, ir_reports, entities, relationships, activities, cross_references, doc_locations, answer_ratings
+4. **Uses INSERT IGNORE** to skip duplicate rows
+5. **Resets AUTO_INCREMENT** counters after migration
+
+### Prerequisites
+```bash
+pip install pyodbc pymysql python-dotenv
+```
+
+### Usage
+```bash
+cd ISDDocumentIntelligence_V5/dbscripts
+python migrate_mssql_to_mysql.py
+```
+
+### Notes
+- MSSQL must be running with the V4 `ISDIntelligence` database
+- MySQL password must be set in `backend/.env`
+- Migration is idempotent — safe to re-run
+
+---
+
+## 11. Bulk Indexing (SMAC)
+
+### Script
+`dbscripts/bulk_index_smac.py` — Multi-threaded bulk document indexer with auto-resume.
+
+### Usage
+```bash
+cd ISDDocumentIntelligence_V5/dbscripts
+python bulk_index_smac.py --folder "PATH_TO_PDFS" --case-id 0 --username USER --password PASS --workers 5
+```
+
+### Features
+- **Auto-resume**: Progress stored in SQLite DB (`.smac_bulk_progress.db`). Re-run to continue.
+- **JWT auth**: Uses registered credentials
+- **Configurable workers**: Default 3, recommended 5
+- **Case ID 0**: Indexes to global collection (accessible from all cases via fallback)
+
+---
+
+## 12. Security Considerations
 
 - **Fully offline** — no internet connectivity required after initial setup
-- **No credentials stored** — no login system, designed for secure internal networks
-- **CORS open** (`allow_origins=["*"]`) — acceptable for localhost/internal deployment only
-- **Temp files cleaned up** — all uploaded files are deleted after processing
-- **Debug audio** — saved to `debug_audio/` for troubleshooting; clear periodically in production
-- **No data leaves the machine** — all LLM inference, embedding, and storage happens locally
-- **MSSQL Windows Auth** — uses Trusted_Connection by default, no SQL passwords in config
-- **English-only responses** — prevents unintended language leakage in outputs
+- **JWT authentication** — all API calls require valid tokens (except health check)
+- **bcrypt password hashing** — passwords never stored in plaintext
+- **CORS configured** — `allow_origins=["*"]` for localhost/internal deployment
+- **Temp files cleaned up** — all uploaded files deleted after processing
+- **No data leaves the machine** — all inference, embedding, and storage is local
+- **MySQL password auth** — credentials in `.env` (not committed to git)
+- **English-only responses** — prevents unintended language leakage
+- **Case isolation** — users only see their own cases and documents
+
+---
+
+## 13. Target Deployment
+
+| Environment | Hardware                    | LLM Model                          | Database |
+|------------|-----------------------------|------------------------------------|----------|
+| Development| Laptop + RTX 4090 (16GB)    | gemma3:12b                         | MySQL 8.x|
+| Production | Server + NVIDIA H100 (80GB) | llama3.1:70b or qwen2.5:72b       | MySQL 8.x|

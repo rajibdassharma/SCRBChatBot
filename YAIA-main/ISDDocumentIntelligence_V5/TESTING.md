@@ -42,7 +42,7 @@ The Sign Out button now detects two active states:
 | Hover tooltip | `"Document indexing in progress — please wait before signing out"` |
 | Dialog | Blocked from opening (`handleSignOutRequest` returns early) |
 | Dialog action buttons | Disabled if dialog was already open when an operation started |
-| Dialog warning banner | Yellow `⚠` warning appears inside the dialog explaining the block |
+| Dialog warning banner | Yellow warning appears inside the dialog explaining the block |
 
 #### Code location
 
@@ -52,7 +52,7 @@ The Sign Out button now detects two active states:
 
 ## 2. Automated Test Suite Overview
 
-The test suite is a set of **integration tests** that run against the **live backend**. They test the real stack — MSSQL, ChromaDB, FastAPI — without any mocking.
+The test suite is a set of **integration tests** that run against the **live backend**. They test the real stack — MySQL, ChromaDB, FastAPI — without any mocking.
 
 ### What is tested
 
@@ -69,7 +69,7 @@ The test suite is a set of **integration tests** that run against the **live bac
 
 ### Design principles
 
-- **Real stack** — No mocking. If MSSQL is down, the tests fail. That's intentional — it confirms the full system works.
+- **Real stack** — No mocking. If MySQL is down, the tests fail. That's intentional — it confirms the full system works.
 - **Isolated test data** — Each run creates a unique test user (`testuser_<timestamp>`) and a test case, so parallel runs don't interfere.
 - **Q&A tests check structure, not content** — LLM answers are non-deterministic. Tests verify `ok=True` and `answer` field is present, not the exact words.
 - **Auto cleanup** — The test case is deleted after the session. Test users remain (harmless).
@@ -99,7 +99,7 @@ ISDDocumentIntelligence_V5/
 └── TESTING.md                   ← This document
 
 (repo root)
-└── run_tests_v4.ps1             ← PowerShell runner script
+└── run_tests_v5.ps1             ← PowerShell runner script
 ```
 
 ---
@@ -110,33 +110,42 @@ Before running tests, ensure the following are in place:
 
 ### 1. Backend is running
 
-```powershell
-.\start_v4_backend.ps1
+```bash
+cd ISDDocumentIntelligence_V5/backend
+uvicorn app:app --reload --port 8001
 ```
 
 Verify it is up:
-```powershell
-Invoke-RestMethod http://localhost:8002/health
+```bash
+curl http://localhost:8001/health
 ```
 Expected: `ok=True, service="ISD Document Intelligence"`
 
-### 2. MSSQL is accessible
+### 2. MySQL is accessible
 
-The backend connects to `ISDIntelligenceV5` on `localhost\SQLEXPRESS` (Windows Auth).
-Confirm SQL Server service is running in Windows Services or via:
+The backend connects to `ISDIntelligence` on `localhost:3306`.
+Confirm MySQL service is running:
+
+**Linux:**
+```bash
+sudo systemctl status mysql
+```
+
+**Windows:**
 ```powershell
-Get-Service -Name 'MSSQL$SQLEXPRESS'
+Get-Service -Name 'MySQL84'
+# or check Windows Services → MySQL84 → Running
 ```
 
 ### 3. Anaconda Python is installed
 
-Tests use `C:\Anaconda3\anaconda3\python.exe`.
-If your Python path is different, edit `run_tests_v4.ps1` and change the `$PYTHON` variable.
+Tests use `C:\Anaconda3\anaconda3\python.exe` on Windows.
+If your Python path is different, edit `run_tests_v5.ps1` and change the `$PYTHON` variable.
 
 ### 4. Install test dependencies (first time only)
 
-```powershell
-C:\Anaconda3\anaconda3\python.exe -m pip install -r YAIA-main\ISDDocumentIntelligence_V5\backend\requirements-test.txt
+```bash
+pip install -r ISDDocumentIntelligence_V5/backend/requirements-test.txt
 ```
 
 Dependencies installed: `pytest`, `requests`, `pytest-timeout`
@@ -148,45 +157,45 @@ Dependencies installed: `pytest`, `requests`, `pytest-timeout`
 ### Run all tests
 
 ```powershell
-.\run_tests_v4.ps1
+.\run_tests_v5.ps1
 ```
 
 ### Run a specific test file
 
 ```powershell
-.\run_tests_v4.ps1 -TestFile test_auth.py
-.\run_tests_v4.ps1 -TestFile test_cases.py
-.\run_tests_v4.ps1 -TestFile test_docs.py
-.\run_tests_v4.ps1 -TestFile test_graph.py
-.\run_tests_v4.ps1 -TestFile test_timeline.py
-.\run_tests_v4.ps1 -TestFile test_structured.py
+.\run_tests_v5.ps1 -TestFile test_auth.py
+.\run_tests_v5.ps1 -TestFile test_cases.py
+.\run_tests_v5.ps1 -TestFile test_docs.py
+.\run_tests_v5.ps1 -TestFile test_graph.py
+.\run_tests_v5.ps1 -TestFile test_timeline.py
+.\run_tests_v5.ps1 -TestFile test_structured.py
 ```
 
 ### Run a specific test class or function
 
 ```powershell
 # All tests in a class
-.\run_tests_v4.ps1 -TestFilter "TestCaseIsolation"
-.\run_tests_v4.ps1 -TestFilter "TestRegister"
-.\run_tests_v4.ps1 -TestFilter "TestDocUpload"
+.\run_tests_v5.ps1 -TestFilter "TestCaseIsolation"
+.\run_tests_v5.ps1 -TestFilter "TestRegister"
+.\run_tests_v5.ps1 -TestFilter "TestDocUpload"
 
 # A single test function
-.\run_tests_v4.ps1 -TestFilter "test_login_success"
-.\run_tests_v4.ps1 -TestFilter "test_upload_pdf_success"
+.\run_tests_v5.ps1 -TestFilter "test_login_success"
+.\run_tests_v5.ps1 -TestFilter "test_upload_pdf_success"
 ```
 
 ### Run with print output visible (for debugging)
 
 ```powershell
-.\run_tests_v4.ps1 -Extra "-s"
+.\run_tests_v5.ps1 -Extra "-s"
 ```
 
 ### Run directly with pytest (without the wrapper script)
 
-```powershell
-cd YAIA-main\ISDDocumentIntelligence_V5\backend
-C:\Anaconda3\anaconda3\python.exe -m pytest tests/ -v
-C:\Anaconda3\anaconda3\python.exe -m pytest tests/test_auth.py -v -s
+```bash
+cd ISDDocumentIntelligence_V5/backend
+python -m pytest tests/ -v
+python -m pytest tests/test_auth.py -v -s
 ```
 
 ---
@@ -372,7 +381,7 @@ class TestMyNewEndpoint:
 Run the full suite after any major change and confirm all pass:
 
 ```powershell
-.\run_tests_v4.ps1
+.\run_tests_v5.ps1
 ```
 
 | Module | Tests | Pass? |
