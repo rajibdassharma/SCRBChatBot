@@ -1,12 +1,12 @@
 """
 Structured Tables for ISD Document Intelligence.
 
-Two tables:
-  - smac_reports : dedicated columnar table for SMAC Log Report fields
+Two tables (both EAV — Entity-Attribute-Value):
+  - smac_reports : key-value store for SMAC Log Report fields
   - ir_reports   : key-value store for IR Form-16 fields
 
-SMAC reports get proper columns (input_id, originator, subject, gist, etc.)
-IR documents use the flexible key-value design to handle 60+ varied fields.
+Both tables use the same schema: (doc_id, doc_name, serial_no, field_key, field_value).
+This avoids rigid column mapping and preserves all fields exactly as extracted.
 """
 
 import json
@@ -32,41 +32,26 @@ def init_db():
     conn = _get_conn()
     cur = conn.cursor()
 
-    # ── smac_reports ──────────────────────────────────────────────────────
+    # ── smac_reports (EAV — same structure as ir_reports) ─────────────────
     cur.execute("""
         CREATE TABLE IF NOT EXISTS smac_reports (
-            id               INT AUTO_INCREMENT PRIMARY KEY,
-            doc_id           VARCHAR(255)  NOT NULL UNIQUE,
-            doc_name         VARCHAR(500)  NOT NULL,
-            input_id         VARCHAR(200)  NULL,
-            date_of_receipt  VARCHAR(200)  NULL,
-            originator       VARCHAR(500)  NULL,
-            source_name      VARCHAR(500)  NULL,
-            grading          VARCHAR(100)  NULL,
-            theatre          VARCHAR(200)  NULL,
-            priority         VARCHAR(100)  NULL,
-            subject          TEXT          NULL,
-            gist             TEXT          NULL,
-            threat_details   TEXT          NULL,
-            shared_with      TEXT          NULL,
-            classification   VARCHAR(100)  NULL,
-            raw_fields       TEXT          NULL,
-            indexed_at       DATETIME      NULL,
-            comments         TEXT          NULL,
-            case_id          INT           NULL
+            id           INT AUTO_INCREMENT PRIMARY KEY,
+            doc_id       VARCHAR(255)  NOT NULL,
+            doc_name     VARCHAR(500)  NOT NULL,
+            serial_no    VARCHAR(50)   NULL,
+            field_key    VARCHAR(255)  NOT NULL,
+            field_value  TEXT          NULL,
+            case_id      INT           NULL,
+            UNIQUE KEY uq_smac_reports (doc_id, field_key)
         )
     """)
 
     try:
-        cur.execute("CREATE INDEX idx_smac_input_id ON smac_reports(input_id)")
+        cur.execute("CREATE INDEX idx_smac_doc_id ON smac_reports(doc_id)")
     except Exception:
         pass
     try:
-        cur.execute("CREATE INDEX idx_smac_originator ON smac_reports(originator)")
-    except Exception:
-        pass
-    try:
-        cur.execute("CREATE INDEX idx_smac_date ON smac_reports(date_of_receipt)")
+        cur.execute("CREATE INDEX idx_smac_field_key ON smac_reports(field_key)")
     except Exception:
         pass
 
@@ -109,97 +94,50 @@ init_db()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  SMAC FIELD MAPPER
+#  NIL VALUE FILTER
 # ═══════════════════════════════════════════════════════════════════════════
 
 _NIL_VALUES = {"-", "–", "—", "Nil", "nil", "NIL", "N/A", "n/a", "None", "none", "-nil-", ""}
 
-def _map_smac_fields(field_values: List[Dict[str, str]]) -> Dict[str, Any]:
-    """
-    Map LLM-extracted field-value pairs to smac_reports columns.
-    Unmapped fields are collected into raw_fields (stored as JSON).
-    """
-    row: Dict[str, Any] = {
-        "input_id": None, "date_of_receipt": None, "originator": None,
-        "source_name": None, "grading": None, "theatre": None,
-        "priority": None, "subject": None, "gist": None,
-        "threat_details": None, "shared_with": None, "classification": None,
-        "raw_fields": [],
-    }
-
-    for fv in field_values:
-        raw_key = fv.get("field_name", "").strip()
-        val     = fv.get("value", "").strip()
-        key     = raw_key.lower()
-
-        if not val or val in _NIL_VALUES:
-            continue
-
-        if any(k in key for k in ("input id", "input no", "tms id", "tms no", "tms i.d", "input i.d")):
-            row["input_id"] = row["input_id"] or val
-        elif any(k in key for k in ("date of receipt", "date rec", "receipt date", "date of input")):
-            row["date_of_receipt"] = row["date_of_receipt"] or val
-        elif "originator" in key:
-            row["originator"] = row["originator"] or val
-        elif "source" in key and "grading" not in key and "assess" not in key:
-            row["source_name"] = row["source_name"] or val
-        elif "grading" in key or "grade" in key:
-            row["grading"] = (row["grading"] + " | " + val) if row["grading"] else val
-        elif "theatre" in key:
-            row["theatre"] = row["theatre"] or val
-        elif "priority" in key:
-            row["priority"] = row["priority"] or val
-        elif "subject" in key:
-            row["subject"] = row["subject"] or val
-        elif any(k in key for k in ("threat detail", "threat assess", "threat")):
-            row["threat_details"] = (row["threat_details"] + "\n" + val) if row["threat_details"] else val
-        elif any(k in key for k in ("shared with", "shared by", "distribution", "forwarded to")):
-            row["shared_with"] = row["shared_with"] or val
-        elif any(k in key for k in ("classif", "security class")):
-            row["classification"] = row["classification"] or val
-        elif any(k in key for k in ("gist", "input", "content", "details", "information", "intelligence")):
-            row["gist"] = (row["gist"] + "\n" + val) if row["gist"] else val
-        else:
-            row["raw_fields"].append({"field": raw_key, "value": val})
-
-    row["raw_fields"] = json.dumps(row["raw_fields"], ensure_ascii=False) if row["raw_fields"] else None
-    return row
-
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  SMAC — DEDICATED TABLE STORE
+#  SMAC — EAV STORE
 # ═══════════════════════════════════════════════════════════════════════════
 
 def store_smac_report(doc_id: str, doc_name: str, field_values: List[Dict[str, str]]) -> Dict[str, Any]:
     """
-    Store a SMAC Log Report into the dedicated smac_reports table.
-    Replaces any previous entry for the same doc_id (safe re-indexing).
+    Store a SMAC Log Report into smac_reports (EAV table).
+    Each field becomes one row: (doc_id, doc_name, serial_no, field_key, field_value).
+    Replaces any previous entries for the same doc_id (safe re-indexing).
     """
     conn = _get_conn()
     cur = conn.cursor()
-    row = _map_smac_fields(field_values)
 
+    # Delete any previous entries for this document
     cur.execute("DELETE FROM smac_reports WHERE doc_id = %s", (doc_id,))
-    cur.execute(
-        "INSERT INTO smac_reports "
-        "(doc_id, doc_name, input_id, date_of_receipt, originator, "
-        " source_name, grading, theatre, priority, subject, gist, "
-        " threat_details, shared_with, classification, raw_fields) "
-        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-        (
-            doc_id, doc_name,
-            row["input_id"], row["date_of_receipt"], row["originator"],
-            row["source_name"], row["grading"], row["theatre"], row["priority"],
-            row["subject"], row["gist"], row["threat_details"],
-            row["shared_with"], row["classification"], row["raw_fields"],
-        ),
-    )
+
+    stored = 0
+    for fv in field_values:
+        fn  = fv.get("field_name", "").strip()
+        val = fv.get("value", "").strip()
+        sno = fv.get("serial_no", "").strip()
+
+        if not fn or not val:
+            continue
+        if val in _NIL_VALUES:
+            continue
+
+        cur.execute(
+            "INSERT INTO smac_reports (doc_id, doc_name, serial_no, field_key, field_value) "
+            "VALUES (%s, %s, %s, %s, %s)",
+            (doc_id, doc_name, sno or None, fn, val),
+        )
+        stored += 1
+
     conn.commit()
     cur.close()
     conn.close()
-
-    stored = sum(1 for v in row.values() if v is not None and v not in ("[]", "null"))
-    print(f"[StructuredTables] Stored SMAC report for {doc_name} ({stored} columns mapped)")
+    print(f"[StructuredTables] Stored {stored} fields for {doc_name} (SMAC)")
     return {"ok": True, "stored": stored, "doc_id": doc_id}
 
 
@@ -226,16 +164,11 @@ def _store_ir_fields(
 
     # Delete any previous entries for this document (handles re-indexing)
     cur.execute(
-        "SELECT COUNT(*) FROM ir_reports WHERE doc_id = %s AND collection = %s",
+        "DELETE FROM ir_reports WHERE doc_id = %s AND collection = %s",
         (doc_id, collection),
     )
-    old_count = cur.fetchone()[0]
-    if old_count > 0:
-        cur.execute(
-            "DELETE FROM ir_reports WHERE doc_id = %s AND collection = %s",
-            (doc_id, collection),
-        )
-        print(f"[StructuredTables] Cleared {old_count} old rows for {doc_name} ({collection})")
+    if cur.rowcount > 0:
+        print(f"[StructuredTables] Cleared {cur.rowcount} old rows for {doc_name} ({collection})")
 
     stored = 0
     for fv in field_values:
@@ -264,6 +197,43 @@ def _store_ir_fields(
 
 def store_ir_report(doc_id: str, doc_name: str, field_values: List[Dict[str, str]]) -> Dict[str, Any]:
     return _store_ir_fields(doc_id, doc_name, "IR", field_values)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  SMAC — QUERY FUNCTIONS
+# ═══════════════════════════════════════════════════════════════════════════
+
+def get_all_smac_reports() -> List[Dict[str, Any]]:
+    """Return summary of all SMAC reports (doc_id, doc_name, field_count)."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT doc_id, doc_name, COUNT(*) as field_count "
+        "FROM smac_reports "
+        "GROUP BY doc_id, doc_name ORDER BY doc_name"
+    )
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
+
+
+def get_smac_report_by_doc(doc_id: str) -> List[Dict[str, Any]]:
+    """Return all fields for a specific SMAC report, ordered by id."""
+    conn = _get_conn()
+    cur = conn.cursor()
+    cur.execute(
+        "SELECT serial_no, field_key, field_value "
+        "FROM smac_reports WHERE doc_id = %s "
+        "ORDER BY id",
+        (doc_id,),
+    )
+    cols = [d[0] for d in cur.description]
+    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+    cur.close()
+    conn.close()
+    return rows
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -311,11 +281,26 @@ def _get_ir_fields(doc_id: str) -> List[Dict[str, Any]]:
     return rows
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  SEARCH FIELDS — routes to correct table based on collection
+# ═══════════════════════════════════════════════════════════════════════════
+
 def search_fields(keyword: str, collection: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Search for fields by keyword in field_key. Returns matching rows with doc context."""
+    """Search for fields by keyword in field_key. Routes SMAC → smac_reports, IR → ir_reports."""
     conn = _get_conn()
     cur = conn.cursor()
-    if collection:
+
+    is_smac = collection and (collection == "SMAC" or collection.startswith("SMAC_c"))
+
+    if is_smac:
+        cur.execute(
+            "SELECT doc_id, doc_name, serial_no, field_key, field_value "
+            "FROM smac_reports "
+            "WHERE field_key LIKE %s "
+            "ORDER BY doc_name, id",
+            (f"%{keyword}%",),
+        )
+    elif collection:
         cur.execute(
             "SELECT doc_id, doc_name, collection, serial_no, field_key, field_value "
             "FROM ir_reports "
@@ -324,13 +309,17 @@ def search_fields(keyword: str, collection: Optional[str] = None) -> List[Dict[s
             (f"%{keyword}%", collection),
         )
     else:
+        # No collection specified — search both tables
         cur.execute(
+            "SELECT doc_id, doc_name, 'SMAC' as collection, serial_no, field_key, field_value "
+            "FROM smac_reports WHERE field_key LIKE %s "
+            "UNION ALL "
             "SELECT doc_id, doc_name, collection, serial_no, field_key, field_value "
-            "FROM ir_reports "
-            "WHERE field_key LIKE %s "
-            "ORDER BY doc_name, id",
-            (f"%{keyword}%",),
+            "FROM ir_reports WHERE field_key LIKE %s "
+            "ORDER BY doc_name",
+            (f"%{keyword}%", f"%{keyword}%"),
         )
+
     cols = [d[0] for d in cur.description]
     rows = [dict(zip(cols, row)) for row in cur.fetchall()]
     cur.close()
@@ -381,37 +370,48 @@ def get_table_schema_description() -> str:
 DATABASE SCHEMA — ISDIntelligence (MySQL syntax)
 
 ═══════════════════════════════════════════════════════
-TABLE: smac_reports   (one row per SMAC Log Report PDF)
+TABLE: smac_reports   (key-value rows for SMAC Log Report documents)
 ═══════════════════════════════════════════════════════
   - id (INT, PK, auto-increment)
-  - doc_id (VARCHAR, UNIQUE) — unique document hash
+  - doc_id (VARCHAR) — unique document identifier
   - doc_name (VARCHAR) — filename of the PDF
-  - input_id (VARCHAR, nullable) — TMS / Input number (e.g. 'TMS-2023-0042')
-  - date_of_receipt (VARCHAR, nullable) — date the input was received
-  - originator (VARCHAR, nullable) — originating unit / organisation
-  - source_name (VARCHAR, nullable) — intelligence source name
-  - grading (VARCHAR, nullable) — source and input grading (e.g. 'A1', 'B2')
-  - subject (TEXT, nullable) — subject line / headline of the report
-  - gist (TEXT, nullable) — main intelligence content / gist of the report
-  - comments (TEXT, nullable) — additional comments
+  - serial_no (VARCHAR, nullable) — serial number from the document (e.g., '1', '9')
+  - field_key (VARCHAR) — the field name from column 2 of the SMAC table
+  - field_value (TEXT, nullable) — the actual value from column 3
   - case_id (INT, nullable) — case identifier
+
+COMMON SMAC FIELD NAMES (field_key values):
+  - InputID, DateOfReceipt, Originator, RequestFrom, RequestTo
+  - State, Activity, InputEntryDate, Gist, SharedWith, SharedByMAC
+  - Reference, Modus, Grading, InputType, ActionTaken, Attachments
 
 SMAC QUERY EXAMPLES:
 
 -- Count all SMAC reports:
-SELECT COUNT(*) AS total_smac FROM smac_reports
+SELECT COUNT(DISTINCT doc_id) AS total_smac FROM smac_reports
 
 -- Find reports by originator:
-SELECT input_id, date_of_receipt, subject FROM smac_reports
-WHERE originator LIKE '%Battalion%' ORDER BY date_of_receipt DESC
+SELECT DISTINCT doc_id, doc_name FROM smac_reports
+WHERE field_key = 'Originator' AND field_value LIKE '%Battalion%'
 
--- Find reports about a specific topic:
-SELECT input_id, originator, subject, gist FROM smac_reports
-WHERE subject LIKE '%IED%'
+-- Find reports about a specific topic (search gist):
+SELECT doc_id, doc_name, field_value AS gist FROM smac_reports
+WHERE field_key = 'Gist' AND field_value LIKE '%IED%'
 
--- Count reports by originator:
-SELECT originator, COUNT(*) AS report_count FROM smac_reports
-GROUP BY originator ORDER BY report_count DESC
+-- Get all fields for a specific document:
+SELECT serial_no, field_key, field_value FROM smac_reports
+WHERE doc_name LIKE '%SomeReport%' ORDER BY id
+
+-- List all originators with report counts:
+SELECT field_value AS originator, COUNT(DISTINCT doc_id) AS report_count
+FROM smac_reports WHERE field_key = 'Originator'
+GROUP BY field_value ORDER BY report_count DESC
+
+-- Get originator and gist for each document:
+SELECT d1.doc_name, d1.field_value AS originator, d2.field_value AS gist
+FROM smac_reports d1
+LEFT JOIN smac_reports d2 ON d1.doc_id = d2.doc_id AND d2.field_key = 'Gist'
+WHERE d1.field_key = 'Originator'
 
 
 ═══════════════════════════════════════════════════════
@@ -478,46 +478,6 @@ def clear_all_structured_data():
     cur.close()
     conn.close()
     print("[StructuredTables] Cleared all smac_reports and ir_reports data.")
-
-
-# ═══════════════════════════════════════════════════════════════════════════
-#  SMAC — QUERY FUNCTIONS
-# ═══════════════════════════════════════════════════════════════════════════
-
-def get_all_smac_reports() -> List[Dict[str, Any]]:
-    """Return summary of all SMAC reports from smac_reports table."""
-    conn = _get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT doc_id, doc_name, input_id, date_of_receipt, originator, "
-        "       subject, grading, case_id "
-        "FROM smac_reports ORDER BY id DESC"
-    )
-    cols = [d[0] for d in cur.description]
-    rows = [dict(zip(cols, row)) for row in cur.fetchall()]
-    cur.close()
-    conn.close()
-    return rows
-
-
-def get_smac_report_by_doc(doc_id: str) -> Dict[str, Any]:
-    """Return all columns for a specific SMAC report."""
-    conn = _get_conn()
-    cur = conn.cursor()
-    cur.execute(
-        "SELECT doc_id, doc_name, input_id, date_of_receipt, originator, "
-        "       source_name, grading, subject, gist, comments, case_id "
-        "FROM smac_reports WHERE doc_id = %s",
-        (doc_id,),
-    )
-    cols = [d[0] for d in cur.description]
-    row = cur.fetchone()
-    cur.close()
-    conn.close()
-    if not row:
-        return {}
-    d = dict(zip(cols, row))
-    return d
 
 
 # ═══════════════════════════════════════════════════════════════════════════
