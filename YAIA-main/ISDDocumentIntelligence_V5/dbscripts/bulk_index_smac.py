@@ -155,6 +155,17 @@ class TokenManager:
 # Upload Worker
 # ==============================================================================
 
+def _log(msg: str, log_file=None):
+    """Print to terminal and write to log file."""
+    print(msg)
+    if log_file:
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"{_now()} | {msg}\n")
+        except Exception:
+            pass
+
+
 def upload_file(
     file_path: str,
     backend_url: str,
@@ -166,6 +177,7 @@ def upload_file(
     counter: dict,
     counter_lock: threading.Lock,
     total: int,
+    log_file: str = None,
 ) -> None:
     token = token_mgr.get_token()
     fname = Path(file_path).name
@@ -176,7 +188,7 @@ def upload_file(
                 headers={"Authorization": f"Bearer {token}"},
                 files={"file": (fname, fh, "application/octet-stream")},
                 data={"collection": collection, "case_id": str(case_id), "source": "digital"},
-                timeout=300,  # 2 minutes per file
+                timeout=600,  # 10 minutes per file (IR with LLM needs more time)
             )
         resp.raise_for_status()
         data = resp.json()
@@ -189,8 +201,7 @@ def upload_file(
                 counter["done"] += 1
                 n = counter["done"] + counter["failed"]
                 if chunks == 0:
-                    print(f"  [{n:>6}/{total}] SCAN  {fname}  (likely scanned — 0 chunks)")
-                    # Log full path for OCR processing later
+                    _log(f"  [{n:>6}/{total}] SCAN  {file_path}  (likely scanned — 0 chunks)", log_file)
                     try:
                         ocr_log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pdfs_pending_ocr.txt")
                         with open(ocr_log, "a", encoding="utf-8") as f:
@@ -198,7 +209,7 @@ def upload_file(
                     except Exception:
                         pass
                 else:
-                    print(f"  [{n:>6}/{total}] OK    {fname}")
+                    _log(f"  [{n:>6}/{total}] OK    {file_path}", log_file)
         else:
             err = data.get("error", "unknown error")
             with db_lock:
@@ -206,7 +217,7 @@ def upload_file(
             with counter_lock:
                 counter["failed"] += 1
                 n = counter["done"] + counter["failed"]
-                print(f"  [{n:>6}/{total}] FAIL  {fname}  ({err})")
+                _log(f"  [{n:>6}/{total}] FAIL  {file_path}  ({err})", log_file)
 
     except Exception as exc:
         err = f"{type(exc).__name__}: {exc}"
@@ -215,7 +226,7 @@ def upload_file(
         with counter_lock:
             counter["failed"] += 1
             n = counter["done"] + counter["failed"]
-            print(f"  [{n:>6}/{total}] ERROR {fname}  ({err})")
+            _log(f"  [{n:>6}/{total}] ERROR {file_path}  ({err})", log_file)
 
 
 # ==============================================================================
@@ -271,6 +282,12 @@ Examples:
     parser.add_argument("--dry-run",
                         action="store_true",
                         help="List discovered files and exit without uploading anything")
+    parser.add_argument("--filter",
+                        default=None,
+                        help="Only include files whose name contains ANY of these keywords (comma-separated, case-insensitive). Example: --filter 'IR,Interrogation Report'")
+    parser.add_argument("--limit",
+                        type=int, default=0,
+                        help="Process only N files (0 = all)")
 
     args = parser.parse_args()
 
@@ -312,12 +329,16 @@ Examples:
         print(f"ERROR: Folder not found: {folder}", file=sys.stderr)
         sys.exit(1)
 
-    # ── Collect PDF files (case-insensitive, deduplicated, skip unwanted) ──
+    # ── Collect files (case-insensitive, deduplicated, skip unwanted) ────
     SKIP_NAMES = {"report", "reports", "feedback", "attachment", "attachments"}
-    raw = list(folder.rglob("*.pdf")) + list(folder.rglob("*.PDF"))
+    FILTER_KEYWORDS = [kw.strip().lower() for kw in args.filter.split(",")] if args.filter else None
+    raw = (list(folder.rglob("*.pdf")) + list(folder.rglob("*.PDF")) +
+           list(folder.rglob("*.docx")) + list(folder.rglob("*.DOCX")) +
+           list(folder.rglob("*.doc")) + list(folder.rglob("*.DOC")))
     seen_lower: set = set()
     all_files: list = []
     skipped_names: list = []
+    filtered_out: int = 0
     for p in sorted(raw):
         k = str(p).lower()
         if k not in seen_lower:
@@ -326,9 +347,14 @@ Examples:
             if stem in SKIP_NAMES:
                 skipped_names.append(str(p))
                 continue
+            if FILTER_KEYWORDS and not any(kw in stem for kw in FILTER_KEYWORDS):
+                filtered_out += 1
+                continue
             all_files.append(str(p))
     if skipped_names:
-        print(f"Skipped {len(skipped_names)} files (Report/Reports/Feedback): {skipped_names[:5]}")
+        print(f"Skipped {len(skipped_names)} files (Report/Reports/Feedback/Attachment/Attachments)")
+    if filtered_out:
+        print(f"Filtered out {filtered_out} files not matching: {args.filter}")
 
     if not all_files:
         print(f"No PDF files found in: {folder}")
@@ -395,6 +421,9 @@ Examples:
     stats   = get_stats(db_conn)
     already = stats.get("done", 0)
 
+    if args.limit > 0:
+        pending = pending[:args.limit]
+
     print(f"[Progress] Total: {len(all_files)}  |  Already indexed: {already}  |  To process: {len(pending)}")
     print()
 
@@ -437,8 +466,12 @@ Examples:
     start_time   = time.time()
     total        = len(pending)
 
-    print(f"[Start] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — "
-          f"uploading {total} files with {args.workers} workers\n")
+    # ── Log file ────────────────────────────────────────────────────────
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logfiles")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"bulk_index_{args.collection.lower()}.log")
+    _log(f"[Start] {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} — "
+         f"uploading {total} files with {args.workers} workers", log_file)
 
     with ThreadPoolExecutor(max_workers=args.workers) as executor:
         futures = {
@@ -454,6 +487,7 @@ Examples:
                 counter,
                 counter_lock,
                 total,
+                log_file,
             ): fp
             for fp in pending
         }

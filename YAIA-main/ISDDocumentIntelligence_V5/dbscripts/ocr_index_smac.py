@@ -601,9 +601,22 @@ def main():
     failed_files = []
     total = len(pending)
 
+    # ── Log file ────────────────────────────────────────────────────────
+    log_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "logfiles")
+    os.makedirs(log_dir, exist_ok=True)
+    log_file = os.path.join(log_dir, f"ocr_index_{args.collection.lower()}.log")
+
+    def _log(msg):
+        print(msg)
+        try:
+            with open(log_file, "a", encoding="utf-8") as f:
+                f.write(f"{_now()} | {msg}\n")
+        except Exception:
+            pass
+
     for i, file_path in enumerate(pending, 1):
         fname = Path(file_path).name
-        print(f"\n[{i:>4d}/{total}] {fname}")
+        _log(f"\n[{i:>4d}/{total}] {file_path}")
 
         try:
             result = index_scanned_pdf(
@@ -619,19 +632,19 @@ def main():
                 results["total_fields"] += result.get("fields", 0)
                 mark_ocr_done(progress_conn, file_path, result.get("doc_id", ""),
                               result.get("chunks", 0), result.get("fields", 0))
-                print(f"  -> OK: {result.get('chunks', 0)} chunks, {result.get('fields', 0)} fields")
+                _log(f"  -> OK: {result.get('chunks', 0)} chunks, {result.get('fields', 0)} fields")
             else:
                 results["failed"] += 1
                 err = result.get("error", "unknown")
                 mark_ocr_failed(progress_conn, file_path, err)
                 failed_files.append((fname, err))
-                print(f"  -> FAILED: {err}")
+                _log(f"  -> FAILED: {err}")
 
         except Exception as e:
             results["failed"] += 1
             mark_ocr_failed(progress_conn, file_path, str(e))
             failed_files.append((fname, str(e)))
-            print(f"  -> ERROR: {e}")
+            _log(f"  -> ERROR: {e}")
 
     progress_conn.close()
 
