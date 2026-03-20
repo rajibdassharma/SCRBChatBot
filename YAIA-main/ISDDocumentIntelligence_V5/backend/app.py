@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from mysql_db import get_conn
 from ollama_client import ollama_chat
-from rag import index_document, ask_pdf, ask_docs_agent, clear_all_documents, get_all_doc_chunks, get_indexed_doc_list
+from rag import index_document, ask_pdf, ask_docs_agent, clear_all_documents, clear_documents_by_source, get_all_doc_chunks, get_indexed_doc_list
 from config import WHISPER_MODEL
 from auth import router as auth_router, CurrentUser, get_current_user
 from cases import router as cases_router, _get_case_for_user
@@ -160,6 +160,7 @@ async def docs_upload(
     file: UploadFile = File(...),
     collection: str = Form("SMAC"),
     case_id: int = Form(0),
+    source: str = Form("digital"),
     current_user: CurrentUser = Depends(get_current_user),
 ):
     try:
@@ -174,7 +175,7 @@ async def docs_upload(
             tmp.write(await file.read())
             tmp_path = tmp.name
 
-        indexed = index_document(tmp_path, file.filename, collection_name=col)
+        indexed = index_document(tmp_path, file.filename, collection_name=col, source=source)
 
         try:
             os.remove(tmp_path)
@@ -388,6 +389,40 @@ def clear_docs(
             print(f"[Structured Clear] Warning: {e}")
         return out
     raise HTTPException(status_code=500, detail=out.get("error", "Failed to clear docs"))
+
+
+@app.post("/docs/clear-by-source")
+def clear_docs_by_source(
+    payload: dict,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Clear documents from ChromaDB and MySQL by source tag (digital or ocr)."""
+    source = payload.get("source", "")
+    collection = payload.get("collection", "SMAC")
+    if source not in ("digital", "ocr"):
+        raise HTTPException(status_code=400, detail="source must be 'digital' or 'ocr'")
+
+    result = clear_documents_by_source(collection_name=collection, source=source)
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("error", "Failed"))
+
+    # Clear matching MySQL records
+    doc_ids = result.get("doc_ids", [])
+    if doc_ids:
+        try:
+            conn = get_conn()
+            cur = conn.cursor()
+            for did in doc_ids:
+                if did:
+                    cur.execute("DELETE FROM smac_reports WHERE doc_id = %s", (did,))
+            conn.commit()
+            cur.close()
+            conn.close()
+            print(f"[Clear] Deleted MySQL records for {len(doc_ids)} docs (source={source})")
+        except Exception as e:
+            print(f"[Clear] MySQL cleanup warning: {e}")
+
+    return {"ok": True, **result}
 
 
 # ------------------------------------------------------------------------------

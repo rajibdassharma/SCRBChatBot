@@ -175,7 +175,7 @@ def upload_file(
                 f"{backend_url}/docs/upload",
                 headers={"Authorization": f"Bearer {token}"},
                 files={"file": (fname, fh, "application/octet-stream")},
-                data={"collection": collection, "case_id": str(case_id)},
+                data={"collection": collection, "case_id": str(case_id), "source": "digital"},
                 timeout=300,  # 2 minutes per file
             )
         resp.raise_for_status()
@@ -184,10 +184,21 @@ def upload_file(
         if data.get("ok"):
             with db_lock:
                 mark_done(db_conn, file_path, data.get("doc_id", ""))
+            chunks = data.get("chunks", 0)
             with counter_lock:
                 counter["done"] += 1
                 n = counter["done"] + counter["failed"]
-                print(f"  [{n:>6}/{total}] OK    {fname}")
+                if chunks == 0:
+                    print(f"  [{n:>6}/{total}] SCAN  {fname}  (likely scanned — 0 chunks)")
+                    # Log full path for OCR processing later
+                    try:
+                        ocr_log = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pdfs_pending_ocr.txt")
+                        with open(ocr_log, "a", encoding="utf-8") as f:
+                            f.write(f"{file_path}\n")
+                    except Exception:
+                        pass
+                else:
+                    print(f"  [{n:>6}/{total}] OK    {fname}")
         else:
             err = data.get("error", "unknown error")
             with db_lock:
@@ -231,7 +242,7 @@ Examples:
         """,
     )
     parser.add_argument("--folder",
-                        required=True,
+                        default=None,
                         help="Folder containing SMAC PDF files (sub-folders are scanned recursively)")
     parser.add_argument("--case-id",
                         type=int, default=0,
@@ -263,20 +274,61 @@ Examples:
 
     args = parser.parse_args()
 
+    if not args.folder and not args.reset:
+        print("ERROR: --folder is required (or use --reset for reset-only).", file=sys.stderr)
+        sys.exit(1)
+
+    # ── Reset-only mode (no folder needed) ────────────────────────────────
+    if args.reset and not args.folder:
+        if os.path.exists(args.progress_db):
+            os.remove(args.progress_db)
+            print(f"[Reset] Deleted progress DB: {args.progress_db}")
+        print(f"[Reset] Clearing digital data from backend (collection={args.collection})...")
+        try:
+            _pwd = args.password or getpass.getpass(f"Password for '{args.username}' (for reset): ")
+            _login = requests.post(
+                f"{args.backend_url}/auth/login",
+                json={"username": args.username, "password": _pwd},
+                timeout=15,
+            )
+            _login.raise_for_status()
+            _token = _login.json().get("token", "")
+            _resp = requests.post(
+                f"{args.backend_url}/docs/clear-by-source",
+                headers={"Authorization": f"Bearer {_token}"},
+                json={"source": "digital", "collection": args.collection},
+                timeout=120,
+            )
+            _resp.raise_for_status()
+            _data = _resp.json()
+            print(f"[Reset] Cleared {_data.get('chunks_deleted', 0)} chunks from ChromaDB + MySQL")
+        except Exception as e:
+            print(f"[Reset] WARNING: Could not clear backend data: {e}")
+        print("[Reset] Done.")
+        sys.exit(0)
+
     folder = Path(args.folder)
     if not folder.is_dir():
         print(f"ERROR: Folder not found: {folder}", file=sys.stderr)
         sys.exit(1)
 
-    # ── Collect PDF files (case-insensitive, deduplicated) ─────────────────
+    # ── Collect PDF files (case-insensitive, deduplicated, skip unwanted) ──
+    SKIP_NAMES = {"report", "reports", "feedback", "attachment", "attachments"}
     raw = list(folder.rglob("*.pdf")) + list(folder.rglob("*.PDF"))
     seen_lower: set = set()
     all_files: list = []
+    skipped_names: list = []
     for p in sorted(raw):
         k = str(p).lower()
         if k not in seen_lower:
             seen_lower.add(k)
+            stem = p.stem.strip().lower()
+            if stem in SKIP_NAMES:
+                skipped_names.append(str(p))
+                continue
             all_files.append(str(p))
+    if skipped_names:
+        print(f"Skipped {len(skipped_names)} files (Report/Reports/Feedback): {skipped_names[:5]}")
 
     if not all_files:
         print(f"No PDF files found in: {folder}")
@@ -307,9 +359,34 @@ Examples:
     print()
 
     # ── Progress DB ────────────────────────────────────────────────────────
-    if args.reset and os.path.exists(args.progress_db):
-        os.remove(args.progress_db)
-        print(f"[Progress] Reset: deleted {args.progress_db}")
+    if args.reset:
+        if os.path.exists(args.progress_db):
+            os.remove(args.progress_db)
+            print(f"[Reset] Deleted progress DB: {args.progress_db}")
+        # Clear digital data from ChromaDB + MySQL via backend API
+        print(f"[Reset] Clearing digital data from backend (collection={args.collection})...")
+        try:
+            # Need auth token for the API call
+            _pwd = args.password or getpass.getpass(f"Password for '{args.username}' (for reset): ")
+            _login = requests.post(
+                f"{args.backend_url}/auth/login",
+                json={"username": args.username, "password": _pwd},
+                timeout=15,
+            )
+            _login.raise_for_status()
+            _token = _login.json().get("token", "")
+            _resp = requests.post(
+                f"{args.backend_url}/docs/clear-by-source",
+                headers={"Authorization": f"Bearer {_token}"},
+                json={"source": "digital", "collection": args.collection},
+                timeout=120,
+            )
+            _resp.raise_for_status()
+            _data = _resp.json()
+            print(f"[Reset] Cleared {_data.get('chunks_deleted', 0)} chunks from ChromaDB + MySQL")
+        except Exception as e:
+            print(f"[Reset] WARNING: Could not clear backend data: {e}")
+            print(f"[Reset] Proceeding with fresh progress DB only.")
 
     db_conn = open_db(args.progress_db)
     register_files(db_conn, all_files)

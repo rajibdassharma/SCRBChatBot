@@ -308,6 +308,15 @@ def _extract_pdf_tables_docling(pdf_path: str) -> Tuple[str, str]:
                 df = table.export_to_dataframe(doc=doc)
                 if df.empty or len(df) == 0:
                     continue
+                # Emit column headers as a data row if they look like table data
+                # (Docling sometimes treats the first data row as a header)
+                col_cells = [str(c).strip().replace("\n", " ").replace("\r", " ") for c in df.columns]
+                col_deduped = [col_cells[i] for i in range(len(col_cells)) if i == 0 or col_cells[i] != col_cells[i - 1]]
+                col_text = " | ".join(col_deduped)
+                # Only emit if the header looks like data (contains a serial number pattern)
+                if col_deduped and any(c.rstrip(". ").isdigit() for c in col_deduped[:1]):
+                    lines.append(f"Row {row_idx}: {col_text}")
+                    row_idx += 1
                 for r in range(len(df)):
                     raw_cells = [str(v).strip().replace("\n", " ").replace("\r", " ") for v in df.iloc[r]]
                     # Deduplicate adjacent identical cells (merged cells)

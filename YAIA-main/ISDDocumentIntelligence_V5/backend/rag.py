@@ -37,6 +37,7 @@ from ollama_client import ollama_embed, ollama_embed_batch, ollama_chat
 from structured_tables import store_smac_report, store_ir_report, search_fields, execute_sql_query, get_table_schema_description
 from llm_kv_extractor import extract_kv_from_docx as _llm_extract_kv_from_docx
 from llm_kv_extractor import extract_kv_from_pdf as _llm_extract_kv_from_pdf
+from llm_kv_extractor import _extract_pdf_tables_docling
 
 
 # -------------------------------------------------------------------
@@ -526,6 +527,7 @@ def _index_text_units(
     extra_stats: Dict[str, Any],
     metas: Optional[List[dict]] = None,
     min_unit_len: int = 25,
+    source: str = "digital",
 ) -> Dict[str, Any]:
     MIN_UNIT_LEN = max(0, min_unit_len)
     MAX_UNITS = 800
@@ -568,6 +570,7 @@ def _index_text_units(
             "doc_name": filename,
             "doc_type": doc_type,
             "chunk_index": i,
+            "source": source,
         }
         base_meta.update(m or {})
         metadatas.append(base_meta)
@@ -1012,9 +1015,81 @@ def _parse_smac_table_page(lines: List[str], page_no: int) -> Tuple[List[str], L
 
 
 # -------------------------------------------------------------------
+# SMAC Docling parser (Docling table extraction + direct pipe-split)
+# No LLM needed — Docling extracts clean 3-column pipe-separated rows.
+# -------------------------------------------------------------------
+_SMAC_NIL_VALUES = frozenset({
+    "-", "–", "—", "nil", "-nil-", "n/a", "none",
+    "not available", "not applicable", "na", ".", "..", "---",
+})
+
+
+def _parse_smac_docling(pdf_path: str) -> Tuple[List[str], List[dict]]:
+    """
+    Extract SMAC KV fields using Docling table extraction + direct pipe-split.
+    No LLM call — Docling outputs clean pipe-separated rows like:
+        Row 0: 1. | TMS I.D. | 736039
+    Returns: (units, metas)
+    """
+    try:
+        table_text, _ = _extract_pdf_tables_docling(pdf_path)
+    except Exception as e:
+        print(f"[RAG:SMAC] Docling extraction failed: {e}")
+        return [], []
+
+    if not table_text:
+        return [], []
+
+    units: List[str] = []
+    metas: List[dict] = []
+
+    for line in table_text.split("\n"):
+        if not line.startswith("Row "):
+            continue
+
+        # Strip "Row N: " prefix
+        content = line.split(": ", 1)[1] if ": " in line else line
+
+        # Split on pipe
+        parts = [p.strip() for p in content.split("|")]
+        if len(parts) < 3:
+            continue
+
+        # Column 1: serial number (e.g. "1." or "1")
+        serial = parts[0].rstrip(". ")
+
+        # Column 2: field name
+        field_name = parts[1].strip()
+
+        # Column 3+: value (rejoin in case value contains pipes)
+        value = " | ".join(parts[2:]).strip()
+
+        # Skip if serial is not a number (different table)
+        if not re.match(r"^\d+$", serial):
+            continue
+
+        # Stop if serial resets (second table detected)
+        if units and int(serial) <= int(metas[-1]["serial_no"]):
+            break
+
+        # Skip nil values
+        if not field_name or not value:
+            continue
+        if value.lower().strip(".- ") in _SMAC_NIL_VALUES:
+            continue
+
+        units.append(f"{field_name}: {value}")
+        metas.append({"field_name": field_name, "serial_no": serial, "page": 1})
+
+    if units:
+        print(f"[RAG:SMAC] Docling extracted {len(units)} fields from {pdf_path}")
+    return units, metas
+
+
+# -------------------------------------------------------------------
 # Index PDF (page-aware + table-like lines)
 # -------------------------------------------------------------------
-def index_pdf(col: str, pdf_path: str, filename: str) -> Dict[str, Any]:
+def index_pdf(col: str, pdf_path: str, filename: str, source: str = "digital") -> Dict[str, Any]:
     doc_id = str(uuid.uuid4())
 
     reader = PdfReader(pdf_path)
@@ -1023,14 +1098,23 @@ def index_pdf(col: str, pdf_path: str, filename: str) -> Dict[str, Any]:
     units: List[str] = []
     metas: List[dict] = []
 
-    # ── Try Docling+LLM for SMAC/IR PDFs (whole-file extraction) ──
-    llm_pdf_units: List[str] = []
-    llm_pdf_metas: List[dict] = []
-    if col in ("SMAC", "IR") and USE_LLM_PARSER:
+    # ── SMAC: Docling table extraction (no LLM) ──
+    # ── IR: Docling+LLM extraction (if USE_LLM_PARSER=true) ──
+    docling_units: List[str] = []
+    docling_metas: List[dict] = []
+    _is_smac = col == "SMAC" or col.startswith("SMAC_c")
+    _is_ir = col == "IR" or col.startswith("IR_c")
+
+    if _is_smac:
         try:
-            llm_pdf_units, llm_pdf_metas = _llm_extract_kv_from_pdf(pdf_path, collection=col, total_pages=len(reader.pages))
-            if llm_pdf_units:
-                print(f"[RAG:PDF] Docling+LLM extraction: {len(llm_pdf_units)} fields from {filename}")
+            docling_units, docling_metas = _parse_smac_docling(pdf_path)
+        except Exception as e:
+            print(f"[RAG:SMAC] Docling extraction failed: {e}, using per-page parser")
+    elif _is_ir and USE_LLM_PARSER:
+        try:
+            docling_units, docling_metas = _llm_extract_kv_from_pdf(pdf_path, collection=col, total_pages=len(reader.pages))
+            if docling_units:
+                print(f"[RAG:PDF] Docling+LLM extraction: {len(docling_units)} fields from {filename}")
         except Exception as e:
             print(f"[RAG:PDF] Docling+LLM extraction failed: {e}, using per-page parser")
 
@@ -1057,8 +1141,8 @@ def index_pdf(col: str, pdf_path: str, filename: str) -> Dict[str, Any]:
                 units.append(u)
                 metas.append({"page": page_no})
 
-            # If Docling+LLM already extracted fields, skip per-page parsing
-            if not llm_pdf_units:
+            # If Docling already extracted fields, skip per-page parsing
+            if not docling_units:
                 if col == "IR" and page_no == 1:
                     print(f"[RAG:IR] WARNING: LLM extraction unavailable, using basic per-page parser (may miss nested fields)")
                 smac_units, smac_metas = _parse_smac_table_page(lines, page_no)
@@ -1109,17 +1193,21 @@ def index_pdf(col: str, pdf_path: str, filename: str) -> Dict[str, Any]:
                     if 0 <= start_idx + i < len(metas):
                         metas[start_idx + i].update(sm)
 
-    # ── Append Docling+LLM extracted fields (if any) after page chunks ──
-    if llm_pdf_units:
-        for u, m in zip(llm_pdf_units, llm_pdf_metas):
+    # ── Detect scanned PDFs (no extractable text) ──────────────────────
+    if stats["extracted_chars"] < 50 and len(reader.pages) > 0:
+        print(f"[RAG:SCAN] Likely scanned PDF (only {stats['extracted_chars']} chars from {len(reader.pages)} pages): {filename}")
+
+    # ── Append Docling extracted fields (if any) after page chunks ──
+    if docling_units:
+        for u, m in zip(docling_units, docling_metas):
             units.append(u)
             metas.append(m)
 
     stats["units_total"] = len(units)
-    result = _index_text_units(col, doc_id, filename, units, doc_type="pdf", extra_stats=stats, metas=metas, min_unit_len=10)
+    result = _index_text_units(col, doc_id, filename, units, doc_type="pdf", extra_stats=stats, metas=metas, min_unit_len=10, source=source)
 
-    # ── Populate structured table (runs during indexing) ─────────────────
-    if col in ("SMAC", "IR") and result.get("doc_id"):
+    # ── Populate structured table (SMAC and IR) ─────────────────────────
+    if (_is_smac or _is_ir) and result.get("doc_id"):
         try:
             field_values = []
             narrative_parts = []
@@ -1137,7 +1225,7 @@ def index_pdf(col: str, pdf_path: str, filename: str) -> Dict[str, Any]:
                 narrative_text = " ".join(narrative_parts)[:4000]
                 field_values.append({"field_name": "NARRATIVE_TEXT", "value": narrative_text, "serial_no": ""})
             if field_values:
-                if col == "IR":
+                if _is_ir:
                     store_ir_report(result["doc_id"], filename, field_values)
                 else:
                     store_smac_report(result["doc_id"], filename, field_values)
@@ -1150,7 +1238,7 @@ def index_pdf(col: str, pdf_path: str, filename: str) -> Dict[str, Any]:
 # -------------------------------------------------------------------
 # Index DOCX
 # -------------------------------------------------------------------
-def index_docx(col: str, docx_path: str, filename: str) -> Dict[str, Any]:
+def index_docx(col: str, docx_path: str, filename: str, source: str = "digital") -> Dict[str, Any]:
     doc_id = str(uuid.uuid4())
 
     if col == "IR":
@@ -1171,7 +1259,7 @@ def index_docx(col: str, docx_path: str, filename: str) -> Dict[str, Any]:
             stats = {"type": "docx", "mode": "ir_table", "field_units": len(ir_units), "narrative_chunks": len(narrative_chunks)}
             result = _index_text_units(
                 col, doc_id, filename, all_units,
-                doc_type="docx", extra_stats=stats, metas=all_metas, min_unit_len=5,
+                doc_type="docx", extra_stats=stats, metas=all_metas, min_unit_len=5, source=source,
             )
 
             # ── Populate structured table (runs during indexing) ─────────
@@ -1212,7 +1300,7 @@ def index_docx(col: str, docx_path: str, filename: str) -> Dict[str, Any]:
             }
         chunks = chunk_text(raw_text, chunk_size=2000, overlap=140)
         fb_stats = {"type": "docx_binary_fallback", "chars": len(raw_text)}
-        return _index_text_units(col, doc_id, filename, chunks, doc_type="docx", extra_stats=fb_stats)
+        return _index_text_units(col, doc_id, filename, chunks, doc_type="docx", extra_stats=fb_stats, source=source)
 
     MAX_CHARS = 400_000
     if len(full_text) > MAX_CHARS:
@@ -1223,7 +1311,7 @@ def index_docx(col: str, docx_path: str, filename: str) -> Dict[str, Any]:
     stats["chunks_generated"] = len(chunks)
 
     units = chunks + table_rows
-    return _index_text_units(col, doc_id, filename, units, doc_type="docx", extra_stats=stats)
+    return _index_text_units(col, doc_id, filename, units, doc_type="docx", extra_stats=stats, source=source)
 
 
 # -------------------------------------------------------------------
@@ -1308,18 +1396,18 @@ def _extract_doc_text_fallback(doc_path: str) -> str:
 # -------------------------------------------------------------------
 # Index any document
 # -------------------------------------------------------------------
-def index_document(file_path: str, filename: str, collection_name: str = "SMAC") -> Dict[str, Any]:
+def index_document(file_path: str, filename: str, collection_name: str = "SMAC", source: str = "digital") -> Dict[str, Any]:
     ext = os.path.splitext(filename)[1].lower()
 
     if ext == ".pdf":
-        return index_pdf(collection_name, file_path, filename)
+        return index_pdf(collection_name, file_path, filename, source=source)
     if ext == ".docx":
-        return index_docx(collection_name, file_path, filename)
+        return index_docx(collection_name, file_path, filename, source=source)
     if ext == ".doc":
         # Try Word COM conversion to DOCX first (Windows with MS Word)
         docx_path = _convert_doc_to_docx_win32(file_path)
         if docx_path:
-            result = index_docx(collection_name, docx_path, filename)
+            result = index_docx(collection_name, docx_path, filename, source=source)
             try:
                 import shutil
                 shutil.rmtree(os.path.dirname(docx_path), ignore_errors=True)
@@ -1334,7 +1422,7 @@ def index_document(file_path: str, filename: str, collection_name: str = "SMAC")
         doc_id = str(uuid.uuid4())
         chunks = chunk_text(raw_text, chunk_size=2000, overlap=140)
         stats = {"type": "doc_legacy", "mode": "binary_fallback", "chars": len(raw_text)}
-        return _index_text_units(collection_name, doc_id, filename, chunks, doc_type="docx", extra_stats=stats)
+        return _index_text_units(collection_name, doc_id, filename, chunks, doc_type="docx", extra_stats=stats, source=source)
     if ext == ".xlsx":
         return index_xlsx(collection_name, file_path, filename)
     if ext == ".csv":
@@ -2383,6 +2471,37 @@ def get_all_doc_chunks(collection_name: str = "SMAC", field_filter: Optional[Lis
 # -------------------------------------------------------------------
 # Clear all documents in a named collection
 # -------------------------------------------------------------------
+def clear_documents_by_source(collection_name: str, source: str) -> Dict[str, Any]:
+    """Delete all chunks from a collection where metadata source matches."""
+    try:
+        collection = _get_col(collection_name)
+        all_data = collection.get(include=["metadatas"])
+        ids_to_delete = []
+        doc_ids_to_delete = set()
+
+        for chunk_id, meta in zip(all_data.get("ids") or [], all_data.get("metadatas") or []):
+            if meta.get("source") == source:
+                ids_to_delete.append(chunk_id)
+                doc_ids_to_delete.add(meta.get("doc_id", ""))
+
+        if ids_to_delete:
+            # ChromaDB delete in batches (max 5000 per call)
+            for i in range(0, len(ids_to_delete), 5000):
+                batch = ids_to_delete[i:i + 5000]
+                collection.delete(ids=batch)
+            _rebuild_bm25(collection_name)
+
+        print(f"[RAG] Cleared {len(ids_to_delete)} chunks ({len(doc_ids_to_delete)} docs) "
+              f"with source='{source}' from '{collection_name}'")
+        return {
+            "ok": True,
+            "chunks_deleted": len(ids_to_delete),
+            "doc_ids": list(doc_ids_to_delete),
+        }
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 def clear_all_documents(collection_name: str = "SMAC") -> Dict[str, Any]:
     global _col_cache
     chroma_name = _to_chroma_name(collection_name)
