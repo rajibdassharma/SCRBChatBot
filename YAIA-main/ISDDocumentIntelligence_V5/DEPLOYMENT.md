@@ -458,7 +458,7 @@ For PDF files with selectable text (typically 2025-2026 documents):
 ```bash
 source /opt/isd/venv/bin/activate
 cd /opt/isd/dbscripts
-python bulk_index_smac.py \
+python bulk_index_smac_ir.py \
     --folder "/data/SMAC/Digital" \
     --case-id 0 \
     --username rajibds \
@@ -470,7 +470,7 @@ python bulk_index_smac.py \
 
 **Reset digital data only:**
 ```bash
-python bulk_index_smac.py --reset --username rajibds --password rajibds
+python bulk_index_smac_ir.py --reset --username rajibds --password rajibds
 ```
 
 ### 6.3 -- Scanned SMAC Reports (Docling + EasyOCR)
@@ -501,7 +501,7 @@ For IR Form-16 interrogation reports (DOCX and PDF):
 # Then use bulk indexer or upload through the UI
 
 cd /opt/isd/dbscripts
-python bulk_index_smac.py \
+python bulk_index_smac_ir.py \
     --folder "/data/IR" \
     --collection IR \
     --case-id 0 \
@@ -522,7 +522,7 @@ Scanned files (0 extractable text) are logged to `dbscripts/pdfs_pending_ocr.txt
 
 ```bash
 # Reset digital
-python bulk_index_smac.py --reset --username rajibds --password rajibds
+python bulk_index_smac_ir.py --reset --username rajibds --password rajibds
 
 # Reset OCR
 cd /opt/isd/backend
@@ -627,7 +627,7 @@ sudo ufw deny 3306/tcp
 |   |-- dist/                 <- built static files served by nginx
 |   `-- .env                  <- VITE_API_BASE for build
 |-- dbscripts/
-|   |-- bulk_index_smac.py    <- digital SMAC indexer (source=digital)
+|   |-- bulk_index_smac_ir.py    <- digital SMAC indexer (source=digital)
 |   |-- ocr_index_smac.py     <- scanned SMAC indexer (source=ocr)
 |   |-- migrate_chroma_to_mysql.py  <- ChromaDB -> MySQL migration
 |   |-- .smac_bulk_progress.db      <- digital indexing progress (auto-created)
@@ -661,7 +661,7 @@ sudo ufw deny 3306/tcp
 | `USE_LLM_PARSER` | false (Docling only) | false (Docling+OCR) | true (Docling+LLM) |
 | Parser | Docling table + pipe-split | Docling+EasyOCR + pipe-split | Docling+LLM KV extraction |
 | Speed | ~5s/doc | ~11s/doc | ~30-60s/doc |
-| Script | bulk_index_smac.py | ocr_index_smac.py | bulk_index_smac.py --collection IR |
+| Script | bulk_index_smac_ir.py | ocr_index_smac.py | bulk_index_smac_ir.py --collection IR |
 
 ---
 
@@ -713,7 +713,7 @@ sudo systemctl start isd-backend
 [ ] systemd isd-backend service enabled and running
 [ ] Firewall: 443 open, 8001/11434/3306 blocked
 [ ] Admin user registered and promoted
-[ ] Digital SMAC indexing: bulk_index_smac.py --folder ...
+[ ] Digital SMAC indexing: bulk_index_smac_ir.py --folder ...
 [ ] Scanned SMAC indexing: ocr_index_smac.py --folder ...
 [ ] Verify MySQL: SELECT field_key, COUNT(*) FROM smac_reports GROUP BY field_key
 [ ] Test Q&A in browser

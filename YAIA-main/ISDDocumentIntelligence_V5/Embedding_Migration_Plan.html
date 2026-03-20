@@ -1,0 +1,622 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Embedding Migration Plan — Ollama to sentence-transformers</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      margin: 40px;
+      color: #222;
+    }
+    h1 {
+      font-size: 20px;
+      color: #1a3a5c;
+      margin-bottom: 4px;
+    }
+    h2 {
+      font-size: 16px;
+      color: #1a3a5c;
+      margin-top: 28px;
+      border-bottom: 2px solid #1a3a5c;
+      padding-bottom: 4px;
+    }
+    h3 {
+      font-size: 14px;
+      color: #1a3a5c;
+      margin: 20px 0 8px 0;
+    }
+    .subtitle {
+      font-size: 12px;
+      color: #555;
+      margin-bottom: 24px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 20px;
+    }
+    thead tr {
+      background-color: #1a3a5c;
+      color: white;
+    }
+    thead th {
+      padding: 10px 12px;
+      text-align: left;
+      font-size: 13px;
+    }
+    tbody tr:nth-child(even) {
+      background-color: #f2f6fb;
+    }
+    tbody td {
+      padding: 9px 12px;
+      border-bottom: 1px solid #dce3ec;
+      vertical-align: top;
+    }
+    .step-num {
+      font-weight: bold;
+      color: #1a3a5c;
+      text-align: center;
+      width: 40px;
+    }
+    .factor {
+      font-weight: bold;
+      color: #1a3a5c;
+      white-space: nowrap;
+    }
+    .good    { color: #1a7a3a; font-weight: bold; }
+    .bad     { color: #a00000; font-weight: bold; }
+    .neutral { color: #7a6a00; font-weight: bold; }
+    code {
+      background: #f0f0f0;
+      padding: 2px 6px;
+      border-radius: 3px;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+    }
+    pre {
+      background: #1e1e1e;
+      color: #d4d4d4;
+      padding: 14px;
+      border-radius: 4px;
+      font-family: Consolas, monospace;
+      font-size: 12px;
+      overflow-x: auto;
+      margin: 8px 0 16px 0;
+    }
+    .keyword { color: #569cd6; }
+    .string  { color: #ce9178; }
+    .comment { color: #6a9955; }
+    .func    { color: #dcdcaa; }
+    .note {
+      background: #eaf3ff;
+      border-left: 4px solid #1a3a5c;
+      padding: 10px 14px;
+      font-size: 12px;
+      margin: 12px 0 20px 0;
+    }
+    .warning {
+      background: #fff8e6;
+      border-left: 4px solid #d4a017;
+      padding: 10px 14px;
+      font-size: 12px;
+      margin: 12px 0 20px 0;
+    }
+    .verdict {
+      background: #e6f9ec;
+      border-left: 4px solid #1a7a3a;
+      padding: 10px 14px;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+    ol li, ul li {
+      margin-bottom: 6px;
+    }
+    @media print {
+      body { margin: 20px; }
+      pre { font-size: 10px; }
+    }
+  </style>
+</head>
+<body>
+
+<h1>Embedding Migration Plan — Ollama to sentence-transformers</h1>
+<div class="subtitle">ISD Document Intelligence V5 | Objective: Faster bulk indexing by bypassing Ollama HTTP overhead | Date: March 2026</div>
+
+<!-- ============================== -->
+<h2>1. Why This Change?</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:30%">Factor</th>
+      <th style="width:35%">Ollama Embeddings (Current)</th>
+      <th style="width:35%">sentence-transformers (Proposed)</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="factor">How it works</td>
+      <td>Python &rarr; HTTP call &rarr; Ollama server &rarr; GPU &rarr; return vector</td>
+      <td>Python &rarr; GPU directly &rarr; return vector</td>
+    </tr>
+    <tr>
+      <td class="factor">Batching</td>
+      <td class="bad">One chunk per HTTP call</td>
+      <td class="good">256+ chunks per GPU call</td>
+    </tr>
+    <tr>
+      <td class="factor">Overhead per chunk</td>
+      <td class="bad">200&ndash;500ms (HTTP + serialization)</td>
+      <td class="good">&lt;5ms (direct GPU)</td>
+    </tr>
+    <tr>
+      <td class="factor">7,929 SMAC files estimated time</td>
+      <td class="bad">24&ndash;48 hours</td>
+      <td class="good">30&ndash;60 minutes</td>
+    </tr>
+    <tr>
+      <td class="factor">Read Timeouts</td>
+      <td class="bad">Frequent on large files (9&ndash;11 pages)</td>
+      <td class="good">None &mdash; no HTTP involved</td>
+    </tr>
+    <tr>
+      <td class="factor">GPU utilization</td>
+      <td class="bad">Low (idle between HTTP calls)</td>
+      <td class="good">High (continuous batch processing)</td>
+    </tr>
+    <tr>
+      <td class="factor">Model used</td>
+      <td>mxbai-embed-large (via Ollama)</td>
+      <td>mixedbread-ai/mxbai-embed-large-v1 (same model)</td>
+    </tr>
+    <tr>
+      <td class="factor">Vector dimensions</td>
+      <td>1024</td>
+      <td>1024 (identical)</td>
+    </tr>
+    <tr>
+      <td class="factor">Internet required</td>
+      <td>No (model already in Ollama)</td>
+      <td>Only once to download model (~670 MB), then fully offline</td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ============================== -->
+<h2>2. Accuracy Assurance</h2>
+
+<div class="verdict">
+  <strong>There is ZERO impact on accuracy.</strong><br/><br/>
+  <strong>Reason:</strong> Ollama's <code>mxbai-embed-large</code> is a repackaged version of HuggingFace's <code>mixedbread-ai/mxbai-embed-large-v1</code>.
+  They share the same neural network weights. Given the same input text, both produce the same 1024-dimensional vector.
+  The only difference is the transport layer (HTTP vs direct GPU call).<br/><br/>
+  <strong>What affects accuracy (all unchanged):</strong>
+  <ul style="margin-bottom:0;">
+    <li>Chunk size (2000 words) &mdash; unchanged</li>
+    <li>Embedding model &mdash; unchanged (same model, same weights)</li>
+    <li>LLM model (gemma3:12b / llama3.3:70b) &mdash; unchanged</li>
+    <li>Search algorithm (Vector + BM25 + RRF fusion) &mdash; unchanged</li>
+    <li>System prompts &mdash; unchanged</li>
+    <li>ChromaDB storage &mdash; unchanged</li>
+    <li>MySQL structured data &mdash; unchanged</li>
+  </ul>
+</div>
+
+<!-- ============================== -->
+<h2>3. What Changes in the Code?</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:25%">File</th>
+      <th style="width:35%">Change</th>
+      <th style="width:40%">Details</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="factor">backend/.env</td>
+      <td>Add toggle flag</td>
+      <td><code>USE_OLLAMA_EMBEDDINGS=true</code> (default) or <code>false</code></td>
+    </tr>
+    <tr>
+      <td class="factor">backend/config.py</td>
+      <td>Read new env var</td>
+      <td>Parse <code>USE_OLLAMA_EMBEDDINGS</code> boolean (1 line)</td>
+    </tr>
+    <tr>
+      <td class="factor">backend/ollama_client.py</td>
+      <td>Add sentence-transformers path</td>
+      <td>If <code>USE_OLLAMA_EMBEDDINGS=false</code>, use <code>SentenceTransformer.encode()</code> with batching instead of Ollama HTTP call</td>
+    </tr>
+    <tr>
+      <td class="factor">backend/requirements.txt</td>
+      <td>Add dependency</td>
+      <td><code>sentence-transformers</code></td>
+    </tr>
+    <tr>
+      <td class="factor">backend/rag.py</td>
+      <td class="good">No change</td>
+      <td>Calls <code>ollama_client.py</code> as before &mdash; switching is transparent</td>
+    </tr>
+    <tr>
+      <td class="factor">backend/app.py</td>
+      <td class="good">No change</td>
+      <td>All 30+ endpoints unchanged</td>
+    </tr>
+    <tr>
+      <td class="factor">Frontend</td>
+      <td class="good">No change</td>
+      <td>Completely unaffected</td>
+    </tr>
+    <tr>
+      <td class="factor">ChromaDB</td>
+      <td class="good">No change</td>
+      <td>Same 1024-dim vectors, same collections</td>
+    </tr>
+    <tr>
+      <td class="factor">MySQL</td>
+      <td class="good">No change</td>
+      <td>All 10 tables unaffected</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="warning">
+  <strong>Rollback:</strong> If anything goes wrong, simply set <code>USE_OLLAMA_EMBEDDINGS=true</code> in <code>.env</code> and restart the backend. Instant rollback to current behavior. No code changes needed.
+</div>
+
+<!-- ============================== -->
+<h2>4. Step-by-Step Execution Plan</h2>
+
+<h3>Phase A &mdash; Local Testing (Your Laptop)</h3>
+
+<table>
+  <thead>
+    <tr>
+      <th class="step-num">Step</th>
+      <th style="width:30%">Action</th>
+      <th style="width:60%">Command / Detail</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="step-num">A1</td>
+      <td>Install sentence-transformers</td>
+      <td><pre>pip install sentence-transformers</pre></td>
+    </tr>
+    <tr>
+      <td class="step-num">A2</td>
+      <td>Download &amp; cache the model</td>
+      <td>
+<pre><span class="keyword">from</span> sentence_transformers <span class="keyword">import</span> SentenceTransformer
+model = SentenceTransformer(<span class="string">"mixedbread-ai/mxbai-embed-large-v1"</span>)
+vecs = model.encode([<span class="string">"test"</span>], normalize_embeddings=<span class="keyword">True</span>)
+<span class="func">print</span>(vecs.shape)  <span class="comment"># Should print (1, 1024)</span></pre>
+        Downloads ~670 MB and caches locally. Internet required for this step only.
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">A3</td>
+      <td>Apply code changes</td>
+      <td>
+        Update 3 files: <code>config.py</code>, <code>ollama_client.py</code>, <code>requirements.txt</code>.<br/>
+        Add <code>USE_OLLAMA_EMBEDDINGS=false</code> to <code>.env</code>.
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">A4</td>
+      <td>Test with toggle = true (verify no regression)</td>
+      <td>
+        Set <code>USE_OLLAMA_EMBEDDINGS=true</code> in <code>.env</code>.<br/>
+        Start backend, upload a test document, ask a question.<br/>
+        <strong>Verify:</strong> Everything works exactly as before.
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">A5</td>
+      <td>Test with toggle = false (new method)</td>
+      <td>
+        Set <code>USE_OLLAMA_EMBEDDINGS=false</code> in <code>.env</code>.<br/>
+        Delete local <code>chroma_db_v5</code>, restart backend, upload same document, ask same question.<br/>
+        <strong>Verify:</strong> Same answer quality, faster embedding.
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">A6</td>
+      <td>Compare vectors (optional validation)</td>
+      <td>
+        Embed the same text with both methods. Compare cosine similarity.<br/>
+        <strong>Expected:</strong> &gt;0.99 similarity (effectively identical).
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">A7</td>
+      <td>Commit &amp; push to GitHub</td>
+      <td>Commit changed files, push to remote.</td>
+    </tr>
+  </tbody>
+</table>
+
+<h3>Phase B &mdash; Server Deployment</h3>
+
+<div class="warning">
+  <strong>Internet required for Steps B2 &amp; B3 only.</strong> After that, everything runs fully offline.
+</div>
+
+<table>
+  <thead>
+    <tr>
+      <th class="step-num">Step</th>
+      <th style="width:30%">Action</th>
+      <th style="width:60%">Command / Detail</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="step-num">B1</td>
+      <td>Stop current indexing</td>
+      <td><code>Ctrl+C</code> the running bulk indexer</td>
+    </tr>
+    <tr>
+      <td class="step-num">B2</td>
+      <td>Install sentence-transformers on server</td>
+      <td>
+<pre>source /opt/isd/venv/bin/activate
+pip install sentence-transformers</pre>
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">B3</td>
+      <td>Download model on server</td>
+      <td>
+<pre>python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('mixedbread-ai/mxbai-embed-large-v1')"</pre>
+        <strong>Alternative (if no internet):</strong> Copy from laptop via USB:<br/>
+        <strong>Windows:</strong> <code>C:\Users\{user}\.cache\huggingface\hub\models--mixedbread-ai--mxbai-embed-large-v1\</code><br/>
+        <strong>Linux target:</strong> <code>/root/.cache/huggingface/hub/models--mixedbread-ai--mxbai-embed-large-v1/</code>
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">B4</td>
+      <td>Copy updated code to server</td>
+      <td>
+        Copy 3 files to server:<br/>
+        <code>config.py</code>, <code>ollama_client.py</code>, <code>requirements.txt</code>
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">B5</td>
+      <td>Set toggle to false</td>
+      <td>
+        Edit <code>/opt/isd/ISDDocumentIntelligence_V5/backend/.env</code>:<br/>
+        <code>USE_OLLAMA_EMBEDDINGS=false</code>
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">B6</td>
+      <td>Clear ChromaDB</td>
+      <td>
+<pre>rm -rf /opt/isd/ISDDocumentIntelligence_V5/backend/chroma_db_v5</pre>
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">B7</td>
+      <td>Clear SMAC progress DB</td>
+      <td>
+<pre>rm /opt/isd/ISDDocumentIntelligence_V5/dbscripts/.smac_bulk_progress.db</pre>
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">B8</td>
+      <td>Clear MySQL smac_reports</td>
+      <td>
+<pre>mysql -u root -p -e "DELETE FROM ISDIntelligence.smac_reports;"</pre>
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">B9</td>
+      <td>Warm up Ollama (still needed for LLM)</td>
+      <td>
+<pre>ollama run gemma3:12b "hello"</pre>
+        Note: <code>mxbai-embed-large</code> is no longer needed in Ollama when toggle is false.
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">B10</td>
+      <td>Start backend</td>
+      <td>
+<pre>source /opt/isd/venv/bin/activate
+cd /opt/isd/ISDDocumentIntelligence_V5/backend
+uvicorn app:app --host 0.0.0.0 --port 8001</pre>
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">B11</td>
+      <td>Run SMAC bulk indexer</td>
+      <td>
+<pre>source /opt/isd/venv/bin/activate
+cd /opt/isd/ISDDocumentIntelligence_V5/dbscripts
+python bulk_index_smac.py --folder "/data/SMAC Data" --case-id 0 \
+  --username rajibds --password rajibds --workers 5</pre>
+        Workers can be higher now (5+) since GPU contention is reduced.
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">B12</td>
+      <td>Monitor progress</td>
+      <td>
+        Expected: ~30&ndash;60 minutes for all 7,929 SMAC files.<br/>
+        Timeouts should be eliminated.
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">B13</td>
+      <td>Run IR bulk indexer</td>
+      <td>
+<pre>python bulk_index_ir.py --folder "/data/IR Data" --case-id 0 \
+  --username rajibds --password rajibds --workers 5</pre>
+      </td>
+    </tr>
+    <tr>
+      <td class="step-num">B14</td>
+      <td>Verify Q&amp;A</td>
+      <td>
+        Open <code>http://localhost:5173</code>, log in, test queries.<br/>
+        <strong>Verify:</strong> Same answer quality as before.
+      </td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ============================== -->
+<h2>5. Time Savings Estimate</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:25%">Metric</th>
+      <th style="width:35%">Ollama (Current)</th>
+      <th style="width:35%">sentence-transformers</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="factor">7,929 SMAC files</td>
+      <td class="bad">24&ndash;48 hours</td>
+      <td class="good">30&ndash;60 minutes</td>
+    </tr>
+    <tr>
+      <td class="factor">1,000 IR files</td>
+      <td class="bad">3&ndash;6 hours</td>
+      <td class="good">5&ndash;10 minutes</td>
+    </tr>
+    <tr>
+      <td class="factor">Total indexing</td>
+      <td class="bad">27&ndash;54 hours</td>
+      <td class="good">35&ndash;70 minutes</td>
+    </tr>
+    <tr>
+      <td class="factor">Re-index (if needed later)</td>
+      <td class="bad">Full day+</td>
+      <td class="good">~1 hour</td>
+    </tr>
+    <tr>
+      <td class="factor">Read Timeout failures</td>
+      <td class="bad">Frequent &mdash; manual restarts needed</td>
+      <td class="good">None</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="note">
+  <strong>Note:</strong> These estimates are for the embedding step only. LLM-based extraction (entity, timeline, keywords via gemma3:12b) still goes through Ollama and adds processing time per document. The embedding speedup eliminates the largest bottleneck.
+</div>
+
+<!-- ============================== -->
+<h2>6. Rollback Plan</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:35%">Scenario</th>
+      <th style="width:65%">Action</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="factor">sentence-transformers doesn't work</td>
+      <td>Set <code>USE_OLLAMA_EMBEDDINGS=true</code> in <code>.env</code>, restart backend. Immediate rollback.</td>
+    </tr>
+    <tr>
+      <td class="factor">Answer quality seems different</td>
+      <td>Compare vectors from both methods. If cosine similarity &lt;0.99, revert to Ollama and investigate.</td>
+    </tr>
+    <tr>
+      <td class="factor">GPU memory conflict</td>
+      <td>Reduce batch_size from 256 to 64 or 32. H100 (80GB VRAM) should handle both Ollama LLM + sentence-transformers easily.</td>
+    </tr>
+    <tr>
+      <td class="factor">Model file missing on offline server</td>
+      <td>Copy from laptop via USB: <code>~/.cache/huggingface/hub/models--mixedbread-ai--mxbai-embed-large-v1/</code></td>
+    </tr>
+  </tbody>
+</table>
+
+<!-- ============================== -->
+<h2>7. Architecture After Migration</h2>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:25%">Component</th>
+      <th style="width:35%">Technology</th>
+      <th style="width:40%">Purpose</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="factor">PDF Extraction</td>
+      <td>pypdf</td>
+      <td>Extract text from digital PDFs</td>
+    </tr>
+    <tr>
+      <td class="factor">DOCX Extraction</td>
+      <td>python-docx</td>
+      <td>Extract text from Word documents</td>
+    </tr>
+    <tr>
+      <td class="factor">Embeddings</td>
+      <td class="good">sentence-transformers (mxbai-embed-large-v1)</td>
+      <td>Convert text chunks to 1024-dim vectors (direct GPU)</td>
+    </tr>
+    <tr>
+      <td class="factor">Vector Store</td>
+      <td>ChromaDB</td>
+      <td>Store and search document vectors</td>
+    </tr>
+    <tr>
+      <td class="factor">LLM (Q&amp;A)</td>
+      <td>Ollama + gemma3:12b / llama3.3:70b</td>
+      <td>Answer questions, entity extraction, NL-to-SQL</td>
+    </tr>
+    <tr>
+      <td class="factor">Keyword Search</td>
+      <td>BM25 (rank_bm25)</td>
+      <td>Term-frequency based search</td>
+    </tr>
+    <tr>
+      <td class="factor">Search Fusion</td>
+      <td>RRF (Reciprocal Rank Fusion)</td>
+      <td>Merge vector + BM25 results</td>
+    </tr>
+    <tr>
+      <td class="factor">Database</td>
+      <td>MySQL 8.x</td>
+      <td>Structured data, users, cases, entities</td>
+    </tr>
+    <tr>
+      <td class="factor">Backend</td>
+      <td>FastAPI + Uvicorn</td>
+      <td>REST API (30+ endpoints)</td>
+    </tr>
+    <tr>
+      <td class="factor">Frontend</td>
+      <td>React + Vite + TypeScript</td>
+      <td>User interface</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="verdict">
+  <strong>Decision:</strong> Test locally first (Phase A on laptop), then deploy to server with brief internet window (Phase B). Expected improvement: 7,929 SMAC + 1,000 IR files indexed in under 1 hour instead of multiple days. Fully reversible via .env toggle. Zero impact on accuracy.
+</div>
+
+<br/>
+<div class="note">
+  Generated for: ISD Document Intelligence V5 &nbsp;|&nbsp; Server: Ubuntu 24.04, H100 GPU (80GB VRAM), 1TB RAM &nbsp;|&nbsp; Date: March 2026
+</div>
+
+</body>
+</html>

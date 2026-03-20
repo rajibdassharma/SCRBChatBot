@@ -33,7 +33,7 @@ Backend (copy to /opt/isd/backend/):
   5. backend/requirements.txt
 
 Scripts (copy to /opt/isd/dbscripts/):
-  6. dbscripts/bulk_index_smac.py
+  6. dbscripts/bulk_index_smac_ir.py
   7. dbscripts/ocr_index_smac.py
   8. dbscripts/migrate_chroma_to_mysql.py
 
@@ -152,7 +152,7 @@ Should return a JSON response with `"ok": true`.
 ```bash
 source /opt/isd/venv/bin/activate
 cd /opt/isd/dbscripts
-python bulk_index_smac.py \
+python bulk_index_smac_ir.py \
     --folder "/data/SMAC/Digital" \
     --case-id 0 \
     --username rajibds \
@@ -186,7 +186,7 @@ source /opt/isd/venv/bin/activate && cd /opt/isd/backend && uvicorn app:app --ho
 
 # Run IR indexing
 cd /opt/isd/dbscripts
-python bulk_index_smac.py \
+python bulk_index_smac_ir.py \
     --folder "/data/IR" \
     --collection IR \
     --filter "ir,interrogation report" \
@@ -239,7 +239,7 @@ Open browser, login, upload a test document, ask a question. Verify answers.
 
 ```bash
 cd /opt/isd/dbscripts
-python bulk_index_smac.py --reset --username rajibds --password rajibds
+python bulk_index_smac_ir.py --reset --username rajibds --password rajibds
 ```
 
 ### Reset OCR SMAC only

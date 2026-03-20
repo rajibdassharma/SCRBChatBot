@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>RAG Framework Comparison — ISD Document Intelligence</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      font-size: 13px;
+      margin: 40px;
+      color: #222;
+    }
+    h1 {
+      font-size: 20px;
+      color: #1a3a5c;
+      margin-bottom: 4px;
+    }
+    .subtitle {
+      font-size: 12px;
+      color: #555;
+      margin-bottom: 24px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 32px;
+    }
+    thead tr {
+      background-color: #1a3a5c;
+      color: white;
+    }
+    thead th {
+      padding: 10px 12px;
+      text-align: left;
+      font-size: 13px;
+    }
+    tbody tr:nth-child(even) {
+      background-color: #f2f6fb;
+    }
+    tbody td {
+      padding: 9px 12px;
+      border-bottom: 1px solid #dce3ec;
+      vertical-align: top;
+    }
+    .factor {
+      font-weight: bold;
+      color: #1a3a5c;
+      white-space: nowrap;
+    }
+    .good    { color: #1a7a3a; font-weight: bold; }
+    .neutral { color: #7a6a00; }
+    .bad     { color: #a00000; }
+    .section-title {
+      font-size: 14px;
+      font-weight: bold;
+      color: #1a3a5c;
+      margin: 28px 0 8px 0;
+      border-bottom: 2px solid #1a3a5c;
+      padding-bottom: 4px;
+    }
+    .note {
+      background: #eaf3ff;
+      border-left: 4px solid #1a3a5c;
+      padding: 10px 14px;
+      font-size: 12px;
+      margin-top: 8px;
+      margin-bottom: 24px;
+    }
+    .verdict {
+      background: #e6f9ec;
+      border-left: 4px solid #1a7a3a;
+      padding: 10px 14px;
+      font-size: 12px;
+      margin-top: 8px;
+    }
+    @media print {
+      body { margin: 20px; }
+      .no-print { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<h1>RAG Framework Comparison — ISD Document Intelligence V5</h1>
+<div class="subtitle">Evaluated against deployment requirements: offline server, Ollama + gemma3:12b, MySQL, H100 GPU, Ubuntu 24.04</div>
+
+<div class="section-title">1. Overall Comparison</div>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:22%">Factor</th>
+      <th style="width:26%">Custom RAG (Current)</th>
+      <th style="width:26%">LlamaIndex</th>
+      <th style="width:26%">LangChain</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="factor">Approach</td>
+      <td>Hand-built pipeline using pypdf, ChromaDB, Ollama, MySQL</td>
+      <td>High-level RAG framework with built-in connectors</td>
+      <td>General-purpose LLM chaining framework with RAG support</td>
+    </tr>
+    <tr>
+      <td class="factor">Offline Operation</td>
+      <td class="good">Fully offline — no external calls after setup</td>
+      <td class="neutral">Mostly offline — some components may call home for telemetry</td>
+      <td class="neutral">Mostly offline — some integrations require internet</td>
+    </tr>
+    <tr>
+      <td class="factor">Ollama Integration</td>
+      <td class="good">Direct API calls to localhost — full control</td>
+      <td class="good">Native Ollama connector available</td>
+      <td class="good">Native Ollama connector available</td>
+    </tr>
+    <tr>
+      <td class="factor">PDF Extraction</td>
+      <td class="neutral">pypdf (digital PDFs) / pdfplumber (complex layouts)</td>
+      <td class="good">Built-in readers: pypdf, pdfplumber, Docling, Unstructured</td>
+      <td class="good">Document loaders: pypdf, Unstructured, Docling</td>
+    </tr>
+    <tr>
+      <td class="factor">ChromaDB Support</td>
+      <td class="good">Direct ChromaDB API — full control over collections</td>
+      <td class="good">Native ChromaDB vector store integration</td>
+      <td class="good">Native ChromaDB vector store integration</td>
+    </tr>
+    <tr>
+      <td class="factor">MySQL / Structured Search</td>
+      <td class="good">Full SQL — NL-to-SQL, aggregate queries, structured filters</td>
+      <td class="neutral">Requires custom SQL tool — not native</td>
+      <td class="neutral">Requires SQLDatabaseChain — some setup needed</td>
+    </tr>
+    <tr>
+      <td class="factor">Hybrid Search (Vector + BM25 + SQL)</td>
+      <td class="good">Custom RRF fusion — fully tuned for this app</td>
+      <td class="neutral">Built-in hybrid search — less customizable</td>
+      <td class="neutral">Ensemble retriever — configurable but complex</td>
+    </tr>
+    <tr>
+      <td class="factor">Chunking Control</td>
+      <td class="good">Full control — chunk size, overlap, custom logic</td>
+      <td class="neutral">Configurable but abstracted</td>
+      <td class="neutral">Configurable but abstracted</td>
+    </tr>
+    <tr>
+      <td class="factor">Custom Prompting</td>
+      <td class="good">Direct prompt engineering — full control</td>
+      <td class="neutral">Template system — needs learning</td>
+      <td class="neutral">PromptTemplate — flexible but verbose</td>
+    </tr>
+    <tr>
+      <td class="factor">Package Size / Dependencies</td>
+      <td class="good">Lean — ~15 core packages</td>
+      <td class="bad">Heavy — 100+ transitive dependencies</td>
+      <td class="bad">Very heavy — 150+ transitive dependencies</td>
+    </tr>
+    <tr>
+      <td class="factor">Install Size</td>
+      <td class="good">~200 MB</td>
+      <td class="neutral">~800 MB</td>
+      <td class="bad">~1.2 GB</td>
+    </tr>
+    <tr>
+      <td class="factor">Version Stability</td>
+      <td class="good">Stable — no framework updates to track</td>
+      <td class="bad">Frequent breaking changes between versions</td>
+      <td class="bad">Very frequent breaking changes — known issue</td>
+    </tr>
+    <tr>
+      <td class="factor">Entity / Timeline / Location Extraction</td>
+      <td class="good">Custom modules (entity_graph.py, activity_timeline.py, location_extractor.py)</td>
+      <td class="neutral">Possible but requires custom tool nodes</td>
+      <td class="neutral">Possible with custom chains — more complex</td>
+    </tr>
+    <tr>
+      <td class="factor">Answer Rating System</td>
+      <td class="good">Built-in — 5-point scale, stores as training data</td>
+      <td class="bad">Not built-in — custom development needed</td>
+      <td class="bad">Not built-in — custom development needed</td>
+    </tr>
+    <tr>
+      <td class="factor">Case-Scoped Search</td>
+      <td class="good">Native — per-case ChromaDB collections with fallback</td>
+      <td class="neutral">Possible with metadata filtering</td>
+      <td class="neutral">Possible with metadata filtering</td>
+    </tr>
+    <tr>
+      <td class="factor">Observability / Debugging</td>
+      <td class="good">Direct — log exactly what you want</td>
+      <td class="neutral">Callbacks available but abstracted</td>
+      <td class="neutral">LangSmith (requires internet) or custom callbacks</td>
+    </tr>
+    <tr>
+      <td class="factor">Learning Curve</td>
+      <td class="good">Low — standard Python + FastAPI</td>
+      <td class="neutral">Medium — framework-specific concepts</td>
+      <td class="bad">High — complex abstractions, frequent API changes</td>
+    </tr>
+    <tr>
+      <td class="factor">Production Readiness (offline)</td>
+      <td class="good">Proven — currently running on H100 server</td>
+      <td class="neutral">Viable — needs validation</td>
+      <td class="neutral">Viable — needs validation</td>
+    </tr>
+    <tr>
+      <td class="factor">Multi-LLM Support</td>
+      <td class="good">Configurable via .env (gemma3:12b, llama3.3:70b, qwen2.5:72b)</td>
+      <td class="good">Native multi-LLM support</td>
+      <td class="good">Native multi-LLM support</td>
+    </tr>
+    <tr>
+      <td class="factor">Community / Support</td>
+      <td class="neutral">Self-maintained</td>
+      <td class="good">Large community, good docs</td>
+      <td class="good">Very large community, extensive docs</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="section-title">2. PDF Extraction Comparison</div>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:22%">Factor</th>
+      <th style="width:26%">pypdf (Current)</th>
+      <th style="width:26%">pdfplumber</th>
+      <th style="width:26%">Docling</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="factor">Digital PDFs</td>
+      <td class="good">Excellent</td>
+      <td class="good">Excellent</td>
+      <td class="good">Excellent</td>
+    </tr>
+    <tr>
+      <td class="factor">Scanned PDFs (OCR)</td>
+      <td class="bad">Not supported</td>
+      <td class="bad">Not supported</td>
+      <td class="good">Supported (ML-based OCR)</td>
+    </tr>
+    <tr>
+      <td class="factor">Complex Tables</td>
+      <td class="neutral">Basic</td>
+      <td class="good">Good table extraction</td>
+      <td class="good">Excellent</td>
+    </tr>
+    <tr>
+      <td class="factor">Multi-column Layouts</td>
+      <td class="neutral">Sometimes incorrect order</td>
+      <td class="good">Better reading order</td>
+      <td class="good">Excellent</td>
+    </tr>
+    <tr>
+      <td class="factor">Offline Operation</td>
+      <td class="good">Fully offline</td>
+      <td class="good">Fully offline</td>
+      <td class="bad">Downloads models from HuggingFace on first run</td>
+    </tr>
+    <tr>
+      <td class="factor">Install Size</td>
+      <td class="good">Small (~2 MB)</td>
+      <td class="good">Small (~5 MB)</td>
+      <td class="bad">Very large (~2 GB with models)</td>
+    </tr>
+    <tr>
+      <td class="factor">Processing Speed</td>
+      <td class="good">Fast</td>
+      <td class="good">Fast</td>
+      <td class="neutral">Slower (ML inference per page)</td>
+    </tr>
+    <tr>
+      <td class="factor">Suitable for SMAC/IR Files</td>
+      <td class="good">Yes — digital government PDFs</td>
+      <td class="good">Yes — better for tables</td>
+      <td class="bad">Overkill — internet required for setup</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="section-title">3. Recommendation Summary</div>
+
+<table>
+  <thead>
+    <tr>
+      <th style="width:30%">Decision</th>
+      <th style="width:70%">Recommendation</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="factor">PDF Extractor</td>
+      <td><span class="good">pypdf</span> — sufficient for digital PDFs. Upgrade to <strong>pdfplumber</strong> if table extraction quality is poor during UAT.</td>
+    </tr>
+    <tr>
+      <td class="factor">RAG Framework</td>
+      <td><span class="good">Custom RAG (current)</span> — lean, fully offline, proven in production. Migrate to LlamaIndex only after go-live if a specific gap is identified.</td>
+    </tr>
+    <tr>
+      <td class="factor">LangChain</td>
+      <td><span class="bad">Not recommended</span> — too heavy, frequent breaking changes, no clear benefit over current setup.</td>
+    </tr>
+    <tr>
+      <td class="factor">Docling</td>
+      <td><span class="bad">Not recommended</span> — requires internet for model download. Not viable for offline server deployment.</td>
+    </tr>
+    <tr>
+      <td class="factor">Post Go-Live PoC</td>
+      <td>Evaluate <strong>LlamaIndex + pdfplumber</strong> as a potential V6 upgrade if document variety increases (scanned PDFs, complex tables).</td>
+    </tr>
+  </tbody>
+</table>
+
+<div class="verdict">
+  <strong>Current Stack Decision:</strong> pypdf + Custom RAG pipeline is the right choice for V5 production deployment on the offline H100 server. It is lean, fully offline, proven, and meets all functional requirements. The custom pipeline gives full control over hybrid search, case-scoped collections, entity extraction, and the answer rating system — features that would require significant custom development in LlamaIndex or LangChain anyway.
+</div>
+
+<br/>
+<div class="note">
+  Generated for: ISD Document Intelligence V5 &nbsp;|&nbsp; Server: Ubuntu 24.04, H100 GPU, 1TB RAM &nbsp;|&nbsp; LLM: gemma3:12b / llama3.3:70b via Ollama &nbsp;|&nbsp; Date: March 2026
+</div>
+
+</body>
+</html>

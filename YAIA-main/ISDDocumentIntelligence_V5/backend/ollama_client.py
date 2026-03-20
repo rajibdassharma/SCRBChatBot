@@ -1,5 +1,19 @@
 import requests
-from config import OLLAMA_BASE_URL, PDF_MODEL, EMBED_MODEL
+from config import OLLAMA_BASE_URL, PDF_MODEL, EMBED_MODEL, USE_OLLAMA_EMBEDDINGS
+
+# ── sentence-transformers direct GPU (loaded once at startup if enabled) ──────
+_st_model = None
+
+def _get_st_model():
+    global _st_model
+    if _st_model is None:
+        from sentence_transformers import SentenceTransformer
+        import torch
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        _st_model = SentenceTransformer("mixedbread-ai/mxbai-embed-large-v1", device=device)
+        print(f"[Embed] sentence-transformers loaded on {device}")
+    return _st_model
+
 
 def ollama_chat(messages, temperature=0.0, model=None):
     url = f"{OLLAMA_BASE_URL}/api/chat"
@@ -15,7 +29,7 @@ def ollama_chat(messages, temperature=0.0, model=None):
 
 def ollama_embed(text: str, model=None):
     """
-    Embed a single text using Ollama.
+    Embed a single text using Ollama or sentence-transformers.
     Returns a single vector (list[float]).
     """
     vecs = ollama_embed_batch([text], model=model)
@@ -24,10 +38,31 @@ def ollama_embed(text: str, model=None):
 
 def ollama_embed_batch(texts: list, model=None, batch_size: int = 64, max_retries: int = 3):
     """
-    Embed multiple texts in batches using Ollama's /api/embed endpoint.
+    Embed multiple texts in batches.
+    If USE_OLLAMA_EMBEDDINGS=false, uses sentence-transformers (direct GPU, much faster).
+    Otherwise, uses Ollama's /api/embed endpoint (HTTP per batch).
     Returns a list of vectors (list[list[float]]).
-    Retries on failure; uses a zero-vector placeholder for chunks that still fail.
     """
+    if not USE_OLLAMA_EMBEDDINGS:
+        return _embed_batch_st(texts, batch_size)
+
+    return _embed_batch_ollama(texts, model, batch_size, max_retries)
+
+
+def _embed_batch_st(texts: list, batch_size: int = 256):
+    """Embed using sentence-transformers directly on GPU."""
+    st_model = _get_st_model()
+    embeddings = st_model.encode(
+        texts,
+        batch_size=batch_size,
+        show_progress_bar=len(texts) > 100,
+        normalize_embeddings=True
+    )
+    return embeddings.tolist()
+
+
+def _embed_batch_ollama(texts: list, model=None, batch_size: int = 64, max_retries: int = 3):
+    """Embed using Ollama HTTP API (original method)."""
     import time
 
     m = model or EMBED_MODEL
@@ -89,5 +124,3 @@ def ollama_embed_batch(texts: list, model=None, batch_size: int = 64, max_retrie
                 all_vecs.append([0.0] * dim)
 
     return all_vecs
-
-
