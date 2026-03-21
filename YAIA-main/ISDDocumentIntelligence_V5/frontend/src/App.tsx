@@ -261,7 +261,7 @@ export default function App() {
   const [spellCorrections, setSpellCorrections] = useState<Record<string, string> | null>(null)
   const skipSpellCheckRef = useRef(false)
   const [failedDocs, setFailedDocs] = useState<{ name: string; error: string }[]>([])
-  const [confirmClearDocs, setConfirmClearDocs] = useState(false)
+  // const [confirmClearDocs, setConfirmClearDocs] = useState(false)  // disabled — clear docs removed
   const [showSignOutDialog, setShowSignOutDialog] = useState(false)
 
   // Voice Q&A state
@@ -409,15 +409,7 @@ export default function App() {
     setShowSignOutDialog(true)
   }
 
-  const handleSignOutClearAndLogout = async () => {
-    try {
-      if (activeCase) {
-        await apiFetch(`/docs/clear?collection=${activeCollection}&case_id=${activeCase.id}`, { method: 'POST' })
-        await apiFetch(`/graph/clear?case_id=${activeCase.id}`, { method: 'DELETE' })
-      }
-    } catch { /* best-effort clear */ }
-    handleLogout()
-  }
+  // handleSignOutClearAndLogout — disabled to prevent accidental data loss
 
   // ── Case handlers ────────────────────────────────────────────────────────
   const loadCases = useCallback(async () => {
@@ -936,54 +928,7 @@ export default function App() {
     }
   }
 
-  const handleDocClear = async () => {
-    if (!confirmClearDocs) {
-      setDocLastError('Please confirm before clearing.')
-      return
-    }
-
-    setDocLoading(true)
-    setDocLastError('')
-
-    try {
-      const data = await apiFetch<{ ok?: boolean; error?: string }>(`/docs/clear?collection=${activeCollection}&case_id=${activeCase!.id}`, {
-        method: 'POST',
-      })
-
-      if (data?.ok === false) {
-        throw new Error(data.error || 'Failed to clear documents.')
-      }
-
-      setDocs([])
-      setDocChat([])
-      setDocLastAnswer('')
-      setFailedDocs([])
-      setLastIndexSummary(null)
-      setDocStatus('OK Documents and vector DB cleared.')
-      setConfirmClearDocs(false)
-      // Reset graph state
-      setGraphNodes([])
-      setGraphEdges([])
-      setExtractionDone(false)
-      setGraphStatus('')
-      // Reset timeline state
-      setTimelineActivities([])
-      setTimelineGroups([])
-      setTimelineExtractionDone(false)
-      setTimelineStatus('')
-      setExpandedActivity(null)
-      setBreadcrumbTrail(null)
-      // Reset location map state
-      setLocationData([])
-      setLocationExtractionDone(false)
-      setLocationStatus('')
-      setSelectedLocation(null)
-    } catch (error) {
-      setDocLastError(error instanceof Error ? error.message : 'Failed to clear documents.')
-    } finally {
-      setDocLoading(false)
-    }
-  }
+  // handleDocClear — disabled to prevent accidental data loss
 
   // ── Entity Graph ────────────────────────────────────────────────────────
   const loadGraphData = useCallback(async (search?: string) => {
@@ -1900,18 +1845,13 @@ export default function App() {
                 </div>
               )}
               <div style={{color:'#333',fontSize:14,marginBottom:20,lineHeight:1.6}}>
-                Do you want to <strong>clear all documents and entity data</strong> for case <strong>"{activeCase.name}"</strong> before signing out?
+                Are you sure you want to sign out?
               </div>
               <div style={{display:'flex',flexDirection:'column',gap:10}}>
-                <button onClick={handleSignOutClearAndLogout}
-                  disabled={docIndexing || graphExtracting}
-                  style={{padding:'11px 0',borderRadius:8,border:'2px solid #b10000',background: docIndexing || graphExtracting ? '#ccc':'#b10000',color:'#fff',fontWeight:700,fontSize:14,cursor: docIndexing || graphExtracting ? 'not-allowed':'pointer'}}>
-                  Clear Docs &amp; Entities, then Sign Out
-                </button>
                 <button onClick={handleLogout}
                   disabled={docIndexing || graphExtracting}
                   style={{padding:'11px 0',borderRadius:8,border:'2px solid rgba(0,0,0,0.2)',background: docIndexing || graphExtracting ? '#ccc':'#ffd400',color:'#000',fontWeight:700,fontSize:14,cursor: docIndexing || graphExtracting ? 'not-allowed':'pointer'}}>
-                  Sign Out without clearing
+                  Sign Out
                 </button>
                 <button onClick={()=>setShowSignOutDialog(false)}
                   style={{padding:'11px 0',borderRadius:8,border:'1px solid #ccc',background:'transparent',color:'#555',fontWeight:600,fontSize:14,cursor:'pointer'}}>
@@ -1930,18 +1870,7 @@ export default function App() {
         <button type="button" className="btn-yellow" onClick={() => setDocChat([])}>
           Clear Document Chat
         </button>
-        <div className="ksp-danger-divider" />
-        <label className="ksp-check">
-          <input
-            type="checkbox"
-            checked={confirmClearDocs}
-            onChange={(event) => setConfirmClearDocs(event.target.checked)}
-          />
-          <span>Confirm: clear uploaded docs</span>
-        </label>
-        <button type="button" className="btn-yellow" onClick={handleDocClear}>
-          Clear Uploaded Docs
-        </button>
+        {/* Clear Uploaded Docs — disabled to prevent accidental data loss */}
       </aside>
 
       <main className="main">

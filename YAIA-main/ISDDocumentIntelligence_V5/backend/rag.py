@@ -103,9 +103,27 @@ def _rebuild_bm25(col: str):
             print(f"[BM25] No documents in '{col}', index empty")
             return
 
-        all_data = collection.get(include=["documents", "metadatas"])
-        state["docs"] = all_data.get("documents") or []
-        state["metas"] = all_data.get("metadatas") or []
+        # Fetch in batches to avoid SQLite "too many SQL variables" error
+        BATCH = 500
+        all_docs = []
+        all_metas = []
+        offset = 0
+        while offset < count:
+            batch = collection.get(
+                include=["documents", "metadatas"],
+                limit=BATCH,
+                offset=offset,
+            )
+            docs = batch.get("documents") or []
+            metas = batch.get("metadatas") or []
+            if not docs:
+                break
+            all_docs.extend(docs)
+            all_metas.extend(metas)
+            offset += len(docs)
+
+        state["docs"] = all_docs
+        state["metas"] = all_metas
 
         corpus = [_tokenize(d) for d in state["docs"]]
         state["index"] = BM25Okapi(corpus) if corpus else None
@@ -113,6 +131,30 @@ def _rebuild_bm25(col: str):
     except Exception as e:
         print(f"[BM25] Rebuild failed for '{col}': {e}")
         state["docs"], state["metas"], state["index"] = [], [], None
+
+
+def _get_all_chunks(collection, include=None) -> dict:
+    """Fetch all chunks from a ChromaDB collection in batches to avoid SQLite limits."""
+    if include is None:
+        include = ["documents", "metadatas"]
+    count = collection.count()
+    if count == 0:
+        return {"documents": [], "metadatas": []}
+    BATCH = 500
+    all_docs = []
+    all_metas = []
+    offset = 0
+    while offset < count:
+        batch = collection.get(include=include, limit=BATCH, offset=offset)
+        docs = batch.get("documents") or []
+        metas = batch.get("metadatas") or []
+        batch_size = len(metas) if metas else len(docs)
+        if batch_size == 0:
+            break
+        all_docs.extend(docs)
+        all_metas.extend(metas)
+        offset += batch_size
+    return {"documents": all_docs, "metadatas": all_metas}
 
 
 def _add_to_bm25(col: str, documents: List[str], metadatas: List[dict]):
@@ -1687,7 +1729,7 @@ def _get_chunks_by_field_fuzzy(
     ChromaDB does not support LIKE queries, so we fetch all and filter in Python.
     """
     collection = _get_col(col)
-    all_data = collection.get(include=["documents", "metadatas"])
+    all_data = _get_all_chunks(collection)
     docs = all_data.get("documents") or []
     metas = all_data.get("metadatas") or []
 
@@ -1759,7 +1801,7 @@ def _ir_text_search(
         return []
 
     collection = _get_col(col)
-    all_data = collection.get(include=["documents", "metadatas"])
+    all_data = _get_all_chunks(collection)
     docs = all_data.get("documents") or []
     metas = all_data.get("metadatas") or []
 
@@ -2404,7 +2446,7 @@ def get_indexed_doc_list(collection_name: str = "SMAC") -> List[Dict[str, Any]]:
         if count == 0:
             return []
 
-        all_data = collection.get(include=["metadatas"])
+        all_data = _get_all_chunks(collection, include=["metadatas"])
         metas_list = all_data.get("metadatas") or []
 
         grouped: Dict[str, Dict[str, Any]] = {}
@@ -2439,7 +2481,7 @@ def get_all_doc_chunks(collection_name: str = "SMAC", field_filter: Optional[Lis
         if count == 0:
             return []
 
-        all_data = collection.get(include=["documents", "metadatas"])
+        all_data = _get_all_chunks(collection)
         docs_list = all_data.get("documents") or []
         metas_list = all_data.get("metadatas") or []
 
@@ -2475,11 +2517,22 @@ def clear_documents_by_source(collection_name: str, source: str) -> Dict[str, An
     """Delete all chunks from a collection where metadata source matches."""
     try:
         collection = _get_col(collection_name)
-        all_data = collection.get(include=["metadatas"])
+        all_data = _get_all_chunks(collection, include=["metadatas"])
+        # Also need chunk IDs for deletion — re-fetch with IDs in batches
+        count = collection.count()
+        all_ids = []
+        offset = 0
+        while offset < count:
+            batch = collection.get(limit=500, offset=offset)
+            batch_ids = batch.get("ids") or []
+            if not batch_ids:
+                break
+            all_ids.extend(batch_ids)
+            offset += len(batch_ids)
         ids_to_delete = []
         doc_ids_to_delete = set()
 
-        for chunk_id, meta in zip(all_data.get("ids") or [], all_data.get("metadatas") or []):
+        for chunk_id, meta in zip(all_ids, all_data.get("metadatas") or []):
             if meta.get("source") == source:
                 ids_to_delete.append(chunk_id)
                 doc_ids_to_delete.add(meta.get("doc_id", ""))
