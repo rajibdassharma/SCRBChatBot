@@ -2095,7 +2095,9 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         if name_words:
             try:
                 collection = _get_col(collection_name)
-                all_metas = collection.get(include=["metadatas"])["metadatas"]
+                _all = _get_all_chunks(collection, include=["documents", "metadatas"])
+                all_docs = _all.get("documents", []) or []
+                all_metas = _all.get("metadatas", []) or []
                 # Get unique doc_name → doc_id mapping
                 doc_name_map = {}
                 for meta in all_metas:
@@ -2104,17 +2106,38 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
                     if dn and did and dn not in doc_name_map:
                         doc_name_map[dn] = did
                 # Match name words against document names
-                best_match = None
-                best_score = 0
+                matches = []
                 for doc_name, did in doc_name_map.items():
                     dn_lower = doc_name.lower()
                     hits = sum(1 for w in name_words if w.lower() in dn_lower)
-                    if hits > best_score:
-                        best_score = hits
-                        best_match = (doc_name, did)
-                if best_match and best_score >= 1:
-                    doc_ids = [best_match[1]]
-                    print(f"[RAG:IR] Auto-scoped to '{best_match[0]}' (doc_id={doc_ids[0]}) via name match ({best_score} words matched)")
+                    if hits >= 1:
+                        matches.append((hits, doc_name, did))
+                # Also search chunk text for the person's name
+                text_match_ids = set()
+                for doc_text, meta in zip(all_docs, all_metas):
+                    did = meta.get("doc_id", "")
+                    if did and all(w.lower() in (doc_text or "").lower() for w in name_words):
+                        text_match_ids.add(did)
+                # Add text-matched docs not already in filename matches
+                filename_dids = set()
+                for item in matches:
+                    filename_dids.add(item[2])
+                for did in text_match_ids:
+                    if did not in filename_dids:
+                        dn = "unknown"
+                        for n, d in doc_name_map.items():
+                            if d == did:
+                                dn = n
+                                break
+                        matches.append((0, dn, did))
+                if matches:
+                    matches.sort(key=lambda x: x[0], reverse=True)
+                    doc_ids = []
+                    doc_names = []
+                    for item in matches:
+                        doc_ids.append(item[2])
+                        doc_names.append(item[1])
+                    print(f"[RAG:IR] Auto-scoped to {len(doc_ids)} docs: {doc_names[:5]} via name match")
             except Exception as e:
                 print(f"[RAG:IR] Name-based scoping failed: {e}")
 
@@ -2160,26 +2183,31 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
             r'all the|how many|enumerate|what are all|tell me all)\b',
             q_for_keywords, re.IGNORECASE,
         ))
-        if field_chunks:
+        if field_chunks and detected_keyword and doc_ids:
+            # Specific field + scoped document → use only field chunks, skip hybrid (avoids narrative noise)
+            results = field_chunks
+            print(f"[RAG:IR] Field-only retrieval: {len(results)} chunks for '{detected_keyword}' (hybrid skipped — doc scoped)")
+        elif field_chunks:
             hybrid_cap = min(20, top_k * 2) if _is_list_q else min(5, top_k)
             hybrid_chunks = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=hybrid_cap)
+            # Merge: field/text-matched chunks first (most targeted), then hybrid
+            seen_keys = set()
+            results = []
+            for d, m in (field_chunks or []):
+                key = f"{m.get('doc_id', '')}_{m.get('chunk_index', '')}"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    results.append((d, m))
+            for d, m in hybrid_chunks:
+                key = f"{m.get('doc_id', '')}_{m.get('chunk_index', '')}"
+                if key not in seen_keys:
+                    seen_keys.add(key)
+                    results.append((d, m))
+            print(f"[RAG:IR] Merged: {len(field_chunks or [])} field/text + {len(hybrid_chunks)} hybrid → {len(results)} results")
         else:
             hybrid_chunks = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=top_k)
-
-        # Merge: field/text-matched chunks first (most targeted), then hybrid
-        seen_keys = set()
-        results = []
-        for d, m in (field_chunks or []):
-            key = f"{m.get('doc_id', '')}_{m.get('chunk_index', '')}"
-            if key not in seen_keys:
-                seen_keys.add(key)
-                results.append((d, m))
-        for d, m in hybrid_chunks:
-            key = f"{m.get('doc_id', '')}_{m.get('chunk_index', '')}"
-            if key not in seen_keys:
-                seen_keys.add(key)
-                results.append((d, m))
-        print(f"[RAG:IR] Merged: {len(field_chunks or [])} field/text + {len(hybrid_chunks)} hybrid → {len(results)} results (no field cap)")
+            results = hybrid_chunks
+            print(f"[RAG:IR] Hybrid-only: {len(results)} results")
 
     else:
         results = _hybrid_retrieve(collection_name, q_for_keywords, doc_ids=doc_ids, top_k=top_k)
@@ -2360,6 +2388,7 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         )
 
     print(f"[RAG] Sending to LLM: context={len(context)} chars, question={len(llm_question)} chars, prompt={len(prompt)} chars")
+    print(f"[RAG] === FULL PROMPT ===\n{prompt[:3000]}{'...[TRUNCATED]' if len(prompt) > 3000 else ''}\n[RAG] === END PROMPT ===")
 
     try:
         answer = ollama_chat(
