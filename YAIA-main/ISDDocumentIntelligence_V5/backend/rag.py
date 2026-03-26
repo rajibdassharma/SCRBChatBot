@@ -619,7 +619,7 @@ def _index_text_units(
         documents.append(u)
 
     _get_col(col).add(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
-    _add_to_bm25(col, documents, metadatas)
+    _add_to_bm25(col, documents, metadatas)  # Disabled during bulk indexing
 
     return {"doc_id": doc_id, "doc_name": filename, "chunks": len(cleaned_units), "stats": extra_stats, "_chunks": cleaned_units}
 
@@ -2053,6 +2053,70 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
     # Fall back to full question if raw_question is not provided
     q_for_keywords = raw_question if raw_question else question
     print(f"[RAG] raw_question={repr(raw_question[:80]) if raw_question else 'None'}, q_for_keywords={repr(q_for_keywords[:80])}")
+
+    # ── Auto-detect TMS/Input ID and scope to that document ───────
+    if not doc_ids:
+        tms_match = re.search(r'\b(\d{5,8})\b', q_for_keywords)
+        if tms_match:
+            tms_id = tms_match.group(1)
+            try:
+                collection = _get_col(collection_name)
+                found = False
+                for field in ["TMS I.D.", "InputID", "Input ID", "TMS ID"]:
+                    all_data = collection.get(
+                        where={"field_name": field},
+                        include=["documents", "metadatas"],
+                    )
+                    for doc, meta in zip(all_data.get("documents", []), all_data.get("metadatas", [])):
+                        if tms_id in doc:
+                            doc_ids = [meta["doc_id"]]
+                            print(f"[RAG] Auto-scoped to doc_id={doc_ids[0]} via {field} {tms_id}")
+                            found = True
+                            break
+                    if found:
+                        break
+            except Exception as e:
+                print(f"[RAG] TMS/Input ID lookup failed: {e}")
+
+    # ── Auto-detect accused/person name and scope to IR document ──────
+    _is_ir = collection_name == "IR" or collection_name.startswith("IR_c")
+    if _is_ir and not doc_ids:
+        _scope_stop = {
+            "what", "who", "where", "when", "how", "which", "is", "are", "was",
+            "were", "the", "a", "an", "of", "in", "for", "to", "and", "or",
+            "his", "her", "their", "its", "this", "that", "do", "does", "did",
+            "has", "have", "had", "be", "been", "being", "will", "can", "could",
+            "about", "from", "with", "tell", "me", "give", "show", "find",
+            "please", "details", "information", "accused", "arrested", "person",
+            "interrogation", "report", "ir", "all", "list", "name", "address",
+        }
+        words = re.findall(r"[a-zA-Z]{3,}", q_for_keywords)
+        name_words = [w for w in words if w.lower() not in _scope_stop]
+        if name_words:
+            try:
+                collection = _get_col(collection_name)
+                all_metas = collection.get(include=["metadatas"])["metadatas"]
+                # Get unique doc_name → doc_id mapping
+                doc_name_map = {}
+                for meta in all_metas:
+                    dn = meta.get("doc_name", "")
+                    did = meta.get("doc_id", "")
+                    if dn and did and dn not in doc_name_map:
+                        doc_name_map[dn] = did
+                # Match name words against document names
+                best_match = None
+                best_score = 0
+                for doc_name, did in doc_name_map.items():
+                    dn_lower = doc_name.lower()
+                    hits = sum(1 for w in name_words if w.lower() in dn_lower)
+                    if hits > best_score:
+                        best_score = hits
+                        best_match = (doc_name, did)
+                if best_match and best_score >= 1:
+                    doc_ids = [best_match[1]]
+                    print(f"[RAG:IR] Auto-scoped to '{best_match[0]}' (doc_id={doc_ids[0]}) via name match ({best_score} words matched)")
+            except Exception as e:
+                print(f"[RAG:IR] Name-based scoping failed: {e}")
 
     # ── Smart routing: aggregate/cross-document questions → NL→SQL ─────
     if _is_aggregate_question(q_for_keywords):
