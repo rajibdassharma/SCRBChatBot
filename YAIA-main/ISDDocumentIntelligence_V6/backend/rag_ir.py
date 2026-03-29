@@ -159,35 +159,66 @@ def index_ir(file_path: str, filename: str, source: str = "digital") -> Dict[str
 # -------------------------------------------------------------------
 # Q&A: Single document
 # -------------------------------------------------------------------
+def _extract_person_name(question: str) -> List[str]:
+    """Use LLM to extract the person's name from the question."""
+    try:
+        response = ollama_chat(
+            [{"role": "user", "content": (
+                "Extract ONLY the person's name from this question. "
+                "Return ONLY the name (first name and last name), nothing else. "
+                "If there is no person's name, return NONE.\n\n"
+                f"Question: {question}\n\n"
+                "Name:"
+            )}],
+            temperature=0.0,
+            model=PDF_MODEL,
+        )
+        name = response.strip().strip('"').strip("'")
+        print(f"[RAG-IR] LLM extracted name: '{name}'")
+
+        if not name or name.upper() == "NONE":
+            return []
+
+        return [w for w in name.split() if len(w) >= 2]
+    except Exception as e:
+        print(f"[RAG-IR] Name extraction failed: {e}")
+        return []
+
+
 def _find_document(question: str) -> Optional[Dict[str, str]]:
     """
     Find the IR document matching the person name in the question.
 
-    Uses OR-based MySQL scoring — every word in the question is matched against
-    doc_name. Person names score highest because they appear in the filename.
-    Common English words don't match any filename and are naturally ignored.
+    1. LLM extracts the person's name from the question
+    2. MySQL AND search on doc_name
+    3. Fallback: OR search if AND returns nothing
 
     Returns {doc_id, doc_name} or None.
     """
-    words = [w for w in re.findall(r"[a-zA-Z]{2,}", question) if len(w) >= 2]
-    if not words:
+    name_words = _extract_person_name(question)
+    if not name_words:
+        print(f"[RAG-IR] No person name found in question")
         return None
 
-    print(f"[RAG-IR] Searching with words: {words}")
+    print(f"[RAG-IR] Searching for: {name_words}")
 
-    # Try with min_score=2 first (at least 2 words match — likely first + last name)
-    matched = find_ir_docs_by_name_or(words, min_score=2)
+    # AND match — all name words must be in filename
+    matched = find_ir_docs_by_name(name_words)
     if matched:
-        print(f"[RAG-IR] Found: {matched[0]['doc_name']} (score={matched[0].get('score', '?')})")
+        if len(matched) == 1:
+            print(f"[RAG-IR] Found: {matched[0]['doc_name']}")
+            return matched[0]
+        best = max(matched, key=lambda d: sum(1 for w in name_words if w.lower() in d["doc_name"].lower()))
+        print(f"[RAG-IR] Best of {len(matched)}: {best['doc_name']}")
+        return best
+
+    # OR fallback — at least one name word matches
+    matched = find_ir_docs_by_name_or(name_words, min_score=1)
+    if matched:
+        print(f"[RAG-IR] Found (OR): {matched[0]['doc_name']}")
         return matched[0]
 
-    # Try with min_score=1 (single name like "Chotu")
-    matched = find_ir_docs_by_name_or(words, min_score=1)
-    if matched:
-        print(f"[RAG-IR] Found (score>=1): {matched[0]['doc_name']}")
-        return matched[0]
-
-    print(f"[RAG-IR] No document found")
+    print(f"[RAG-IR] No document found for name: {name_words}")
     return None
 
 
@@ -486,31 +517,19 @@ def ask(
 # Document management
 # -------------------------------------------------------------------
 def get_indexed_doc_list() -> List[Dict[str, Any]]:
-    """List all indexed IR documents."""
-    col = _get_collection()
-    count = col.count()
-    if count == 0:
-        return []
-
+    """List all indexed IR documents from MySQL (avoids ChromaDB SQLite limits)."""
     try:
-        all_data = col.get(include=["metadatas"])
-        metas = all_data.get("metadatas") or []
-        grouped = {}
-        for meta in metas:
-            did = meta.get("doc_id", "")
-            if not did or did in grouped:
-                continue
-            grouped[did] = {
-                "doc_id": did,
-                "doc_name": meta.get("doc_name", "Unknown"),
-                "chunks": 0,
-            }
-        # Count chunks per doc
-        for meta in metas:
-            did = meta.get("doc_id", "")
-            if did in grouped:
-                grouped[did]["chunks"] += 1
-        return list(grouped.values())
+        from structured_tables import _get_conn
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT doc_id, doc_name, COUNT(*) as chunks "
+            "FROM ir_reports GROUP BY doc_id, doc_name ORDER BY doc_name"
+        )
+        rows = cur.fetchall()
+        cur.close()
+        conn.close()
+        return rows
     except Exception as e:
         print(f"[RAG-IR] get_indexed_doc_list failed: {e}")
         return []

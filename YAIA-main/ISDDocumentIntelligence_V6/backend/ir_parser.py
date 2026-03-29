@@ -174,6 +174,132 @@ def parse_ir_docx(docx_path: str) -> Tuple[List[Dict[str, str]], str]:
     return fields, accused_name
 
 
+def parse_ir_pdf(pdf_path: str) -> Tuple[List[Dict[str, str]], str]:
+    """
+    Parse an IR PDF file. Extracts text with pypdf, then parses
+    for 3-column table patterns (serial | field | value).
+    """
+    from pypdf import PdfReader
+
+    try:
+        reader = PdfReader(pdf_path)
+    except Exception as e:
+        print(f"[IR-Parser] Cannot open PDF '{pdf_path}': {e}")
+        return [], ""
+
+    if not reader.pages:
+        return [], ""
+
+    fields: List[Dict[str, str]] = []
+    accused_name = ""
+    row_counter = 0
+
+    # Patterns for 3-column rows
+    # Pipe-separated: 1 | Field Name | Value
+    pipe_re = re.compile(r"^(\d{1,3})\.?\s*\|\s*([^|]+?)\s*\|\s*(.*)$")
+    # Space-separated: 1. Field Name    Value (2+ spaces between)
+    space_re = re.compile(r"^(\d{1,3})[.)\s]\s+([A-Za-z][A-Za-z0-9 /(),\-\']{2,60}?)\s{2,}(.+)$")
+    # Field without serial: Field Name    Value
+    no_serial_re = re.compile(r"^([A-Za-z][A-Za-z0-9 /(),\-\']{2,60}?)\s{2,}(.+)$")
+
+    for page in reader.pages:
+        try:
+            text = (page.extract_text() or "").strip()
+        except Exception:
+            continue
+
+        if not text:
+            continue
+
+        lines = text.splitlines()
+
+        for ln in lines:
+            ln = ln.strip()
+            if not ln:
+                continue
+
+            # Try pipe-separated
+            m = pipe_re.match(ln)
+            if m:
+                serial = m.group(1)
+                field_key = _clean_label(m.group(2))
+                field_value = _clean_value(m.group(3))
+
+                if not field_key:
+                    continue
+                if _is_nil(field_value):
+                    field_value = ""
+
+                row_counter += 1
+                fields.append({
+                    "serial_no": serial,
+                    "field_key": field_key,
+                    "field_value": field_value,
+                })
+
+                if "name" in field_key.lower() and "accused" in field_key.lower() and field_value:
+                    accused_name = field_value
+                continue
+
+            # Try space-separated with serial
+            m = space_re.match(ln)
+            if m:
+                serial = m.group(1)
+                field_key = _clean_label(m.group(2))
+                field_value = _clean_value(m.group(3))
+
+                if not field_key:
+                    continue
+                if _is_nil(field_value):
+                    field_value = ""
+
+                row_counter += 1
+                fields.append({
+                    "serial_no": serial,
+                    "field_key": field_key,
+                    "field_value": field_value,
+                })
+
+                if "name" in field_key.lower() and "accused" in field_key.lower() and field_value:
+                    accused_name = field_value
+                continue
+
+            # Try without serial number
+            m = no_serial_re.match(ln)
+            if m:
+                field_key = _clean_label(m.group(1))
+                field_value = _clean_value(m.group(2))
+
+                if not field_key or len(field_key) < 3:
+                    continue
+                # Skip header-like lines
+                if field_key.lower() in ("sl no", "description", "particulars", "serial no"):
+                    continue
+                if _is_nil(field_value):
+                    field_value = ""
+
+                row_counter += 1
+                fields.append({
+                    "serial_no": str(row_counter),
+                    "field_key": field_key,
+                    "field_value": field_value,
+                })
+
+                if "name" in field_key.lower() and "accused" in field_key.lower() and field_value:
+                    accused_name = field_value
+
+    # Extract accused name from fields if not found
+    if not accused_name:
+        for f in fields:
+            fk = f["field_key"].lower()
+            if "name" in fk and ("accused" in fk or fk == "name") and f["field_value"]:
+                accused_name = f["field_value"]
+                break
+
+    print(f"[IR-Parser] PDF: Extracted {len(fields)} fields from {len(reader.pages)} pages in {os.path.basename(pdf_path)}")
+    return fields, accused_name
+
+
 def parse_ir_document(file_path: str, filename: str) -> Tuple[List[Dict[str, str]], str]:
     """
     Parse any IR document (DOCX or PDF).
@@ -198,8 +324,7 @@ def parse_ir_document(file_path: str, filename: str) -> Tuple[List[Dict[str, str
             print(f"[IR-Parser] .doc conversion failed: {e}")
         return [], ""
     elif ext == ".pdf":
-        print(f"[IR-Parser] PDF parsing not yet implemented for IR. Use DOCX format.")
-        return [], ""
+        return parse_ir_pdf(file_path)
     else:
         print(f"[IR-Parser] Unsupported format: {ext}")
         return [], ""

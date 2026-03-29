@@ -1,20 +1,30 @@
+# Core backend
 fastapi
-uvicorn
+uvicorn[standard]
 python-dotenv
-requests
-pypdf
-chromadb
 python-multipart
+requests
+pymysql
+gunicorn
+
+# Auth
+python-jose[cryptography]
+passlib==1.7.4
+bcrypt==4.0.1
+
+# Document parsing
+pypdf
 python-docx
 openpyxl
-faster-whisper
+
+# Vector DB & search
+chromadb
 rank-bm25
-pymysql
-python-jose[cryptography]
-passlib[bcrypt]
-neo4j>=5.0
-gunicorn
 sentence-transformers
-pyspellchecker
+
+# SMAC document parsing (Docling + OCR)
 docling
 easyocr
+
+# Misc
+pyspellchecker

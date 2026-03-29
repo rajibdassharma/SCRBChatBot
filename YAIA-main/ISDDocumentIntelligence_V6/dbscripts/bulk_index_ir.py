@@ -115,7 +115,7 @@ def upload_file(backend_url: str, token: str, file_path: str, filename: str) -> 
             headers={"Authorization": f"Bearer {token}"},
             files={"file": (filename, fh, "application/octet-stream")},
             data={"collection": "IR", "source": "digital"},
-            timeout=600,
+            timeout=120,
         )
     resp.raise_for_status()
     return resp.json()
