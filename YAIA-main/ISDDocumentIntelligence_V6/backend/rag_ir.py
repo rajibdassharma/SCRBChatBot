@@ -185,41 +185,45 @@ def _extract_person_name(question: str) -> List[str]:
         return []
 
 
-def _find_document(question: str) -> Optional[Dict[str, str]]:
+def _find_documents(question: str) -> List[Dict[str, str]]:
     """
-    Find the IR document matching the person name in the question.
+    Find IR document(s) matching the person name in the question.
 
     1. LLM extracts the person's name from the question
-    2. MySQL AND search on doc_name
-    3. Fallback: OR search if AND returns nothing
+    2. Get all doc_names from MySQL
+    3. Python-based AND match: ALL name words must exist in the doc_name
 
-    Returns {doc_id, doc_name} or None.
+    Returns list of {doc_id, doc_name}. Empty list if none found.
     """
     name_words = _extract_person_name(question)
     if not name_words:
         print(f"[RAG-IR] No person name found in question")
-        return None
+        return []
 
     print(f"[RAG-IR] Searching for: {name_words}")
 
-    # AND match — all name words must be in filename
-    matched = find_ir_docs_by_name(name_words)
-    if matched:
-        if len(matched) == 1:
-            print(f"[RAG-IR] Found: {matched[0]['doc_name']}")
-            return matched[0]
-        best = max(matched, key=lambda d: sum(1 for w in name_words if w.lower() in d["doc_name"].lower()))
-        print(f"[RAG-IR] Best of {len(matched)}: {best['doc_name']}")
-        return best
+    # Get all distinct doc_names from MySQL
+    try:
+        from structured_tables import _get_conn
+        conn = _get_conn()
+        cur = conn.cursor()
+        cur.execute("SELECT DISTINCT doc_id, doc_name FROM ir_reports")
+        all_docs = cur.fetchall()
+        cur.close()
+        conn.close()
+    except Exception as e:
+        print(f"[RAG-IR] MySQL query failed: {e}")
+        return []
 
-    # OR fallback — at least one name word matches
-    matched = find_ir_docs_by_name_or(name_words, min_score=1)
-    if matched:
-        print(f"[RAG-IR] Found (OR): {matched[0]['doc_name']}")
-        return matched[0]
+    # Python AND match: all name words must be in the doc_name (case-insensitive)
+    matched = []
+    for doc in all_docs:
+        dn_lower = doc["doc_name"].lower()
+        if all(w.lower() in dn_lower for w in name_words):
+            matched.append(doc)
 
-    print(f"[RAG-IR] No document found for name: {name_words}")
-    return None
+    print(f"[RAG-IR] Found {len(matched)} document(s) for name: {name_words}")
+    return matched
 
 
 def _get_all_fields(doc_id: str) -> List[Dict[str, str]]:
@@ -353,19 +357,60 @@ def ask_ir(
 
     If doc_ids is provided, answers from those specific documents.
     Otherwise, auto-detects the person name and finds the document.
+    If multiple documents match, returns the list for user selection.
     """
     q = raw_question if raw_question else question
     print(f"[RAG-IR] Question: {q[:80]}")
 
     # Step 1: Find the document
     doc_name = ""
+
+    # Always extract name to detect name changes
+    name_words = _extract_person_name(q)
+    print(f"[RAG-IR] Extracted name: {name_words}")
+
+    if doc_ids:
+        # doc_id passed — check if the question is about a different person
+        # Get current doc_name for comparison
+        try:
+            from structured_tables import _get_conn
+            conn = _get_conn()
+            cur = conn.cursor()
+            cur.execute("SELECT DISTINCT doc_name FROM ir_reports WHERE doc_id = %s LIMIT 1", (doc_ids[0],))
+            row = cur.fetchone()
+            current_doc_name = row["doc_name"] if row else ""
+            cur.close()
+            conn.close()
+        except Exception:
+            current_doc_name = ""
+
+        # Check if extracted name matches current document
+        if name_words and current_doc_name:
+            name_in_doc = all(w.lower() in current_doc_name.lower() for w in name_words)
+            if not name_in_doc:
+                print(f"[RAG-IR] Name change detected: '{name_words}' not in '{current_doc_name}' — finding new document")
+                doc_ids = None  # Reset — will find new document below
+            else:
+                doc_name = current_doc_name
+                print(f"[RAG-IR] Same person — using stored doc: {current_doc_name}")
+
     if not doc_ids:
-        doc = _find_document(q)
-        if not doc:
+        matched_docs = _find_documents(q)
+
+        if not matched_docs:
             return {"answer": "Could not identify which document to search. Please include the person's name in your question.",
                     "used_chunks": []}
-        doc_ids = [doc["doc_id"]]
-        doc_name = doc["doc_name"]
+
+        if len(matched_docs) > 1:
+            return {
+                "multiple_docs": [{"doc_id": d["doc_id"], "doc_name": d["doc_name"]} for d in matched_docs],
+                "answer": None,
+                "used_chunks": [],
+            }
+
+        # Single match
+        doc_ids = [matched_docs[0]["doc_id"]]
+        doc_name = matched_docs[0]["doc_name"]
 
     # Step 2: Get all fields from MySQL
     all_fields = []
