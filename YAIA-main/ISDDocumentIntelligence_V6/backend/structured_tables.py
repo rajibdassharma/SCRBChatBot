@@ -421,11 +421,10 @@ def execute_sql_query(sql: str) -> List[Dict[str, Any]]:
     cur = conn.cursor()
     try:
         cur.execute(sql)
-        cols = [d[0] for d in cur.description]
-        rows = [dict(zip(cols, row)) for row in cur.fetchall()]
+        rows = cur.fetchall()
         cur.close()
         conn.close()
-        return rows
+        return [dict(r) for r in rows] if rows else []
     except Exception as e:
         cur.close()
         conn.close()

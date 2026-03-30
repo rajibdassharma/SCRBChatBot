@@ -43,13 +43,13 @@ sys.path.insert(0, BACKEND_DIR)
 os.chdir(BACKEND_DIR)
 
 # Backend imports (triggers init_db, loads .env)
-from config import CHROMA_PATH, EMBED_MODEL
+from config import CHROMA_PATH_SMAC, EMBED_MODEL
 from ollama_client import ollama_embed_batch
 from structured_tables import store_smac_report
 
 import chromadb
 from pypdf import PdfReader
-from rag import clear_documents_by_source
+from rag_smac import clear_documents_by_source
 
 
 # ---------------------------------------------------------------------------
@@ -592,8 +592,7 @@ def main():
         sys.exit(0)
 
     # Initialize ChromaDB
-    from config import CHROMA_PATH
-    chroma_client = chromadb.PersistentClient(path=CHROMA_PATH)
+    chroma_client = chromadb.PersistentClient(path=CHROMA_PATH_SMAC)
 
     # Process files
     start_time = time.time()

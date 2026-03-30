@@ -619,7 +619,7 @@ def _index_text_units(
         documents.append(u)
 
     _get_col(col).add(ids=ids, embeddings=embeddings, documents=documents, metadatas=metadatas)
-    _add_to_bm25(col, documents, metadatas)  # Disabled during bulk indexing
+    # _add_to_bm25(col, documents, metadatas)  # Disabled during bulk indexing
 
     return {"doc_id": doc_id, "doc_name": filename, "chunks": len(cleaned_units), "stats": extra_stats, "_chunks": cleaned_units}
 
@@ -1858,13 +1858,13 @@ def _answer_via_sql(question: str, collection_name: str) -> Optional[Dict[str, A
         schema = get_table_schema_description()
 
         sql_prompt = (
-            "You are a SQL expert for T-SQL (Microsoft SQL Server).\n"
+            "You are a SQL expert for MySQL 8.\n"
             "Given the database schema below and the user's question, generate a SQL SELECT query.\n\n"
             f"DATABASE SCHEMA:\n{schema}\n\n"
             f"USER QUESTION: {question}\n\n"
             "RULES:\n"
             "- Return ONLY the SQL query, no explanation.\n"
-            "- Use T-SQL syntax (TOP instead of LIMIT, NVARCHAR, etc.).\n"
+            "- Use MySQL syntax (LIMIT instead of TOP, etc.).\n"
             "- The table is a key-value store: each row has field_key (field name) and field_value.\n"
             "- To find a value, search field_key with LIKE '%keyword%' and return field_value.\n"
             "- Use LIKE with '%keyword%' for text matching.\n"
@@ -1910,33 +1910,28 @@ def _answer_via_sql(question: str, collection_name: str) -> Optional[Dict[str, A
         if not rows:
             return None
 
-        # Format results with LLM
-        import json
-        result_text = json.dumps(rows[:50], indent=2, default=str)
+        # Build answer directly in code — no LLM formatting needed
+        total_rows = len(rows)
 
-        answer_prompt = (
-            "You are an authorized internal AI assistant for Karnataka State Police (KSP).\n"
-            "ALWAYS respond in English only.\n"
-            "Given the user's question and the SQL query results, provide a clear, "
-            "factual answer based ONLY on the data returned.\n\n"
-            f"USER QUESTION: {question}\n\n"
-            f"SQL RESULTS ({len(rows)} rows):\n{result_text}\n\n"
-            "RULES:\n"
-            "- Answer in English only, regardless of the language of the data.\n"
-            "- Answer in clear, readable format.\n"
-            "- Present tabular data as a formatted list or table.\n"
-            "- If a field is NULL or missing for a person, show it as 'Not mentioned' or '-'.\n"
-            "- Include all relevant data from the results.\n"
-            "- Do NOT add information not present in the results.\n"
-        )
+        if not rows:
+            return None
 
-        answer = ollama_chat(
-            [{"role": "user", "content": answer_prompt}],
-            temperature=0.0,
-            model=PDF_MODEL,
-        )
+        # Group by doc_name and count occurrences
+        doc_counts = {}
+        for r in rows:
+            doc = str(r.get("doc_name", "Unknown") or "Unknown")
+            doc_counts[doc] = doc_counts.get(doc, 0) + 1
 
-        print(f"[RAG:NL→SQL] Answer generated from {len(rows)} SQL rows")
+        # Build markdown table
+        table_lines = []
+        table_lines.append("| # | Document | Occurrences |")
+        table_lines.append("| --- | --- | --- |")
+        for i, (doc, count) in enumerate(sorted(doc_counts.items()), 1):
+            table_lines.append(f"| {i} | {doc} | {count} |")
+
+        answer = f"**{total_rows} occurrences across {len(doc_counts)} documents**\n\n" + "\n".join(table_lines)
+
+        print(f"[RAG:NL→SQL] Built answer: {total_rows} rows, {len(doc_counts)} unique docs")
         return {"answer": answer, "sql": sql_query, "used_chunks": []}
 
     except Exception as e:

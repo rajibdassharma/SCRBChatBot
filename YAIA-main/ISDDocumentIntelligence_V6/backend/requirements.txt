@@ -8,7 +8,7 @@ pymysql
 gunicorn
 
 # Auth
-python-jose[cryptography]
+pyjwt
 passlib==1.7.4
 bcrypt==4.0.1
 
@@ -17,10 +17,16 @@ pypdf
 python-docx
 openpyxl
 
+# ML / Embeddings
+# NOTE: Install torch FIRST, then the rest.
+# For GPU: pip install torch --index-url https://download.pytorch.org/whl/cu124
+# For CPU (compatible with docling): pip install torch
+torch
+sentence-transformers
+
 # Vector DB & search
 chromadb
 rank-bm25
-sentence-transformers
 
 # SMAC document parsing (Docling + OCR)
 docling
