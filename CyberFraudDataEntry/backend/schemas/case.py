@@ -1,0 +1,231 @@
+from __future__ import annotations
+
+from datetime import date, datetime
+from decimal import Decimal
+from typing import List, Optional
+
+from pydantic import BaseModel, Field
+
+
+# ── Child Create schemas ──────────────────────────────────────────
+
+class AccompliceCreate(BaseModel):
+    where_met: Optional[str] = None
+    where_stayed: Optional[str] = None
+    interrogation_details: Optional[str] = None
+
+
+class AccusedDetailCreate(BaseModel):
+    photo_path: Optional[str] = None
+    email: Optional[str] = None
+    mobile: Optional[str] = None
+    occupation: Optional[str] = None
+    remarks: Optional[str] = None
+
+
+class ArrestCreate(BaseModel):
+    name: str
+    address: Optional[str] = None
+    email: Optional[str] = None
+    aadhar: Optional[str] = None
+    pan: Optional[str] = None
+    date_of_arrest: Optional[date] = None
+    statement: Optional[str] = None
+    accomplices: List[AccompliceCreate] = Field(default_factory=list)
+    accused_details: List[AccusedDetailCreate] = Field(default_factory=list)
+
+
+class PetitionCreate(BaseModel):
+    fir_registered: str = "no"
+    why_not: Optional[str] = None
+    nature: Optional[str] = None
+    petition_type: str = "amount_lost"
+    amount: Decimal = Decimal("0")
+
+
+class LienAccountCreate(BaseModel):
+    case_type: str = "FIR"
+    account_no: str
+    amount_lien_marked: Decimal = Decimal("0")
+    layer: int = 1
+    total_amount_in_account: Decimal = Decimal("0")
+    bank_name: Optional[str] = None
+
+
+class UnfreezeDetailCreate(BaseModel):
+    unfreeze_type: str = "letter"
+    crime_no: Optional[str] = None
+    bank_name: Optional[str] = None
+    account_no: Optional[str] = None
+    amount: Decimal = Decimal("0")
+
+
+class RefundCreate(BaseModel):
+    refunded: str = "no"
+    victim_name: Optional[str] = None
+    amount: Decimal = Decimal("0")
+    crime_no_or_petition_no: Optional[str] = None
+
+
+# ── Case Create schema ────────────────────────────────────────────
+
+class CaseCreate(BaseModel):
+    fir_no: str = ""
+    petition_no: Optional[str] = None
+    registration_date: date | None = None
+    case_type: str = "NCRP"
+    crime_type: str = "Internet"
+    facts: Optional[str] = None
+    status: str = "draft"  # draft, submitted
+
+    arrests: List[ArrestCreate] = Field(default_factory=list)
+    petitions: List[PetitionCreate] = Field(default_factory=list)
+    lien_accounts: List[LienAccountCreate] = Field(default_factory=list)
+    unfreeze_details: List[UnfreezeDetailCreate] = Field(default_factory=list)
+    refunds: List[RefundCreate] = Field(default_factory=list)
+
+
+# ── Child Response schemas ────────────────────────────────────────
+
+class AccompliceResponse(BaseModel):
+    id: int
+    arrest_id: int
+    where_met: Optional[str] = None
+    where_stayed: Optional[str] = None
+    interrogation_details: Optional[str] = None
+    created_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AccusedDetailResponse(BaseModel):
+    id: int
+    arrest_id: int
+    photo_path: Optional[str] = None
+    email: Optional[str] = None
+    mobile: Optional[str] = None
+    occupation: Optional[str] = None
+    remarks: Optional[str] = None
+    created_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class ArrestResponse(BaseModel):
+    id: int
+    case_id: int
+    name: str
+    address: Optional[str] = None
+    email: Optional[str] = None
+    aadhar: Optional[str] = None
+    pan: Optional[str] = None
+    date_of_arrest: Optional[date] = None
+    created_at: Optional[str] = None
+    accomplices: List[AccompliceResponse] = []
+    accused_details: List[AccusedDetailResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class PetitionResponse(BaseModel):
+    id: int
+    case_id: int
+    fir_registered: str
+    why_not: Optional[str] = None
+    nature: Optional[str] = None
+    petition_type: str
+    amount: float = 0
+    created_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class LienAccountResponse(BaseModel):
+    id: int
+    case_id: int
+    case_type: str
+    account_no: str
+    amount_lien_marked: float = 0
+    layer: int = 1
+    total_amount_in_account: float = 0
+    bank_name: Optional[str] = None
+    created_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class UnfreezeDetailResponse(BaseModel):
+    id: int
+    case_id: int
+    unfreeze_type: str
+    crime_no: Optional[str] = None
+    bank_name: Optional[str] = None
+    account_no: Optional[str] = None
+    amount: float = 0
+    created_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class RefundResponse(BaseModel):
+    id: int
+    case_id: int
+    refunded: str
+    victim_name: Optional[str] = None
+    amount: float = 0
+    crime_no_or_petition_no: Optional[str] = None
+    created_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+# ── Case Response schemas ─────────────────────────────────────────
+
+class CaseResponse(BaseModel):
+    id: int
+    unit_id: int
+    fir_no: str
+    petition_no: Optional[str] = None
+    registration_date: date | None = None
+    case_type: str
+    crime_type: str
+    facts: Optional[str] = None
+    status: str = "draft"
+    submitted_by: Optional[int] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+    arrests: List[ArrestResponse] = []
+    petitions: List[PetitionResponse] = []
+    lien_accounts: List[LienAccountResponse] = []
+    unfreeze_details: List[UnfreezeDetailResponse] = []
+    refunds: List[RefundResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class CaseListItem(BaseModel):
+    id: int
+    unit_id: int
+    fir_no: str
+    petition_no: Optional[str] = None
+    registration_date: date | None = None
+    case_type: str
+    crime_type: str
+    facts: Optional[str] = None
+    status: str = "draft"
+    submitted_by: Optional[int] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    arrest_count: int = 0
+
+    class Config:
+        from_attributes = True
