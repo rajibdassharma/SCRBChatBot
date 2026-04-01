@@ -56,7 +56,7 @@
 ```
 
 **Stack**:
-- **Backend**: Python 3.11+, FastAPI (async), SQLAlchemy 2.0 + asyncmy, JWT auth, bcrypt
+- **Backend**: Python 3.12+ (Ubuntu 24.04 default), FastAPI (async), SQLAlchemy 2.0 + asyncmy, JWT auth, bcrypt
 - **Frontend**: React 19, Vite, TypeScript, Tailwind CSS, Zustand, Recharts
 - **Database**: MySQL 8.0
 - **Proxy**: Nginx
@@ -113,8 +113,8 @@ sudo ufw enable
 sudo apt update && sudo apt upgrade -y
 
 sudo apt install -y \
-    python3.11 python3.11-venv python3.11-dev \
-    mysql-server-8.0 \
+    python3 python3-venv python3-dev \
+    mysql-server \
     nginx \
     curl git ufw htop unzip
 
@@ -182,7 +182,7 @@ sudo chown -R $USER:$USER /opt/cyberfraud
 
 # Create venv
 cd /opt/cyberfraud/backend
-python3.11 -m venv venv
+python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt gunicorn openpyxl
