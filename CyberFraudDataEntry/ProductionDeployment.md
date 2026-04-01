@@ -176,7 +176,8 @@ expire_logs_days = 14
 
 ```bash
 cd /opt
-sudo git clone https://github.com/rajibdassharma/CyberFraudDataEntry.git cyberfraud
+sudo git clone https://github.com/rajibdassharma/SCRBChatBot.git
+sudo cp -r SCRBChatBot/CyberFraudDataEntry cyberfraud
 sudo chown -R $USER:$USER /opt/cyberfraud
 
 # Create venv
@@ -466,8 +467,9 @@ Retain 30 days. Test restores periodically.
 
 ### Pull latest from GitHub
 ```bash
-cd /opt/cyberfraud
+cd /opt/SCRBChatBot
 git pull
+sudo cp -r CyberFraudDataEntry/* /opt/cyberfraud/
 ```
 
 ### Backend
