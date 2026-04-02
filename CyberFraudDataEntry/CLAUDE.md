@@ -261,3 +261,4 @@ npm run preview      # preview production build
 - Do NOT forget to handle 401 responses — the API client auto-redirects to login
 - When adding a new route, ALWAYS add the Pydantic schema in `schemas/`
 - When adding a new table, ALWAYS add the SQLAlchemy model in `models/` and update `__init__.py`
+- Do NOT push any code to GitHub unless it has been locally tested — this app is running in production

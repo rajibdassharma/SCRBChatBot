@@ -16,16 +16,21 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
 
   const res = await fetch(`${BASE}${path}`, { ...options, headers });
 
-  if (res.status === 401) {
-    localStorage.removeItem('token');
-    localStorage.removeItem('user');
-    window.location.href = '/login';
-    throw new Error('Unauthorized');
-  }
-
   if (!res.ok) {
     const err = await res.json().catch(() => ({ detail: res.statusText }));
-    throw new Error(err.detail || `HTTP ${res.status}`);
+    const message = err.detail || `HTTP ${res.status}`;
+
+    if (res.status === 401) {
+      // Only redirect if not on login/change-password page (i.e., session expired)
+      if (!path.includes('/auth/login') && !path.includes('/auth/change-password')) {
+        localStorage.removeItem('token');
+        localStorage.removeItem('user');
+        window.location.href = '/login';
+      }
+      throw new Error(message);
+    }
+
+    throw new Error(message);
   }
 
   if (res.status === 204 || res.headers.get('content-length') === '0') {
