@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import io
+import logging
 import tempfile
 from decimal import Decimal, InvalidOperation
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
+
+logger = logging.getLogger(__name__)
+MAX_EXCEL_SIZE = 10 * 1024 * 1024  # 10 MB
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -88,7 +92,7 @@ def _parse_excel(file_bytes: bytes, filename: str) -> dict:
         "withdrawal through atm": "atm_withdrawals",
     }
 
-    print(f"[ExcelParse] Sheets found: {wb.sheetnames}")
+    logger.debug(f"[ExcelParse] Sheets found: {wb.sheetnames}")
     for sname in wb.sheetnames:
         sname_lower = sname.lower().strip()
         target = None
@@ -102,9 +106,9 @@ def _parse_excel(file_bytes: bytes, filename: str) -> dict:
                 break
 
         if not target:
-            print(f"[ExcelParse] Skipped sheet '{sname}' — no match")
+            logger.debug(f"[ExcelParse] Skipped sheet '{sname}' — no match")
             continue
-        print(f"[ExcelParse] Sheet '{sname}' → {target}")
+        logger.debug(f"[ExcelParse] Sheet '{sname}' → {target}")
 
         ws = wb[sname]
         rows = list(ws.iter_rows(min_row=2, values_only=True))
@@ -192,7 +196,7 @@ def _parse_excel(file_bytes: bytes, filename: str) -> dict:
                     "date_of_action": _safe_str(row[12]) if len(row) > 12 else "",
                 })
 
-    print(f"[ExcelParse] Result: ack={result['acknowledgement_no']}, "
+    logger.info(f"[ExcelParse] Parsed: "
           f"transfers={len(result['money_transfers'])}, other={len(result['other_transactions'])}, "
           f"hold={len(result['transactions_on_hold'])}, <500={len(result['others_less_than_500'])}, "
           f"aeps={len(result['aeps_transactions'])}, atm={len(result['atm_withdrawals'])}")
@@ -496,6 +500,9 @@ async def upload_mule_excel(
 
         try:
             file_bytes = await f.read()
+            if len(file_bytes) > MAX_EXCEL_SIZE:
+                results.append({"filename": f.filename, "ok": False, "error": f"File too large. Maximum: {MAX_EXCEL_SIZE // (1024*1024)}MB"})
+                continue
             parsed = _parse_excel(file_bytes, f.filename)
 
             ack_no = parsed["acknowledgement_no"]
@@ -589,4 +596,5 @@ async def parse_mule_excel(
 
         return _convert(parsed)
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to parse Excel: {e}")
+        logger.error(f"Excel parsing error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to parse Excel file")

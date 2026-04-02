@@ -1,10 +1,14 @@
-from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, Depends, Query, UploadFile, File
+import logging
 import os
+import uuid
+from contextlib import asynccontextmanager
 from pathlib import Path
+
+from fastapi import FastAPI, Depends, Query, UploadFile, File, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import Response
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,25 +21,56 @@ from api.routes_case import router as case_router
 from api.routes_dashboard import router as dashboard_router
 from api.routes_mule_report import router as mule_report_router
 
+logger = logging.getLogger(__name__)
 
 UPLOAD_DIR = Path("uploads/photos")
+ALLOWED_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
+ALLOWED_PHOTO_MIMETYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
+MAX_PHOTO_SIZE = 5 * 1024 * 1024  # 5 MB
 
+
+# ── Security Headers Middleware ──────────────────────────────────────────
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response: Response = await call_next(request)
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["X-XSS-Protection"] = "1; mode=block"
+        response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+        if request.url.scheme == "https":
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        return response
+
+
+# ── App Setup ────────────────────────────────────────────────────────────
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    print("CyberFraud Data Entry backend starting...")
+    logger.info("CyberFraud Data Entry backend starting...")
     yield
-    print("Shutting down.")
+    logger.info("Shutting down.")
 
 
-app = FastAPI(title="CyberFraud Data Entry", version="2.0.0", lifespan=lifespan)
+docs_url = None if settings.DISABLE_DOCS else "/docs"
+openapi_url = None if settings.DISABLE_DOCS else "/openapi.json"
+
+app = FastAPI(
+    title="CyberFraud Data Entry",
+    version="2.0.0",
+    lifespan=lifespan,
+    docs_url=docs_url,
+    openapi_url=openapi_url,
+)
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=settings.CORS_ORIGINS.split(","),
+    allow_origins=[o.strip() for o in settings.CORS_ORIGINS.split(",") if o.strip()],
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
 )
 
 app.include_router(auth_router)
@@ -71,7 +106,7 @@ async def list_units_public(db: AsyncSession = Depends(get_db)):
 
 @app.get("/api/v1/police-stations/public")
 async def list_police_stations_public(
-    district: str = Query(None),
+    district: str = Query(None, max_length=100),
     db: AsyncSession = Depends(get_db),
 ):
     """Public endpoint for police station dropdown (no auth required)."""
@@ -106,11 +141,23 @@ async def upload_photo(
     _: None = Depends(get_current_user),
 ):
     UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
-    import uuid
-    ext = Path(file.filename).suffix if file.filename else ".jpg"
+
+    # Validate file extension
+    ext = Path(file.filename).suffix.lower() if file.filename else ""
+    if ext not in ALLOWED_PHOTO_EXTENSIONS:
+        raise HTTPException(status_code=400, detail=f"Invalid file type. Allowed: {', '.join(ALLOWED_PHOTO_EXTENSIONS)}")
+
+    # Validate MIME type
+    if file.content_type and file.content_type not in ALLOWED_PHOTO_MIMETYPES:
+        raise HTTPException(status_code=400, detail="Invalid file type")
+
+    # Read and validate size
+    content = await file.read()
+    if len(content) > MAX_PHOTO_SIZE:
+        raise HTTPException(status_code=413, detail=f"File too large. Maximum size: {MAX_PHOTO_SIZE // (1024*1024)}MB")
+
     filename = f"{uuid.uuid4()}{ext}"
     filepath = UPLOAD_DIR / filename
-    content = await file.read()
     filepath.write_bytes(content)
     return {"ok": True, "photo_path": f"uploads/photos/{filename}"}
 

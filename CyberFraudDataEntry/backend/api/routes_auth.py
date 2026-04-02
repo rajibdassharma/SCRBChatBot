@@ -1,6 +1,10 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import time
+import logging
+from collections import defaultdict
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,11 +16,31 @@ from schemas.auth import LoginRequest, TokenResponse, UserResponse
 from auth.security import verify_password, create_access_token
 from api.deps import get_current_user, CurrentUser
 
+logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+# ── Simple in-memory rate limiter for login ──────────────────────────────
+_login_attempts: dict[str, list[float]] = defaultdict(list)
+_MAX_ATTEMPTS = 5
+_WINDOW_SECONDS = 60
+
+
+def _check_rate_limit(ip: str):
+    now = time.time()
+    attempts = _login_attempts[ip]
+    # Remove attempts outside the window
+    _login_attempts[ip] = [t for t in attempts if now - t < _WINDOW_SECONDS]
+    if len(_login_attempts[ip]) >= _MAX_ATTEMPTS:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Too many login attempts. Try again in {_WINDOW_SECONDS} seconds.",
+        )
+    _login_attempts[ip].append(now)
 
 
 @router.post("/login", response_model=TokenResponse)
-async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
+async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
+    _check_rate_limit(request.client.host if request.client else "unknown")
     # Look up user by username
     user = (await db.execute(
         select(User).where(User.username == body.username)

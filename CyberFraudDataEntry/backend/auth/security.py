@@ -20,7 +20,8 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_access_token(data: dict) -> str:
     to_encode = data.copy()
-    # No expiry — token is valid until user logs out
+    expire = datetime.now(timezone.utc) + timedelta(minutes=settings.JWT_EXPIRE_MINUTES)
+    to_encode["exp"] = expire
     return jwt.encode(to_encode, settings.JWT_SECRET, algorithm=settings.JWT_ALGORITHM)
 
 
@@ -28,7 +29,6 @@ def decode_token(token: str) -> dict | None:
     try:
         payload = jwt.decode(
             token, settings.JWT_SECRET, algorithms=[settings.JWT_ALGORITHM],
-            options={"verify_exp": False},
         )
         return payload
     except JWTError:
