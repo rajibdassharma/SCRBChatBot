@@ -58,7 +58,12 @@ export function LoginForm() {
         unit_name: res.unit_name ?? selectedDistrict,
         ps_name: res.ps_name ?? selectedPS,
       });
-      navigate(res.role === 'admin' ? '/dashboard' : '/cases');
+
+      if (res.must_change_password) {
+        navigate('/change-password');
+      } else {
+        navigate(res.role === 'admin' ? '/dashboard' : '/cases');
+      }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
     } finally {

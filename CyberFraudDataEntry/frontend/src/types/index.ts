@@ -16,6 +16,7 @@ export interface LoginResponse {
   unit_name: string | null;
   ps_id: number | null;
   ps_name: string | null;
+  must_change_password: boolean;
 }
 
 export interface UnitInfo {

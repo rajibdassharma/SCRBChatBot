@@ -16,6 +16,12 @@ class TokenResponse(BaseModel):
     unit_name: str | None = None
     ps_id: int | None = None
     ps_name: str | None = None
+    must_change_password: bool = False
+
+
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str
 
 
 class UserResponse(BaseModel):

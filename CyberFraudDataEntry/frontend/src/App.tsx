@@ -12,6 +12,7 @@ import { MuleUpdatePage } from './pages/MuleUpdatePage';
 import { MuleUploadPage } from './pages/MuleUploadPage';
 import { PetitionEntryPage } from './pages/PetitionEntryPage';
 import { PetitionUpdatePage } from './pages/PetitionUpdatePage';
+import { ChangePasswordPage } from './pages/ChangePasswordPage';
 
 function App() {
   const { logout } = useAuthStore();
@@ -24,6 +25,7 @@ function App() {
   return (
     <Routes>
       <Route path="/login" element={<LoginPage />} />
+      <Route path="/change-password" element={<ChangePasswordPage />} />
 
       <Route
         element={

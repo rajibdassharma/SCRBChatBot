@@ -12,6 +12,13 @@ export async function getMe(): Promise<User> {
   return apiFetch<User>('/api/v1/auth/me');
 }
 
+export async function changePassword(currentPassword: string, newPassword: string): Promise<{ok: boolean; message: string}> {
+  return apiFetch('/api/v1/auth/change-password', {
+    method: 'POST',
+    body: JSON.stringify({ current_password: currentPassword, new_password: newPassword }),
+  });
+}
+
 export async function getDistrictsPublic(): Promise<{name: string}[]> {
   const base = import.meta.env.VITE_API_BASE ?? '';
   const res = await fetch(`${base}/api/v1/districts/public`);

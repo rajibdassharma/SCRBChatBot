@@ -14,4 +14,5 @@ class User(Base):
     unit_id = Column(Integer, ForeignKey("units.id"), nullable=True)
     ps_id = Column(Integer, ForeignKey("police_stations.id"), nullable=True)
     is_active = Column(Boolean, default=True)
+    must_change_password = Column(Boolean, default=True, nullable=False, server_default="1")
     created_at = Column(DateTime, server_default=func.now())

@@ -12,8 +12,8 @@ from database import get_db
 from models.user import User
 from models.unit import Unit
 from models.police_station import PoliceStation
-from schemas.auth import LoginRequest, TokenResponse, UserResponse
-from auth.security import verify_password, create_access_token
+from schemas.auth import LoginRequest, TokenResponse, UserResponse, ChangePasswordRequest
+from auth.security import verify_password, hash_password, create_access_token
 from api.deps import get_current_user, CurrentUser
 
 logger = logging.getLogger(__name__)
@@ -73,7 +73,37 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
         unit_name=unit_name,
         ps_id=user.ps_id,
         ps_name=ps_name,
+        must_change_password=bool(user.must_change_password),
     )
+
+
+@router.post("/change-password")
+async def change_password(
+    body: ChangePasswordRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    user = (await db.execute(
+        select(User).where(User.id == current_user.user_id)
+    )).scalar_one_or_none()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not verify_password(body.current_password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Current password is incorrect")
+
+    if len(body.new_password) < 8:
+        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
+
+    if body.new_password == body.current_password:
+        raise HTTPException(status_code=400, detail="New password must be different from current password")
+
+    user.hashed_password = hash_password(body.new_password)
+    user.must_change_password = False
+    await db.commit()
+
+    return {"ok": True, "message": "Password changed successfully"}
 
 
 @router.get("/me", response_model=UserResponse)
