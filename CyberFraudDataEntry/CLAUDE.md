@@ -9,6 +9,18 @@ See @Architecture.md for system design decisions and detailed schema reference.
 See @SPEC.md for product specification and feature details.
 See @PLAN.md for roadmap and implementation status.
 
+## Deployment Context
+
+- **Multi-user** application — 44 Cyber Command Police Stations across 36 districts
+- **88 users** (2 per station: admin + unit_user), seeded via `seed.py`
+- **Production server**: Ubuntu 24.04, Nginx + Gunicorn + Uvicorn on port 8000
+- **Frontend**: built `dist/` served by Nginx on port 80/443 (HTTPS with self-signed cert)
+- **Server paths**: code at `/opt/cyberfraud/`, systemd service `cyberfraud-backend`
+- **MySQL password on server**: `CyberFraud@KSP2026`, database `cyber_fraud_dsr`
+- **Network**: Internal government network (KSWAN), accessible by all 44 stations
+- **Updates**: clone from SCRBChatBot monorepo, copy to `/opt/cyberfraud/`
+- **This is NOT the ISD Document Intelligence project** — that is a separate single-user app for document analysis
+
 ---
 
 ## Repo structure

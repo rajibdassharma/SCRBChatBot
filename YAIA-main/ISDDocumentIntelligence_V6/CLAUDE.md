@@ -6,6 +6,18 @@ frontend, MySQL database, ChromaDB vector store. Fully offline with local LLMs.
 
 See @Architecture.md for system design decisions and detailed schema reference.
 
+## Deployment Context
+
+- **Single user** application — one analyst on a dedicated server
+- **Server access** via RDP over dedicated LAN connection
+- **No internet** on the server — fully air-gapped
+- **Backend**: uvicorn on port 8003
+- **Frontend**: `python3 -m http.server 5175` serving built `dist/` folder (no Nginx, no Vite dev server)
+- **Server paths**: code at `/opt/isd/ISDDocumentIntelligence_V6/`, shared venv at `/opt/isd/venv/`
+- **MySQL password on server**: `isdadmin` (local dev: `Sandy@411`)
+- **Updates**: build `dist/` locally on Windows, copy via USB to server. No `npm install` on server.
+- **This is NOT the CyberFraud project** — that is a separate multi-user app for 44 police stations
+
 ---
 
 ## Repo structure
