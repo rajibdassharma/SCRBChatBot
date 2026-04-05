@@ -1849,6 +1849,109 @@ def _is_aggregate_question(question: str) -> bool:
     return bool(_AGGREGATE_PATTERNS.search(question))
 
 
+def _answer_via_chromadb_search(question: str, collection_name: str) -> Optional[Dict[str, Any]]:
+    """
+    Answer aggregate questions by searching ChromaDB full text (all chunks).
+    Finds keyword occurrences across all documents and counts per document.
+    """
+    try:
+        # Find the correct collection — may be case-scoped (e.g., SMAC_c2)
+        col = collection_name
+        if col not in _col_cache:
+            # Try to find a matching case-scoped collection
+            matching = [k for k in _col_cache if k.startswith(collection_name)]
+            if matching:
+                col = matching[0]
+                print(f"[RAG:ChromaDB-Search] Using case-scoped collection: '{col}'")
+            else:
+                print(f"[RAG:ChromaDB-Search] Collection '{col}' not in cache. Available: {list(_col_cache.keys())}")
+                return None
+
+        collection = _col_cache[col]
+        count = collection.count()
+        print(f"[RAG:ChromaDB-Search] Collection '{col}' has {count} chunks")
+        if count == 0:
+            # Fall back to base collection (e.g., SMAC_c2 → SMAC)
+            base_name = collection_name.split("_c")[0] if "_c" in collection_name else None
+            if base_name and base_name != col:
+                collection = _get_col(base_name)
+                count = collection.count()
+                print(f"[RAG:ChromaDB-Search] Falling back to base collection '{base_name}' ({count} chunks)")
+                if count == 0:
+                    return None
+            else:
+                return None
+
+        # Extract keywords from question — remove stop words and aggregate words
+        _agg_stop = {
+            "how", "many", "times", "occurrences", "count", "total", "number",
+            "are", "there", "the", "of", "in", "is", "and", "or", "between",
+            "documents", "document", "all", "find", "show", "list", "give",
+            "what", "which", "from", "appear", "appears", "occurred", "related",
+            "to", "a", "an", "do", "does",
+        }
+        words = re.findall(r"[a-zA-Z0-9]+", question)
+        keywords = [w for w in words if w.lower() not in _agg_stop and len(w) > 1]
+
+        if not keywords:
+            return None
+
+        print(f"[RAG:ChromaDB-Search] Keywords: {keywords}")
+
+        # Search all chunks for keyword matches
+        # Fetch all documents from collection in batches
+        BATCH = 500
+        all_docs = []
+        all_metas = []
+        offset = 0
+        while True:
+            batch = collection.get(include=["documents", "metadatas"], limit=BATCH, offset=offset)
+            if not batch["documents"]:
+                break
+            all_docs.extend(batch["documents"])
+            all_metas.extend(batch["metadatas"])
+            if len(batch["documents"]) < BATCH:
+                break
+            offset += BATCH
+
+        # Find chunks containing ALL keywords (case-insensitive)
+        doc_counts: Dict[str, int] = {}
+        for doc_text, meta in zip(all_docs, all_metas):
+            text_lower = doc_text.lower()
+            if all(kw.lower() in text_lower for kw in keywords):
+                doc_name = meta.get("doc_name", "Unknown")
+                doc_counts[doc_name] = doc_counts.get(doc_name, 0) + 1
+
+        if not doc_counts:
+            # Try with ANY keyword instead of ALL
+            for doc_text, meta in zip(all_docs, all_metas):
+                text_lower = doc_text.lower()
+                if any(kw.lower() in text_lower for kw in keywords):
+                    doc_name = meta.get("doc_name", "Unknown")
+                    doc_counts[doc_name] = doc_counts.get(doc_name, 0) + 1
+
+        if not doc_counts:
+            return None
+
+        total = sum(doc_counts.values())
+
+        # Build markdown table
+        table_lines = []
+        table_lines.append("| # | Document | Occurrences |")
+        table_lines.append("| --- | --- | --- |")
+        for i, (doc, count) in enumerate(sorted(doc_counts.items()), 1):
+            table_lines.append(f"| {i} | {doc} | {count} |")
+
+        answer = f"**Found {total} occurrences of '{' '.join(keywords)}' across {len(doc_counts)} documents**\n\n" + "\n".join(table_lines)
+
+        print(f"[RAG:ChromaDB-Search] Found {total} occurrences across {len(doc_counts)} documents")
+        return {"answer": answer, "used_chunks": []}
+
+    except Exception as e:
+        print(f"[RAG:ChromaDB-Search] Failed: {e}")
+        return None
+
+
 def _answer_via_sql(question: str, collection_name: str) -> Optional[Dict[str, Any]]:
     """
     Answer a question using NL→SQL pipeline against document_fields table.
@@ -1856,6 +1959,9 @@ def _answer_via_sql(question: str, collection_name: str) -> Optional[Dict[str, A
     """
     try:
         schema = get_table_schema_description()
+
+        # Determine the correct table based on collection
+        target_table = "smac_reports" if "SMAC" in collection_name.upper() else "ir_reports"
 
         sql_prompt = (
             "You are a SQL expert for MySQL 8.\n"
@@ -1865,11 +1971,11 @@ def _answer_via_sql(question: str, collection_name: str) -> Optional[Dict[str, A
             "RULES:\n"
             "- Return ONLY the SQL query, no explanation.\n"
             "- Use MySQL syntax (LIMIT instead of TOP, etc.).\n"
+            f"- IMPORTANT: You MUST query the `{target_table}` table ONLY. Do NOT use any other table.\n"
             "- The table is a key-value store: each row has field_key (field name) and field_value.\n"
             "- To find a value, search field_key with LIKE '%keyword%' and return field_value.\n"
             "- Use LIKE with '%keyword%' for text matching.\n"
-            f"- Filter by collection = '{collection_name}' to limit to the right document type.\n"
-            "- To get multiple fields per document, self-join document_fields on doc_id.\n"
+            "- To get multiple fields per document, self-join on doc_id.\n"
             "- Use LEFT JOIN when one field might be missing (show NULL instead of omitting row).\n"
             "- The name of the accused/criminal/convict/subject is stored with field_key LIKE '%Name%'.\n"
             "  Variations: 'Name', 'Name of the Subject', 'Name of the Accused'.\n"
@@ -2103,8 +2209,16 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
             except Exception as e:
                 print(f"[RAG:IR] Name-based scoping failed: {e}")
 
-    # ── Smart routing: aggregate/cross-document questions → NL→SQL ─────
+    # ── Smart routing: aggregate/cross-document questions ─────
     if _is_aggregate_question(q_for_keywords):
+        _is_smac_agg = collection_name == "SMAC" or collection_name.startswith("SMAC_c")
+        if _is_smac_agg:
+            print(f"[RAG] Aggregate question detected — routing through ChromaDB full-text search")
+            chromadb_result = _answer_via_chromadb_search(q_for_keywords, collection_name)
+            if chromadb_result:
+                return chromadb_result
+            print(f"[RAG] ChromaDB search returned no results — trying NL→SQL")
+
         print(f"[RAG] Aggregate question detected — routing through NL→SQL pipeline")
         sql_result = _answer_via_sql(question, collection_name)
         if sql_result:
@@ -2296,6 +2410,17 @@ def ask_docs(question: str, doc_ids: Optional[List[str]] = None, top_k: int = 12
         context = context[:MAX_CONTEXT_CHARS]
 
     is_summarize = "summar" in question.lower()
+
+    # ── Direct field return: skip LLM if we have exact field match for SMAC ──
+    if _is_smac and detected_field and results and len(results) <= 3:
+        # We have exact field matches — return raw values without LLM rephrasing
+        field_values = []
+        for doc_text, meta in results:
+            doc_name = meta.get("doc_name", "Unknown")
+            field_values.append(f"**{doc_name}**\n\n{doc_text}")
+        direct_answer = "\n\n---\n\n".join(field_values)
+        print(f"[RAG] Direct field return: {len(results)} field(s) for '{detected_field}' — skipping LLM")
+        return {"answer": direct_answer, "used_chunks": used}
 
     # Detect list-type questions — needs exhaustive extraction, not just top-match
     # Use raw question for the LLM prompt (avoids sending conversation history as noise)

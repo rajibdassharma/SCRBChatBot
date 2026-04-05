@@ -28,6 +28,7 @@ from location_extractor import (
     clear_locations_data,
     get_extracted_doc_ids_for_locations,
 )
+from ir_translator import extract_tables_and_narrative, translate_kannada_to_english, generate_translated_docx
 from structured_tables import (
     get_all_smac_reports,
     get_smac_report_by_doc,
@@ -1174,3 +1175,95 @@ def rating_stats(current_user: CurrentUser = Depends(get_current_user)):
         return {"ok": False, "error": str(e)}
     finally:
         conn.close()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  TRANSLATION — Kannada → English for IR Documents
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.post("/translate/upload")
+async def translate_upload(
+    file: UploadFile = File(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Upload an IR DOCX, extract tables + Kannada narrative, translate to English."""
+    if not file.filename:
+        raise HTTPException(400, "No file provided")
+
+    ext = file.filename.rsplit(".", 1)[-1].lower() if "." in file.filename else ""
+    if ext not in ("docx", "doc"):
+        raise HTTPException(400, "Only DOCX/DOC files are supported for translation")
+
+    with tempfile.NamedTemporaryFile(delete=False, suffix=f".{ext}") as tmp:
+        tmp.write(await file.read())
+        tmp_path = tmp.name
+
+    try:
+        result = extract_tables_and_narrative(tmp_path)
+        if "error" in result:
+            raise HTTPException(500, result["error"])
+
+        narrative = result["narrative"]
+        if not narrative.strip():
+            return {
+                "ok": True,
+                "filename": result["filename"],
+                "tables": result["tables"],
+                "kannada_text": "",
+                "english_text": "",
+                "message": "No narrative text found after tables.",
+            }
+
+        english_text = translate_kannada_to_english(narrative)
+
+        return {
+            "ok": True,
+            "filename": result["filename"],
+            "tables": result["tables"],
+            "kannada_text": narrative,
+            "english_text": english_text,
+        }
+    finally:
+        os.unlink(tmp_path)
+
+
+class TranslateTextRequest(BaseModel):
+    text: str
+
+
+@app.post("/translate/text")
+def translate_text(
+    body: TranslateTextRequest,
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Translate free-form Kannada text to English."""
+    if not body.text.strip():
+        raise HTTPException(400, "No text provided")
+
+    english = translate_kannada_to_english(body.text.strip())
+    return {"ok": True, "english_text": english}
+
+
+@app.post("/translate/download")
+async def translate_download(
+    filename: str = Form(...),
+    tables: str = Form(...),
+    english_text: str = Form(...),
+    current_user: CurrentUser = Depends(get_current_user),
+):
+    """Generate a translated DOCX with original tables + approved English text."""
+    import json as _json
+    from fastapi.responses import FileResponse
+
+    try:
+        tables_data = _json.loads(tables)
+    except Exception:
+        raise HTTPException(400, "Invalid tables data")
+
+    output_path = generate_translated_docx(tables_data, english_text, filename)
+
+    return FileResponse(
+        output_path,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        filename=f"{os.path.splitext(filename)[0]}_translated.docx",
+    )

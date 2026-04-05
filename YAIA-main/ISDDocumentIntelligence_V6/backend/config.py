@@ -12,6 +12,7 @@ JWT_EXPIRE_HOURS = int(os.getenv("JWT_EXPIRE_HOURS", "24"))
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 PDF_MODEL = os.getenv("PDF_MODEL", "llama3.1:8b")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
+TRANSLATE_MODEL = os.getenv("TRANSLATE_MODEL", "translategemma:12b")
 
 CHROMA_PATH_SMAC = os.getenv("CHROMA_PATH_SMAC", "chroma_db_smac_v6")
 CHROMA_PATH_IR = os.getenv("CHROMA_PATH_IR", "chroma_db_ir_v6")

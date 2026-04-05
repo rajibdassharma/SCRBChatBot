@@ -8,7 +8,7 @@ import './App.css'
 
 const API_BASE = import.meta.env.VITE_API_BASE || 'http://localhost:8003'
 
-const TABS = ['Document Intelligence', 'Connections Map', 'Activity Timeline', 'QA Testing'] as const
+const TABS = ['Document Intelligence', 'Connections Map', 'Activity Timeline', 'Translation', 'QA Testing'] as const
 type TabName = (typeof TABS)[number]
 
 const ENTITY_COLORS: Record<string, string> = {
@@ -338,6 +338,22 @@ export default function App() {
   const [locationExtractionDone, setLocationExtractionDone] = useState(false)
   const [selectedLocation, setSelectedLocation] = useState<LocationData | null>(null)
   const locationPollRef = useRef<number | null>(null)
+
+  // Translation state
+  const [transFile, setTransFile] = useState<File | null>(null)
+  const [transLoading, setTransLoading] = useState(false)
+  const [transFilename, setTransFilename] = useState('')
+  const [transTables, setTransTables] = useState<string[][][]>([])
+  const [transKannada, setTransKannada] = useState('')
+  const [transEnglish, setTransEnglish] = useState('')
+  const [transError, setTransError] = useState('')
+  const [transDownloading, setTransDownloading] = useState(false)
+  const transFileInputRef = useRef<HTMLInputElement | null>(null)
+  // Text translation state
+  const [freeKannada, setFreeKannada] = useState('')
+  const [freeEnglish, setFreeEnglish] = useState('')
+  const [freeLoading, setFreeLoading] = useState(false)
+  const [freeError, setFreeError] = useState('')
 
   // QA Testing state
   const [qaFile, setQaFile] = useState<File | null>(null)
@@ -2906,6 +2922,256 @@ export default function App() {
                 )}
               </div>
             </div>
+          </section>
+        </div>
+        )}
+
+        {activeTab === 'Translation' && (
+        <div className="main-panel">
+          <section className="ksp-card" style={{ padding: '24px' }}>
+            <h2 style={{ color: 'var(--ksp-navy)', marginBottom: '16px', fontSize: '1.2rem', fontWeight: 700 }}>
+              IR Translation — Kannada to English
+            </h2>
+            {/* ── Free Text Translation ── */}
+            <div style={{ background: '#f8f9fa', borderRadius: '12px', padding: '20px', marginBottom: '24px', border: '1px solid #dee2e6' }}>
+              <h3 style={{ color: 'var(--ksp-navy)', fontSize: '0.95rem', fontWeight: 700, marginBottom: '12px' }}>
+                Quick Text Translation
+              </h3>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px', marginBottom: '12px' }}>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--ksp-navy)', marginBottom: '4px' }}>Kannada</label>
+                  <textarea
+                    value={freeKannada}
+                    onChange={(e) => setFreeKannada(e.target.value)}
+                    placeholder="Paste Kannada text here..."
+                    style={{
+                      width: '100%', minHeight: '150px', border: '2px solid var(--ksp-navy)',
+                      borderRadius: '10px', padding: '12px', fontSize: '0.85rem', lineHeight: '1.7',
+                      resize: 'vertical', fontFamily: 'inherit',
+                    }}
+                  />
+                </div>
+                <div>
+                  <label style={{ display: 'block', fontSize: '0.8rem', fontWeight: 600, color: 'var(--ksp-navy)', marginBottom: '4px' }}>English</label>
+                  <textarea
+                    value={freeEnglish}
+                    onChange={(e) => setFreeEnglish(e.target.value)}
+                    placeholder="Translation will appear here..."
+                    style={{
+                      width: '100%', minHeight: '150px', background: '#fff', border: '1px solid #dee2e6',
+                      borderRadius: '10px', padding: '12px', fontSize: '0.85rem', lineHeight: '1.7',
+                      resize: 'vertical', fontFamily: 'inherit',
+                    }}
+                  />
+                </div>
+              </div>
+              <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="btn-yellow"
+                  disabled={!freeKannada.trim() || freeLoading}
+                  onClick={async () => {
+                    setFreeLoading(true)
+                    setFreeError('')
+                    setFreeEnglish('')
+                    try {
+                      const token = localStorage.getItem('isd_token')
+                      const res = await fetch(`${API_BASE}/translate/text`, {
+                        method: 'POST',
+                        headers: {
+                          'Content-Type': 'application/json',
+                          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+                        },
+                        body: JSON.stringify({ text: freeKannada }),
+                      })
+                      const data = await res.json()
+                      if (!res.ok || !data.ok) {
+                        setFreeError(data.detail || 'Translation failed')
+                      } else {
+                        setFreeEnglish(data.english_text || '')
+                      }
+                    } catch (err) {
+                      setFreeError(err instanceof Error ? err.message : 'Translation failed')
+                    } finally {
+                      setFreeLoading(false)
+                    }
+                  }}
+                >
+                  {freeLoading ? 'Translating...' : 'Translate'}
+                </button>
+                <button
+                  type="button"
+                  style={{ background: 'transparent', border: '1px solid #ccc', borderRadius: '8px', padding: '6px 14px', fontSize: '0.8rem', cursor: 'pointer' }}
+                  onClick={() => { setFreeKannada(''); setFreeEnglish(''); setFreeError(''); }}
+                >
+                  Clear
+                </button>
+                {freeError && <span style={{ color: 'var(--ksp-red)', fontSize: '0.8rem' }}>{freeError}</span>}
+              </div>
+            </div>
+
+            {/* ── IR Document Translation ── */}
+            <p style={{ color: '#666', fontSize: '0.85rem', marginBottom: '16px' }}>
+              Upload an IR document (DOCX). The tables will be preserved and the Kannada narrative will be translated to English.
+            </p>
+
+            {/* Upload row */}
+            <div style={{ display: 'flex', gap: '12px', alignItems: 'center', marginBottom: '20px' }}>
+              <button
+                type="button"
+                className="btn-yellow"
+                onClick={() => transFileInputRef.current?.click()}
+              >
+                Choose IR File
+              </button>
+              <input
+                ref={transFileInputRef}
+                type="file"
+                accept=".docx,.doc"
+                style={{ display: 'none' }}
+                onChange={(e) => {
+                  const f = e.target.files?.[0] ?? null
+                  setTransFile(f)
+                  setTransError('')
+                  setTransKannada('')
+                  setTransEnglish('')
+                  setTransTables([])
+                  setTransFilename('')
+                }}
+              />
+              {transFile && (
+                <span style={{ color: 'var(--ksp-navy)', fontWeight: 600, fontSize: '0.85rem' }}>
+                  {transFile.name}
+                </span>
+              )}
+              <button
+                type="button"
+                className="btn-yellow"
+                disabled={!transFile || transLoading}
+                onClick={async () => {
+                  if (!transFile) return
+                  setTransLoading(true)
+                  setTransError('')
+                  setTransKannada('')
+                  setTransEnglish('')
+                  try {
+                    const fd = new FormData()
+                    fd.append('file', transFile)
+                    const token = localStorage.getItem('isd_token')
+                    const res = await fetch(`${API_BASE}/translate/upload`, {
+                      method: 'POST',
+                      headers: token ? { Authorization: `Bearer ${token}` } : {},
+                      body: fd,
+                    })
+                    const data = await res.json()
+                    if (!res.ok || !data.ok) {
+                      setTransError(data.detail || data.error || 'Translation failed')
+                    } else {
+                      setTransFilename(data.filename)
+                      setTransTables(data.tables || [])
+                      setTransKannada(data.kannada_text || '')
+                      setTransEnglish(data.english_text || '')
+                      if (data.message) setTransError(data.message)
+                    }
+                  } catch (err) {
+                    setTransError(err instanceof Error ? err.message : 'Translation failed')
+                  } finally {
+                    setTransLoading(false)
+                  }
+                }}
+              >
+                {transLoading ? 'Translating...' : 'Upload & Translate'}
+              </button>
+            </div>
+
+            {transError && (
+              <div style={{ background: 'rgba(177,0,0,0.08)', color: 'var(--ksp-red)', padding: '12px 16px', borderRadius: '10px', marginBottom: '16px', fontSize: '0.85rem', fontWeight: 600 }}>
+                {transError}
+              </div>
+            )}
+
+            {/* Side-by-side view */}
+            {transKannada && (
+            <>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px', marginBottom: '20px' }}>
+                {/* Kannada original */}
+                <div>
+                  <h3 style={{ color: 'var(--ksp-navy)', fontSize: '0.95rem', fontWeight: 700, marginBottom: '8px' }}>
+                    Original (Kannada)
+                  </h3>
+                  <div style={{
+                    background: '#f8f9fa', border: '1px solid #dee2e6', borderRadius: '10px',
+                    padding: '16px', maxHeight: '500px', overflowY: 'auto', fontSize: '0.85rem',
+                    lineHeight: '1.7', whiteSpace: 'pre-wrap',
+                  }}>
+                    {transKannada}
+                  </div>
+                </div>
+
+                {/* English translation (editable) */}
+                <div>
+                  <h3 style={{ color: 'var(--ksp-navy)', fontSize: '0.95rem', fontWeight: 700, marginBottom: '8px' }}>
+                    English Translation
+                    <span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#888', marginLeft: '8px' }}>(editable)</span>
+                  </h3>
+                  <textarea
+                    value={transEnglish}
+                    onChange={(e) => setTransEnglish(e.target.value)}
+                    style={{
+                      width: '100%', minHeight: '500px', background: '#fff', border: '2px solid var(--ksp-navy)',
+                      borderRadius: '10px', padding: '16px', fontSize: '0.85rem', lineHeight: '1.7',
+                      resize: 'vertical', fontFamily: 'inherit',
+                    }}
+                  />
+                </div>
+              </div>
+
+              {/* Approve & Download */}
+              <div style={{ display: 'flex', gap: '12px', alignItems: 'center' }}>
+                <button
+                  type="button"
+                  className="btn-yellow"
+                  disabled={transDownloading || !transEnglish.trim()}
+                  onClick={async () => {
+                    setTransDownloading(true)
+                    try {
+                      const fd = new FormData()
+                      fd.append('filename', transFilename)
+                      fd.append('tables', JSON.stringify(transTables))
+                      fd.append('english_text', transEnglish)
+                      const token = localStorage.getItem('isd_token')
+                      const res = await fetch(`${API_BASE}/translate/download`, {
+                        method: 'POST',
+                        headers: token ? { Authorization: `Bearer ${token}` } : {},
+                        body: fd,
+                      })
+                      if (!res.ok) {
+                        const err = await res.json().catch(() => ({}))
+                        setTransError(err.detail || 'Download failed')
+                        return
+                      }
+                      const blob = await res.blob()
+                      const url = URL.createObjectURL(blob)
+                      const a = document.createElement('a')
+                      a.href = url
+                      a.download = `${transFilename.replace(/\.[^.]+$/, '')}_translated.docx`
+                      a.click()
+                      URL.revokeObjectURL(url)
+                    } catch (err) {
+                      setTransError(err instanceof Error ? err.message : 'Download failed')
+                    } finally {
+                      setTransDownloading(false)
+                    }
+                  }}
+                >
+                  {transDownloading ? 'Generating...' : 'Approve & Download DOCX'}
+                </button>
+                <span style={{ color: '#888', fontSize: '0.8rem' }}>
+                  Review the translation, edit if needed, then download the final document.
+                </span>
+              </div>
+            </>
+            )}
           </section>
         </div>
         )}
