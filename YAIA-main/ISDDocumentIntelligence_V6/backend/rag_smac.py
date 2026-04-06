@@ -99,9 +99,16 @@ def _rebuild_bm25(col: str):
         collection = _col_cache[col]
         count = collection.count()
         if count == 0:
-            state["docs"], state["metas"], state["index"] = [], [], None
-            print(f"[BM25] No documents in '{col}', index empty")
-            return
+            # Fall back to base collection (e.g., SMAC_c2 → SMAC)
+            base_name = col.split("_c")[0] if "_c" in col else None
+            if base_name and base_name != col:
+                collection = _get_col(base_name)
+                count = collection.count()
+                print(f"[BM25] '{col}' empty, falling back to '{base_name}' ({count} chunks)")
+            if count == 0:
+                state["docs"], state["metas"], state["index"] = [], [], None
+                print(f"[BM25] No documents in '{col}', index empty")
+                return
 
         # Fetch in batches to avoid SQLite "too many SQL variables" error
         BATCH = 500
@@ -1888,7 +1895,8 @@ def _answer_via_chromadb_search(question: str, collection_name: str) -> Optional
             "are", "there", "the", "of", "in", "is", "and", "or", "between",
             "documents", "document", "all", "find", "show", "list", "give",
             "what", "which", "from", "appear", "appears", "occurred", "related",
-            "to", "a", "an", "do", "does",
+            "to", "a", "an", "do", "does", "word", "words", "phrase", "term",
+            "mention", "mentions", "mentioned", "reference", "references",
         }
         words = re.findall(r"[a-zA-Z0-9]+", question)
         keywords = [w for w in words if w.lower() not in _agg_stop and len(w) > 1]
