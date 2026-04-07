@@ -64,14 +64,44 @@ def _get_row_cells(row) -> List[str]:
 
 
 def _is_serial(text: str) -> bool:
-    """Check if text looks like a serial number (e.g., '1', '25', '130.')."""
-    return bool(re.match(r"^\d{1,3}\.?\s*$", text.strip()))
+    """Check if text looks like a serial number.
+    Matches: '1', '25', '130.', 'i', 'iv', 'xi', '(a)', '(p)', 'a)', 'a.', '1(a)'"""
+    t = text.strip()
+    # Numeric: 1, 25, 130.
+    if re.match(r"^\d{1,3}\.?\s*$", t):
+        return True
+    # Roman numeral: i, ii, iii, iv, v, vi, vii, viii, ix, x, xi, xii
+    if re.match(r"^[ivxlc]{1,6}\.?\s*$", t, re.IGNORECASE):
+        return True
+    # Letter with bracket/dot: (a), a), a., (p)
+    if re.match(r"^\(?[a-z]\)?\.?\s*$", t, re.IGNORECASE):
+        return True
+    # Numeric + letter sub-item: 1(a), 58(p), 2a
+    if re.match(r"^\d{1,3}\(?[a-z]\)?\s*$", t, re.IGNORECASE):
+        return True
+    return False
 
 
 def _extract_serial(text: str) -> str:
-    """Extract numeric part from serial number."""
-    m = re.match(r"^(\d{1,3})", text.strip())
-    return m.group(1) if m else ""
+    """Extract serial identifier from text. Returns the cleaned serial string."""
+    t = text.strip().rstrip(". )")
+    # Numeric: extract digits
+    m = re.match(r"^(\d{1,3})", t)
+    if m:
+        # Check for sub-item: 58(p) → "58(p)"
+        m2 = re.match(r"^(\d{1,3}\(?[a-z]\)?)", t, re.IGNORECASE)
+        if m2:
+            return m2.group(1)
+        return m.group(1)
+    # Roman numeral
+    m = re.match(r"^([ivxlc]{1,6})", t, re.IGNORECASE)
+    if m:
+        return m.group(1).lower()
+    # Letter: (a) → "a", a) → "a"
+    m = re.match(r"^\(?([a-z])\)?", t, re.IGNORECASE)
+    if m:
+        return m.group(1).lower()
+    return t
 
 
 def _is_nil(value: str) -> bool:
@@ -131,35 +161,80 @@ def parse_ir_docx(docx_path: str) -> Tuple[List[Dict[str, str]], str]:
                 })
 
             elif len(cells) >= 2 and not first and cells[1].strip():
-                # Empty serial number: ['', 'Field Name', 'Value']
-                field_key = _clean_label(cells[1])
+                # Empty first cell — check if second cell is a serial/sub-item marker
+                second = cells[1].strip()
+                if _is_serial(second) and len(cells) >= 3:
+                    # Pattern: ['', '(v)', 'Field Name', 'Value']
+                    serial = _extract_serial(second)
+                    field_key = _clean_label(cells[2])
+                    field_value = _clean_value(cells[3]) if len(cells) > 3 else ""
 
-                if not field_key:
-                    continue
-                if field_key.lower().strip(".") in _header_words:
-                    continue
+                    if not field_key:
+                        continue
+                    if _is_nil(field_value):
+                        field_value = ""
 
-                field_value = _clean_value(cells[2]) if len(cells) > 2 else ""
-                if _is_nil(field_value):
-                    field_value = ""
+                    row_counter += 1
+                    fields.append({
+                        "serial_no": serial,
+                        "field_key": field_key,
+                        "field_value": field_value,
+                    })
+                else:
+                    # Pattern: ['', 'Field Name', 'Value']
+                    field_key = _clean_label(second)
 
-                row_counter += 1
-                fields.append({
-                    "serial_no": str(row_counter),
-                    "field_key": field_key,
-                    "field_value": field_value,
-                })
+                    if not field_key:
+                        continue
+                    if field_key.lower().strip(".") in _header_words:
+                        continue
+
+                    field_value = _clean_value(cells[2]) if len(cells) > 2 else ""
+                    if _is_nil(field_value):
+                        field_value = ""
+
+                    row_counter += 1
+                    fields.append({
+                        "serial_no": str(row_counter),
+                        "field_key": field_key,
+                        "field_value": field_value,
+                    })
 
             elif len(cells) >= 2 and not _is_serial(first) and first:
-                # Non-serial, non-empty first cell (header table or label row)
+                # Non-serial, non-empty first cell — could be:
+                # 1. Header table with accused name
+                # 2. Section header (e.g., "Financial Details") with sub-rows
                 key = cells[0].lower()
                 val = _clean_value(cells[1]) if len(cells) > 1 else ""
+
                 if "name" in key and "accused" in key and val:
                     accused_name = val
                     fields.append({
                         "serial_no": "0",
                         "field_key": _clean_label(cells[0]),
                         "field_value": val,
+                    })
+                elif len(cells) >= 2:
+                    # Treat as a field row — first cell is label, second is value
+                    field_key = _clean_label(cells[0])
+                    field_value = _clean_value(cells[1]) if len(cells) > 1 else ""
+                    if len(cells) > 2 and cells[2].strip():
+                        # 3-column row where first cell is a non-standard serial
+                        field_key = _clean_label(cells[1])
+                        field_value = _clean_value(cells[2])
+
+                    if not field_key:
+                        continue
+                    if field_key.lower().strip(".") in _header_words:
+                        continue
+                    if _is_nil(field_value):
+                        field_value = ""
+
+                    row_counter += 1
+                    fields.append({
+                        "serial_no": str(row_counter),
+                        "field_key": field_key,
+                        "field_value": field_value,
                     })
 
     # Extract accused name from fields if not found in header
