@@ -81,8 +81,46 @@ Open http://localhost:5175 (Vite proxies `/api/*` and `/health` to 8000)
 
 - `curl http://localhost:8000/health` → `{"status": "ok"}`
 - Browser http://localhost:5175 → login page loads
-- Log in with seeded admin credentials (see `seed.py`)
-- Admin dashboard should show unit count + KPI totals
+- Log in with credentials from `seed_credentials_<timestamp>.csv` (produced by `python seed.py`)
+- First login forces password change — confirm the change-password page loads
+- Admin dashboard should show unit count + KPI totals after second login
+
+## Security regression tests
+
+Pytest suite at `backend/tests/test_security.py` — 14 tests mapped 1:1
+to the Innspark VAPT findings. **Run before every production deploy.**
+
+### Pre-flight
+
+Backend must be running on `:8000` AND a fresh seed must exist:
+```bash
+cd backend
+pip install -r tests/requirements-test.txt
+python seed.py                                  # if not already seeded
+```
+
+### Run the suite
+
+```bash
+cd backend
+pytest tests/ -v
+```
+
+Expected: **14 passed**. See [tests/README.md](backend/tests/README.md)
+for per-test descriptions and known side-effects (e.g. test_7_4 locks
+one user for 15 minutes).
+
+### Via Claude (subagent)
+
+Repo ships with `.claude/agents/security-tester.md` — a scoped
+subagent that runs the pytest suite and reports pass/fail per VAPT
+finding. Trigger it by asking Claude:
+
+> *"Run the security-tester agent"*
+
+Claude will verify pre-flight (backend up, seed file present), run
+pytest, and produce a compact VAPT-mapped summary. Fastest way to
+sanity-check before deploy.
 
 ## Production deployment (Ubuntu VM)
 
@@ -91,13 +129,18 @@ Nginx reverse proxy on 443 with Let's Encrypt SSL, internal KSWAN network.
 
 ### Update procedure
 
+**Step 0 — Run the security regression suite locally first** (see the
+"Security regression tests" section above). Only proceed if 14/14 pass.
+Deploy is blocked on any regression in a VAPT finding.
+
 ```bash
 # On server
 cd /opt/cyberfraud
 git pull
 
-# Sync systemd service file from repo whenever deploy/cyberfraud-backend.service changes
+# Sync systemd service + nginx configs whenever deploy/ files change
 sudo cp deploy/cyberfraud-backend.service /etc/systemd/system/cyberfraud-backend.service
+sudo cp deploy/nginx.conf /etc/nginx/sites-available/cyberfraud
 sudo systemctl daemon-reload
 
 # Rebuild frontend
@@ -106,7 +149,7 @@ cd ..
 
 # Restart backend + reload nginx
 sudo systemctl restart cyberfraud-backend
-sudo systemctl reload nginx
+sudo nginx -t && sudo systemctl reload nginx
 ```
 
 The systemd service file lives in `deploy/cyberfraud-backend.service` in
