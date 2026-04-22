@@ -30,7 +30,7 @@ router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 # ── Rate limiting + per-username lockout (CWE-307) ────────────────────────
 # Per-IP throttle: caps bursts from a single host
 _ip_attempts: dict[str, list[float]] = defaultdict(list)
-_IP_MAX_ATTEMPTS = 10        # more generous — multiple users from same NAT IP
+_IP_MAX_ATTEMPTS = 20        # allow multiple users from same NAT IP / CI pipelines
 _IP_WINDOW_SECONDS = 60
 
 # Per-username lockout: blocks the actual attack vector

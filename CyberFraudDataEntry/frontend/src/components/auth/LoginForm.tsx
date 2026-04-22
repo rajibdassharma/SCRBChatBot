@@ -4,17 +4,34 @@ import { login, getDistrictsPublic, getPoliceStationsPublic } from '../../lib/ap
 import { useAuthStore } from '../../lib/stores/auth-store';
 import kspLogo from '../../assets/ksp_logo.png';
 
+/**
+ * Mirrors the backend `seed._to_code` — used to derive the username
+ * deterministically from the selected police station + role.
+ * If this formula is ever changed, seed.py and this function must move
+ * together.
+ */
+function toCode(name: string): string {
+  return name
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
 export function LoginForm() {
   const [districts, setDistricts] = useState<{name: string}[]>([]);
   const [selectedDistrict, setSelectedDistrict] = useState('');
   const [policeStations, setPoliceStations] = useState<{id: number, district_name: string, station_name: string}[]>([]);
   const [selectedPS, setSelectedPS] = useState('');
-  const [username, setUsername] = useState('');
+  const [role, setRole] = useState<'user' | 'admin'>('user');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { setAuth } = useAuthStore();
   const navigate = useNavigate();
+
+  // Derived username — always matches what seed.py wrote to the DB
+  const derivedUsername = selectedPS ? `${toCode(selectedPS)}_${role}` : '';
 
   // Load districts on mount
   useEffect(() => {
@@ -23,7 +40,7 @@ export function LoginForm() {
       .catch(() => setError('Failed to load districts'));
   }, []);
 
-  // When district changes, fetch police stations
+  // When district changes, fetch police stations and reset PS selection
   useEffect(() => {
     if (!selectedDistrict) {
       setPoliceStations([]);
@@ -42,16 +59,16 @@ export function LoginForm() {
 
     if (!selectedDistrict) { setError('Please select a district'); return; }
     if (!selectedPS) { setError('Please select a police station'); return; }
-    if (!username.trim()) { setError('Please enter User ID'); return; }
+    if (!derivedUsername) { setError('Could not derive user ID'); return; }
     if (!password) { setError('Please enter password'); return; }
 
     setLoading(true);
     try {
-      const res = await login(username.trim(), password);
+      const res = await login(derivedUsername, password);
 
       setAuth(res.token, {
         id: 0,
-        username: username.trim(),
+        username: derivedUsername,
         full_name: null,
         role: res.role as 'admin' | 'unit_user',
         unit_id: res.unit_id,
@@ -109,7 +126,7 @@ export function LoginForm() {
             </select>
           </div>
 
-          {/* Cyber Command Police Station dropdown — always visible */}
+          {/* Cyber Command Police Station dropdown */}
           <div>
             <label className="block text-sm font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>Cyber Command Police Station</label>
             <select
@@ -126,17 +143,32 @@ export function LoginForm() {
             </select>
           </div>
 
-          {/* User ID */}
+          {/* Role toggle — default to User, click "Log in as admin" to switch */}
+          <div className="flex items-center justify-between text-xs">
+            <span className="font-semibold" style={{ color: 'var(--ksp-navy)' }}>
+              Signing in as: <span style={{ color: 'var(--ksp-red)' }}>{role === 'admin' ? 'Admin' : 'User'}</span>
+            </span>
+            <button
+              type="button"
+              onClick={() => setRole(role === 'admin' ? 'user' : 'admin')}
+              className="font-semibold underline"
+              style={{ color: 'var(--ksp-navy)' }}
+            >
+              {role === 'admin' ? 'Log in as user' : 'Log in as admin'}
+            </button>
+          </div>
+
+          {/* Derived User ID — read-only, shown for confirmation */}
           <div>
             <label className="block text-sm font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>User ID</label>
             <input
               type="text"
-              value={username}
-              onChange={(e) => setUsername(e.target.value)}
-              required
-              className="w-full px-4 py-2.5 rounded-xl text-sm outline-none transition"
-              style={{ border: '2px solid var(--ksp-navy)' }}
-              placeholder="Enter your User ID"
+              value={derivedUsername}
+              readOnly
+              tabIndex={-1}
+              className="w-full px-4 py-2.5 rounded-xl text-sm outline-none transition cursor-not-allowed"
+              style={{ border: '2px solid var(--ksp-navy)', background: '#f3f4f6', color: '#374151' }}
+              placeholder="Auto-filled after selecting a station"
             />
           </div>
 
@@ -148,6 +180,7 @@ export function LoginForm() {
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
+              autoComplete="current-password"
               className="w-full px-4 py-2.5 rounded-xl text-sm outline-none transition"
               style={{ border: '2px solid var(--ksp-navy)' }}
               placeholder="Enter password"
@@ -156,7 +189,7 @@ export function LoginForm() {
 
           <button
             type="submit"
-            disabled={loading}
+            disabled={loading || !derivedUsername}
             className="w-full py-2.5 font-bold rounded-xl transition disabled:opacity-50 text-sm"
             style={{ background: 'var(--ksp-yellow)', color: '#000', border: '2px solid rgba(0,0,0,0.25)' }}
           >

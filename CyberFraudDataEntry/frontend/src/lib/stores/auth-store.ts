@@ -21,13 +21,17 @@ export const useAuthStore = create<AuthState>((set) => ({
   },
 
   logout: async () => {
-    // Best-effort server-side revocation. Even if it fails (network,
-    // token already expired, etc.), clear the client state so the user
-    // is logged out locally.
-    try {
-      await logoutApi();
-    } catch {
-      // ignore — clearing local state is still required
+    // Best-effort server-side revocation. Skip the API call entirely if
+    // there's no token to begin with (otherwise we'd 401 in an endless
+    // loop). If the call fails for any reason, still clear local state —
+    // the user intends to be logged out.
+    const hadToken = !!localStorage.getItem('token');
+    if (hadToken) {
+      try {
+        await logoutApi();
+      } catch {
+        // ignore — clearing local state is still required
+      }
     }
     localStorage.removeItem('token');
     localStorage.removeItem('user');

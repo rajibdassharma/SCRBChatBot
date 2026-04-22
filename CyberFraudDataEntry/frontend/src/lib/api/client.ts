@@ -21,8 +21,15 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
     const message = err.detail || `HTTP ${res.status}`;
 
     if (res.status === 401) {
-      // Only redirect if not on login/change-password page (i.e., session expired)
-      if (!path.includes('/auth/login') && !path.includes('/auth/change-password')) {
+      // Don't redirect on login, change-password, or logout responses —
+      // those are either the user actively authenticating, or actively
+      // ending their session (a 401 on logout just means "token already
+      // invalid", which is the desired end state).
+      const isAuthEndpoint =
+        path.includes('/auth/login') ||
+        path.includes('/auth/change-password') ||
+        path.includes('/auth/logout');
+      if (!isAuthEndpoint) {
         localStorage.removeItem('token');
         localStorage.removeItem('user');
         window.location.href = '/login';
