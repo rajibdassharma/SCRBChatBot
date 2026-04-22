@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+python-dotenv
+python-multipart
+requests
+chromadb
+rank-bm25
+pymysql
+pypdf
+python-docx
+openpyxl
+easyocr
+PyMuPDF
+Pillow

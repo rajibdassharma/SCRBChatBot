@@ -327,6 +327,16 @@ sudo chown $USER:$USER /var/log/cyberfraud
 
 ## 10. Systemd Service File
 
+The canonical copy of this file lives at `deploy/cyberfraud-backend.service`
+in the repo. On every deploy, copy it into place so systemd picks up any
+changes:
+
+```bash
+sudo cp deploy/cyberfraud-backend.service /etc/systemd/system/cyberfraud-backend.service
+sudo systemctl daemon-reload
+sudo systemctl restart cyberfraud-backend
+```
+
 ```ini
 # /etc/systemd/system/cyberfraud-backend.service
 
@@ -342,7 +352,7 @@ Group=cyberfraud
 WorkingDirectory=/opt/cyberfraud/backend
 Environment="PATH=/opt/cyberfraud/backend/venv/bin:/usr/bin"
 EnvironmentFile=/opt/cyberfraud/backend/.env
-ExecStart=/opt/cyberfraud/backend/venv/bin/gunicorn main:app -c gunicorn.conf.py
+ExecStart=/opt/cyberfraud/backend/venv/bin/gunicorn cyber_fraud:app -c gunicorn.conf.py
 ExecReload=/bin/kill -s HUP $MAINPID
 Restart=on-failure
 RestartSec=5

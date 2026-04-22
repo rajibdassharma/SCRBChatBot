@@ -88,7 +88,7 @@ cd backend
 pip install -r requirements.txt
 
 # Start dev server
-uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+uvicorn cyber_fraud:app --host 0.0.0.0 --port 8000 --reload
 
 # Seed database (units, police stations, admin user)
 python seed.py

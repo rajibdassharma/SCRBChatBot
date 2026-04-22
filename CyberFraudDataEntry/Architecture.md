@@ -677,7 +677,7 @@ Internet → Nginx (443/SSL) → Gunicorn (8000) → FastAPI
 
 - Service name: `cyberfraud-api`
 - Working directory: `/opt/cyberfraud/backend`
-- Command: `gunicorn main:app -k uvicorn.workers.UvicornWorker -w 4 -b 0.0.0.0:8000`
+- Command: `gunicorn cyber_fraud:app -k uvicorn.workers.UvicornWorker -w 4 -b 0.0.0.0:8000`
 - Auto-restart on failure
 
 ---
