@@ -84,7 +84,7 @@ export function Sidebar() {
       </div>
 
       <button
-        onClick={() => { logout(); window.location.href = '/login'; }}
+        onClick={async () => { await logout(); window.location.href = '/login'; }}
         className="flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-xl transition"
         style={{ background: '#c62828', color: '#fff', border: '2px solid rgba(0,0,0,0.25)' }}
       >

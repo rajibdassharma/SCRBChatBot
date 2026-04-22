@@ -4,7 +4,32 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from utils.sanitize import strip_html
+
+
+# Free-text fields that must never contain HTML/script — stripped server-side
+_SANITIZED_TEXT_FIELDS = {
+    # Case-level
+    "facts", "fir_no", "petition_no",
+    # Arrest / accused / accomplice
+    "name", "address", "email", "aadhar", "pan", "statement",
+    "where_met", "where_stayed", "interrogation_details",
+    "photo_path", "mobile", "occupation", "remarks",
+    # Petition
+    "why_not", "nature",
+    # Lien
+    "account_no", "bank_name",
+    # Unfreeze
+    "crime_no",
+    # Refund
+    "victim_name", "crime_no_or_petition_no",
+}
+
+
+def _sanitize(cls, v):  # noqa: N805 — Pydantic validator signature
+    return strip_html(v) if isinstance(v, str) else v
 
 
 # ── Child Create schemas ──────────────────────────────────────────
@@ -14,6 +39,8 @@ class AccompliceCreate(BaseModel):
     where_stayed: Optional[str] = None
     interrogation_details: Optional[str] = None
 
+    _sanitize_text = field_validator("where_met", "where_stayed", "interrogation_details")(_sanitize)
+
 
 class AccusedDetailCreate(BaseModel):
     photo_path: Optional[str] = None
@@ -21,6 +48,8 @@ class AccusedDetailCreate(BaseModel):
     mobile: Optional[str] = None
     occupation: Optional[str] = None
     remarks: Optional[str] = None
+
+    _sanitize_text = field_validator("photo_path", "email", "mobile", "occupation", "remarks")(_sanitize)
 
 
 class ArrestCreate(BaseModel):
@@ -34,6 +63,8 @@ class ArrestCreate(BaseModel):
     accomplices: List[AccompliceCreate] = Field(default_factory=list)
     accused_details: List[AccusedDetailCreate] = Field(default_factory=list)
 
+    _sanitize_text = field_validator("name", "address", "email", "aadhar", "pan", "statement")(_sanitize)
+
 
 class PetitionCreate(BaseModel):
     fir_registered: str = "no"
@@ -41,6 +72,8 @@ class PetitionCreate(BaseModel):
     nature: Optional[str] = None
     petition_type: str = "amount_lost"
     amount: Decimal = Decimal("0")
+
+    _sanitize_text = field_validator("why_not", "nature")(_sanitize)
 
 
 class LienAccountCreate(BaseModel):
@@ -51,6 +84,8 @@ class LienAccountCreate(BaseModel):
     total_amount_in_account: Decimal = Decimal("0")
     bank_name: Optional[str] = None
 
+    _sanitize_text = field_validator("account_no", "bank_name")(_sanitize)
+
 
 class UnfreezeDetailCreate(BaseModel):
     unfreeze_type: str = "letter"
@@ -59,12 +94,16 @@ class UnfreezeDetailCreate(BaseModel):
     account_no: Optional[str] = None
     amount: Decimal = Decimal("0")
 
+    _sanitize_text = field_validator("crime_no", "bank_name", "account_no")(_sanitize)
+
 
 class RefundCreate(BaseModel):
     refunded: str = "no"
     victim_name: Optional[str] = None
     amount: Decimal = Decimal("0")
     crime_no_or_petition_no: Optional[str] = None
+
+    _sanitize_text = field_validator("victim_name", "crime_no_or_petition_no")(_sanitize)
 
 
 # ── Case Create schema ────────────────────────────────────────────
@@ -83,6 +122,8 @@ class CaseCreate(BaseModel):
     lien_accounts: List[LienAccountCreate] = Field(default_factory=list)
     unfreeze_details: List[UnfreezeDetailCreate] = Field(default_factory=list)
     refunds: List[RefundCreate] = Field(default_factory=list)
+
+    _sanitize_text = field_validator("fir_no", "petition_no", "facts")(_sanitize)
 
 
 # ── Child Response schemas ────────────────────────────────────────

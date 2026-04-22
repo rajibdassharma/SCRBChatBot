@@ -8,18 +8,20 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from database import get_db
 from models.user import User
 from models.unit import Unit
+from models.revoked_token import RevokedToken
 from auth.security import decode_token
 
 bearer_scheme = HTTPBearer()
 
 
 class CurrentUser:
-    def __init__(self, user_id: int, username: str, role: str, unit_id: int | None, unit_name: str | None):
+    def __init__(self, user_id: int, username: str, role: str, unit_id: int | None, unit_name: str | None, jti: str | None = None):
         self.user_id = user_id
         self.username = username
         self.role = role
         self.unit_id = unit_id
         self.unit_name = unit_name
+        self.jti = jti
 
 
 async def get_current_user(
@@ -31,8 +33,16 @@ async def get_current_user(
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid or expired token")
 
     user_id = payload.get("sub")
-    if not user_id:
+    jti = payload.get("jti")
+    if not user_id or not jti:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token payload")
+
+    # Reject tokens that were revoked (logout / admin revocation)
+    revoked = (await db.execute(
+        select(RevokedToken).where(RevokedToken.jti == jti)
+    )).scalar_one_or_none()
+    if revoked:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Token has been revoked")
 
     user = (await db.execute(select(User).where(User.id == int(user_id)))).scalar_one_or_none()
     if not user or not user.is_active:
@@ -49,6 +59,7 @@ async def get_current_user(
         role=user.role,
         unit_id=user.unit_id,
         unit_name=unit_name,
+        jti=jti,
     )
 
 

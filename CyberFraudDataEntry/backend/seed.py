@@ -2,11 +2,20 @@
 Seed script: creates the MySQL database, tables, districts (units),
 police stations, and users (2 per PS: admin + user).
 
+Each user is seeded with a UNIQUE random password (CWE-521 hardening).
+Credentials are written to `seed_credentials.csv` for the admin to
+distribute securely. All seeded users have must_change_password=True
+so they're forced to pick a new password at first login.
+
 Usage:  python seed.py
 """
 
 import asyncio
+import csv
 import re
+import secrets
+import string
+from datetime import datetime
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
@@ -23,6 +32,32 @@ from models import (
     PoliceStation,
 )
 from auth.security import hash_password
+
+
+# Password generation — 16 chars, mixed, satisfies validate_password_strength
+_PWD_CHARS_LOWER = string.ascii_lowercase
+_PWD_CHARS_UPPER = string.ascii_uppercase
+_PWD_CHARS_DIGIT = string.digits
+_PWD_CHARS_SYM = "!@#$%^&*-_=+"
+_PWD_ALL = _PWD_CHARS_LOWER + _PWD_CHARS_UPPER + _PWD_CHARS_DIGIT + _PWD_CHARS_SYM
+
+
+def generate_strong_password(length: int = 16) -> str:
+    """Generate a cryptographically random password with at least one of
+    each required character class."""
+    if length < 8:
+        raise ValueError("length must be >= 8")
+    # Start with one of each required class, then fill the rest
+    chars = [
+        secrets.choice(_PWD_CHARS_LOWER),
+        secrets.choice(_PWD_CHARS_UPPER),
+        secrets.choice(_PWD_CHARS_DIGIT),
+        secrets.choice(_PWD_CHARS_SYM),
+    ]
+    chars += [secrets.choice(_PWD_ALL) for _ in range(length - len(chars))]
+    # Shuffle without bias
+    secrets.SystemRandom().shuffle(chars)
+    return "".join(chars)
 
 
 def _to_code(name: str) -> str:
@@ -116,15 +151,17 @@ async def seed():
         ps_map = {(d, s): pid for pid, d, s in all_ps}
 
         # ── 3. Seed users per police station (2 per PS: admin + user) ──
+        # Each user gets a UNIQUE random password. All seeded users are
+        # forced to change password on first login (must_change_password=True
+        # is the DB default).
         existing_usernames = set(
             (await session.execute(text("SELECT username FROM users"))).scalars().all()
         )
-        # Pre-hash passwords once (bcrypt is slow, avoid hashing 2000+ times)
-        admin_hash = hash_password("admin123")
-        user_hash = hash_password("police123")
-        print("Password hashes generated. Creating users...")
 
+        credentials_log: list[tuple[str, str, str, str]] = []  # (username, password, role, station)
         users_added = 0
+        print("Generating unique passwords and hashing (this may take a minute)...")
+
         for district, station in excel_rows:
             ps_code = _to_code(station)
             unit_id = unit_map.get(district)
@@ -133,34 +170,52 @@ async def seed():
             # Admin for this PS
             admin_username = f"{ps_code}_admin"
             if admin_username not in existing_usernames:
+                admin_pwd = generate_strong_password()
                 session.add(User(
                     username=admin_username,
-                    hashed_password=admin_hash,
+                    hashed_password=hash_password(admin_pwd),
                     full_name=f"Admin - {station}",
                     role="admin",
                     unit_id=unit_id,
                     ps_id=ps_id,
                 ))
+                credentials_log.append((admin_username, admin_pwd, "admin", station))
                 users_added += 1
                 existing_usernames.add(admin_username)
 
             # User for this PS
             user_username = f"{ps_code}_user"
             if user_username not in existing_usernames:
+                user_pwd = generate_strong_password()
                 session.add(User(
                     username=user_username,
-                    hashed_password=user_hash,
+                    hashed_password=hash_password(user_pwd),
                     full_name=f"User - {station}",
                     role="unit_user",
                     unit_id=unit_id,
                     ps_id=ps_id,
                 ))
+                credentials_log.append((user_username, user_pwd, "unit_user", station))
                 users_added += 1
                 existing_usernames.add(user_username)
 
         if users_added:
             await session.commit()
-            print(f"PS users: {users_added} created (2 per PS: {ps_code}_admin/admin123 + {ps_code}_user/police123).")
+            # Write credentials to a timestamped CSV so they can be distributed
+            # and then the file deleted. gitignored — never commit.
+            stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            creds_path = Path(__file__).parent / f"seed_credentials_{stamp}.csv"
+            with creds_path.open("w", newline="", encoding="utf-8") as f:
+                w = csv.writer(f)
+                w.writerow(["username", "password", "role", "station", "must_change_on_first_login"])
+                for row in credentials_log:
+                    w.writerow([*row, "yes"])
+            print(f"\n{'='*70}")
+            print(f"  PS users: {users_added} created with unique random passwords.")
+            print(f"  Credentials written to: {creds_path}")
+            print(f"  DISTRIBUTE SECURELY, then DELETE this file.")
+            print(f"  All seeded users MUST change password on first login.")
+            print(f"{'='*70}\n")
         else:
             print("PS users already exist.")
 

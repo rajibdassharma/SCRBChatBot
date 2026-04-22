@@ -16,11 +16,12 @@ from models.other_less_than_500 import OtherLessThan500
 from models.aeps_transaction import AepsTransaction
 from models.atm_withdrawal import AtmWithdrawal
 from models.police_station import PoliceStation
+from models.revoked_token import RevokedToken
 
 __all__ = [
     "Unit", "User", "Case", "Arrest", "Accomplice", "AccusedDetail",
     "Petition", "LienAccount", "UnfreezeDetail", "Refund",
     "MuleReport", "MoneyTransfer", "OtherTransaction", "TransactionOnHold",
     "OtherLessThan500", "AepsTransaction", "AtmWithdrawal",
-    "PoliceStation",
+    "PoliceStation", "RevokedToken",
 ]

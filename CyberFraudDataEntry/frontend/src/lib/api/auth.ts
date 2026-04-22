@@ -12,6 +12,10 @@ export async function getMe(): Promise<User> {
   return apiFetch<User>('/api/v1/auth/me');
 }
 
+export async function logoutApi(): Promise<{ok: boolean; message: string}> {
+  return apiFetch('/api/v1/auth/logout', { method: 'POST' });
+}
+
 export async function changePassword(currentPassword: string, newPassword: string): Promise<{ok: boolean; message: string}> {
   return apiFetch('/api/v1/auth/change-password', {
     method: 'POST',

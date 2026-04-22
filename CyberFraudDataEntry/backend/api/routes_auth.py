@@ -12,45 +12,91 @@ from database import get_db
 from models.user import User
 from models.unit import Unit
 from models.police_station import PoliceStation
+from models.revoked_token import RevokedToken
 from schemas.auth import LoginRequest, TokenResponse, UserResponse, ChangePasswordRequest
-from auth.security import verify_password, hash_password, create_access_token
+from auth.security import (
+    verify_password,
+    hash_password,
+    create_access_token,
+    validate_password_strength,
+    PasswordTooWeak,
+)
 from api.deps import get_current_user, CurrentUser
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
 
-# ── Simple in-memory rate limiter for login ──────────────────────────────
-_login_attempts: dict[str, list[float]] = defaultdict(list)
-_MAX_ATTEMPTS = 5
-_WINDOW_SECONDS = 60
+
+# ── Rate limiting + per-username lockout (CWE-307) ────────────────────────
+# Per-IP throttle: caps bursts from a single host
+_ip_attempts: dict[str, list[float]] = defaultdict(list)
+_IP_MAX_ATTEMPTS = 10        # more generous — multiple users from same NAT IP
+_IP_WINDOW_SECONDS = 60
+
+# Per-username lockout: blocks the actual attack vector
+_user_failures: dict[str, list[float]] = defaultdict(list)
+_USER_MAX_FAILURES = 5        # 5 failed attempts
+_USER_LOCKOUT_SECONDS = 900   # triggers 15 min lockout
+_USER_WINDOW_SECONDS = 900    # failures counted in last 15 min
 
 
-def _check_rate_limit(ip: str):
+def _client_ip(request: Request) -> str:
+    """Return the real client IP, honoring X-Forwarded-For (Nginx).
+    Takes the first (leftmost) IP since XFF can be a comma-separated chain."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def _check_ip_rate_limit(ip: str):
     now = time.time()
-    attempts = _login_attempts[ip]
-    # Remove attempts outside the window
-    _login_attempts[ip] = [t for t in attempts if now - t < _WINDOW_SECONDS]
-    if len(_login_attempts[ip]) >= _MAX_ATTEMPTS:
+    _ip_attempts[ip] = [t for t in _ip_attempts[ip] if now - t < _IP_WINDOW_SECONDS]
+    if len(_ip_attempts[ip]) >= _IP_MAX_ATTEMPTS:
         raise HTTPException(
             status_code=429,
-            detail=f"Too many login attempts. Try again in {_WINDOW_SECONDS} seconds.",
+            detail=f"Too many login attempts from this IP. Try again in {_IP_WINDOW_SECONDS} seconds.",
         )
-    _login_attempts[ip].append(now)
+    _ip_attempts[ip].append(now)
+
+
+def _check_user_lockout(username: str):
+    now = time.time()
+    _user_failures[username] = [t for t in _user_failures[username] if now - t < _USER_WINDOW_SECONDS]
+    if len(_user_failures[username]) >= _USER_MAX_FAILURES:
+        raise HTTPException(
+            status_code=429,
+            detail=f"Account locked due to too many failed login attempts. Try again in {_USER_LOCKOUT_SECONDS // 60} minutes.",
+        )
+
+
+def _record_user_failure(username: str):
+    _user_failures[username].append(time.time())
+
+
+def _clear_user_failures(username: str):
+    _user_failures.pop(username, None)
 
 
 @router.post("/login", response_model=TokenResponse)
 async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends(get_db)):
-    _check_rate_limit(request.client.host if request.client else "unknown")
+    ip = _client_ip(request)
+    _check_ip_rate_limit(ip)
+    _check_user_lockout(body.username)
+
     # Look up user by username
     user = (await db.execute(
         select(User).where(User.username == body.username)
     )).scalar_one_or_none()
 
     if not user or not verify_password(body.password, user.hashed_password):
+        _record_user_failure(body.username)
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Account is disabled")
+
+    _clear_user_failures(body.username)
 
     # Get unit (district) name
     unit_name = None
@@ -77,6 +123,23 @@ async def login(body: LoginRequest, request: Request, db: AsyncSession = Depends
     )
 
 
+@router.post("/logout")
+async def logout(
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Invalidate the current bearer token by adding its jti to the revocation list.
+    Subsequent requests with the same token will be rejected by the auth dependency."""
+    if current_user.jti:
+        existing = (await db.execute(
+            select(RevokedToken).where(RevokedToken.jti == current_user.jti)
+        )).scalar_one_or_none()
+        if not existing:
+            db.add(RevokedToken(jti=current_user.jti, user_id=current_user.user_id))
+            await db.commit()
+    return {"ok": True, "message": "Logged out successfully"}
+
+
 @router.post("/change-password")
 async def change_password(
     body: ChangePasswordRequest,
@@ -93,17 +156,24 @@ async def change_password(
     if not verify_password(body.current_password, user.hashed_password):
         raise HTTPException(status_code=400, detail="Current password is incorrect")
 
-    if len(body.new_password) < 8:
-        raise HTTPException(status_code=400, detail="New password must be at least 8 characters")
-
     if body.new_password == body.current_password:
         raise HTTPException(status_code=400, detail="New password must be different from current password")
+
+    try:
+        validate_password_strength(body.new_password)
+    except PasswordTooWeak as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     user.hashed_password = hash_password(body.new_password)
     user.must_change_password = False
     await db.commit()
 
-    return {"ok": True, "message": "Password changed successfully"}
+    # Force re-login: revoke the current token so the user must use the new password
+    if current_user.jti:
+        db.add(RevokedToken(jti=current_user.jti, user_id=current_user.user_id))
+        await db.commit()
+
+    return {"ok": True, "message": "Password changed successfully. Please log in again with the new password."}
 
 
 @router.get("/me", response_model=UserResponse)

@@ -1,11 +1,12 @@
 import { create } from 'zustand';
 import type { User } from '../../types';
+import { logoutApi } from '../api/auth';
 
 interface AuthState {
   token: string | null;
   user: User | null;
   setAuth: (token: string, user: User) => void;
-  logout: () => void;
+  logout: () => Promise<void>;
   loadFromStorage: () => void;
 }
 
@@ -19,7 +20,15 @@ export const useAuthStore = create<AuthState>((set) => ({
     set({ token, user });
   },
 
-  logout: () => {
+  logout: async () => {
+    // Best-effort server-side revocation. Even if it fails (network,
+    // token already expired, etc.), clear the client state so the user
+    // is logged out locally.
+    try {
+      await logoutApi();
+    } catch {
+      // ignore — clearing local state is still required
+    }
     localStorage.removeItem('token');
     localStorage.removeItem('user');
     set({ token: null, user: null });

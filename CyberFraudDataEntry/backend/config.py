@@ -15,7 +15,7 @@ class Settings(BaseSettings):
     DB_NAME: str = "cyber_fraud_dsr"
     JWT_SECRET: str = _DEFAULT_JWT_SECRET
     JWT_ALGORITHM: str = "HS256"
-    JWT_EXPIRE_MINUTES: int = 480
+    JWT_EXPIRE_MINUTES: int = 60
     CORS_ORIGINS: str = "http://localhost:5173"
     DISABLE_DOCS: bool = False
 
