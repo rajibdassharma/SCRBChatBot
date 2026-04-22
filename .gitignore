@@ -34,8 +34,9 @@ __pycache__/
 **/seed_credentials_*.csv
 
 # Claude internal config — ignore everything EXCEPT project-scoped agents
-.claude/*
-!.claude/agents/
+# (applies at any depth so per-project .claude/agents/ folders are tracked)
+**/.claude/*
+!**/.claude/agents/
 
 # SQLite databases
 *.db

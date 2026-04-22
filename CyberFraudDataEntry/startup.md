@@ -112,9 +112,9 @@ one user for 15 minutes).
 
 ### Via Claude (subagent)
 
-Repo ships with `.claude/agents/security-tester.md` — a scoped
-subagent that runs the pytest suite and reports pass/fail per VAPT
-finding. Trigger it by asking Claude:
+Project ships with `CyberFraudDataEntry/.claude/agents/security-tester.md`
+— a scoped subagent that runs the pytest suite and reports pass/fail per
+VAPT finding. Trigger it by asking Claude:
 
 > *"Run the security-tester agent"*
 
