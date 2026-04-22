@@ -118,41 +118,80 @@ python bulk_index_ir.py --folder "C:/IR_Files" --dry-run
 server with RDP access over dedicated LAN. **No internet** — all updates
 travel via USB.
 
-### Update procedure
+Two systemd services keep the apps running and survive reboots:
+
+| Service | Purpose | Port |
+|---|---|---|
+| `isd-backend` | FastAPI via uvicorn | 8003 |
+| `isd-frontend` | python3 http.server serving `frontend/dist/` | 5176 |
+
+Both unit files live in [`deploy/`](deploy/) in the repo — see
+[deploy/README.md](deploy/README.md) for the full one-time install and
+reboot-survival checklist.
+
+### One-time install (first deploy only)
+
+Follow `deploy/README.md`. Key step that makes the services survive
+reboots:
+
+```bash
+sudo systemctl enable --now isd-backend isd-frontend
+sudo systemctl enable mysql ollama
+```
+
+Verify with:
+```bash
+systemctl is-enabled isd-backend isd-frontend mysql
+# All three should print: enabled
+```
+
+### Update procedure (subsequent deploys)
 
 ```bash
 # On your laptop (with internet)
 cd c:/VSCProjects/SCRBChatBot/YAIA-main/ISDDocumentIntelligence_V6/frontend
-npm run build                # produces dist/
+npm run build                                   # produces dist/
 
-# Copy the repo (or just backend/ + frontend/dist/) to USB
+# Copy the repo (or just backend/ + frontend/dist/ + deploy/) to USB
 
 # On the server (via USB drop)
 cd /opt/isd/ISDDocumentIntelligence_V6
 # Copy updated files from USB over the existing tree
 
-# Backend
+# Refresh Python deps if requirements.txt changed
 source /opt/isd/venv/bin/activate
-pip install -r backend/requirements.txt     # if requirements changed
-# Manually restart the uvicorn process (no systemd unit currently)
-pkill -f "uvicorn app:app"
-nohup uvicorn app:app --host 0.0.0.0 --port 8003 > /var/log/isd/backend.log 2>&1 &
+pip install -r backend/requirements.txt
 
-# Frontend (static files served by python3 http.server)
-pkill -f "http.server 5176"
-cd /opt/isd/ISDDocumentIntelligence_V6/frontend/dist
-nohup python3 -m http.server 5176 > /var/log/isd/frontend.log 2>&1 &
+# Sync systemd unit files (only needed when deploy/*.service changes)
+sudo cp deploy/isd-backend.service /etc/systemd/system/isd-backend.service
+sudo cp deploy/isd-frontend.service /etc/systemd/system/isd-frontend.service
+sudo systemctl daemon-reload
+
+# Restart
+sudo systemctl restart isd-backend isd-frontend
 ```
 
 ### Post-deploy verification
 
-- `curl http://localhost:8003/health` on the server
-- Browse to `http://<server-ip>:5176/` from a client on the LAN
-- `tail -f /var/log/isd/backend.log` for live logs
+```bash
+sudo systemctl status isd-backend       # must show: active (running)
+sudo systemctl status isd-frontend      # must show: active (running)
+curl http://localhost:8003/health       # should return {"status":"ok"}
+tail -f /var/log/isd/backend.log        # live logs
+```
 
-> **Future improvement:** add a systemd service file (e.g.
-> `deploy/isd-backend.service`) so restarts survive reboots and follow
-> the same "repo-owned config" pattern as CyberFraud.
+From a client on the LAN: browse to `http://<server-ip>:5176/`.
+
+### Rollback
+
+```bash
+cd /opt/isd/ISDDocumentIntelligence_V6
+git log --oneline -10                   # find previous good SHA
+git checkout <previous-sha>
+sudo cp deploy/isd-backend.service /etc/systemd/system/isd-backend.service
+sudo systemctl daemon-reload
+sudo systemctl restart isd-backend isd-frontend
+```
 
 ## Common troubleshooting
 

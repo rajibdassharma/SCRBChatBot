@@ -1,0 +1,22 @@
+[Unit]
+Description=ISD Document Intelligence V6 Frontend (static file server)
+After=network.target
+
+[Service]
+Type=simple
+User=isd
+Group=isd
+WorkingDirectory=/opt/isd/ISDDocumentIntelligence_V6/frontend/dist
+ExecStart=/usr/bin/python3 -m http.server 5176 --bind 0.0.0.0
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/isd/frontend.log
+StandardError=append:/var/log/isd/frontend.log
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/isd
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

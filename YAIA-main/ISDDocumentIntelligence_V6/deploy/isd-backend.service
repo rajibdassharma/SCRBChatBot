@@ -1,0 +1,25 @@
+[Unit]
+Description=ISD Document Intelligence V6 Backend (FastAPI)
+After=network.target mysql.service
+Requires=mysql.service
+
+[Service]
+Type=simple
+User=isd
+Group=isd
+WorkingDirectory=/opt/isd/ISDDocumentIntelligence_V6/backend
+Environment="PATH=/opt/isd/venv/bin:/usr/bin"
+EnvironmentFile=/opt/isd/ISDDocumentIntelligence_V6/backend/.env
+ExecStart=/opt/isd/venv/bin/uvicorn app:app --host 0.0.0.0 --port 8003
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:/var/log/isd/backend.log
+StandardError=append:/var/log/isd/backend.log
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/isd /opt/isd/ISDDocumentIntelligence_V6
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
