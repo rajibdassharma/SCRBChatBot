@@ -12,7 +12,7 @@ See @Architecture.md for system design decisions and detailed schema reference.
 - **Server access** via RDP over dedicated LAN connection
 - **No internet** on the server — fully air-gapped
 - **Backend**: uvicorn on port 8003
-- **Frontend**: `python3 -m http.server 5175` serving built `dist/` folder (no Nginx, no Vite dev server)
+- **Frontend**: `python3 -m http.server 5176` serving built `dist/` folder (no Nginx, no Vite dev server)
 - **Server paths**: code at `/opt/isd/ISDDocumentIntelligence_V6/`, shared venv at `/opt/isd/venv/`
 - **MySQL password on server**: `isdadmin` (local dev: `Sandy@411`)
 - **Updates**: build `dist/` locally on Windows, copy via USB to server. No `npm install` on server.
@@ -41,7 +41,7 @@ See @Architecture.md for system design decisions and detailed schema reference.
   cases.py              # Case management (multi-user isolation)
   chroma_db_smac_v6/    # ChromaDB persistent store (SMAC collection)
   chroma_db_ir_v6/      # ChromaDB persistent store (IR collection)
-/frontend               # React 19 + TypeScript + Vite SPA (port 5175)
+/frontend               # React 19 + TypeScript + Vite SPA (port 5176)
   src/App.tsx           # Main component (4 tabs: Doc Intel, Connections, Timeline, QA)
   src/App.css           # KSP-branded styling
 /dbscripts              # Bulk indexing utilities with SQLite progress tracking
@@ -68,7 +68,7 @@ uvicorn app:app --host 0.0.0.0 --port 8003 --reload
 # ── Frontend ─────────────────────────────────────────────────
 cd frontend
 npm install
-npm run dev          # dev server on port 5175
+npm run dev          # dev server on port 5176
 npm run build        # production build
 npm run lint         # ESLint
 
