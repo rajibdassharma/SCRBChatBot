@@ -6,5 +6,13 @@ pydantic>=2.10.0
 pydantic-settings>=2.7.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
+# bcrypt MUST be pinned to 4.x — 5.x breaks passlib's CryptContext
+bcrypt>=4.0.1,<5.0
 python-multipart>=0.0.18
 python-dotenv>=1.0.0
+# Production server — Gunicorn with Uvicorn workers (see ProductionDeployment.md §9)
+gunicorn>=23.0.0
+# Excel upload/parsing for bank transaction files + seed (All District CEN_PS.xlsx)
+openpyxl>=3.1.0
+# HTTP client used by bulk indexing + tests
+requests>=2.31.0
