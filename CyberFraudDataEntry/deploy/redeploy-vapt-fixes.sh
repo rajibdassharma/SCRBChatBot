@@ -4,18 +4,22 @@
 #
 # Idempotent: safe to re-run. Aborts on first failure.
 #
-# Usage on the server:
-#   cd /opt/SCRBChatBot && git pull && bash CyberFraudDataEntry/deploy/redeploy-vapt-fixes.sh
+# Usage on the server (works regardless of where the source clone lives):
+#   cd /opt/scrb && git pull && bash CyberFraudDataEntry/deploy/redeploy-vapt-fixes.sh
 
 set -euo pipefail
 
-SOURCE=/opt/SCRBChatBot/CyberFraudDataEntry
+# Resolve SOURCE relative to this script — works whether the clone is at
+# /opt/scrb, /opt/SCRBChatBot, or anywhere else.
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SOURCE="$(cd "$SCRIPT_DIR/.." && pwd)"
 RUNTIME=/opt/cyberfraud
 SVC=cyberfraud-backend
 NGINX_SITE=/etc/nginx/sites-available/cyberfraud
 
 echo "=== 1. Source commit currently on disk ==="
-cd /opt/SCRBChatBot && git log -1 --oneline
+echo "    SOURCE=$SOURCE"
+cd "$SOURCE/.." && git log -1 --oneline
 
 echo
 echo "=== 2. Sync code from source to runtime ($RUNTIME) ==="
