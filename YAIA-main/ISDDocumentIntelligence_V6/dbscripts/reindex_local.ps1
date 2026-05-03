@@ -1,17 +1,17 @@
 <#
 .SYNOPSIS
-    V6 IR Reindex — PART 1: all local Windows phases.
+    V6 IR Reindex - PART 1: all local Windows phases.
 
 .DESCRIPTION
     Runs Phases 1A through 1E end-to-end on the Windows machine:
-      1A — pre-flight checks (CUDA, backend health, folder exists)
-      1B — local MySQL + ChromaDB backup (timestamped, never clobbers)
-      1C — bulk-index the IR files via bulk_index_ir.py (dry-run first, then real)
-      1D — verification: print post-index doc counts
-      1E — produce transfer artifacts in C:/Transfer/V6 (mysqldump + chroma copy)
+      1A - pre-flight checks (CUDA, backend health, folder exists)
+      1B - local MySQL + ChromaDB backup (timestamped, never clobbers)
+      1C - bulk-index the IR files via bulk_index_ir.py (dry-run first, then real)
+      1D - verification: print post-index doc counts
+      1E - produce transfer artifacts in C:/Transfer/V6 (mysqldump + chroma copy)
 
     MySQL credentials are read from backend/.env. The IR files folder is
-    the only thing you change between runs — pass via -Folder.
+    the only thing you change between runs - pass via -Folder.
 
 .PARAMETER Folder
     Required. Folder containing the IR DOCX/DOC/PDF files. Subfolders are
@@ -103,10 +103,10 @@ function Invoke-Mysql($sql) {
     if ($LASTEXITCODE -ne 0) { throw "mysql command failed (exit $LASTEXITCODE)" }
 }
 
-# ───────────────────────────────────────────────────────────────
-# Phase 1A — Pre-flight
-# ───────────────────────────────────────────────────────────────
-Write-Phase "Phase 1A — Pre-flight"
+# ============================================================
+# Phase 1A - Pre-flight
+# ============================================================
+Write-Phase "Phase 1A - Pre-flight"
 
 if (-not (Test-Path $Folder)) {
     Write-Error "IR files folder not found: $Folder"
@@ -115,12 +115,12 @@ if (-not (Test-Path $Folder)) {
 Write-Host "IR folder: $Folder"
 
 Write-Host "Checking CUDA..."
-# Single-quote outside, double-quotes inside — avoids PS 5.1 parser issues
+# Single-quote outside, double-quotes inside - avoids PS 5.1 parser issues
 # with parentheses inside a double-quoted python -c string.
 $cudaOut = python -c 'import torch; print("CUDA:", torch.cuda.is_available()); print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NONE")'
 $cudaOut | ForEach-Object { Write-Host "  $_" }
 if ($cudaOut -notmatch "CUDA: True") {
-    Write-Warning "CUDA not available — embeddings will run on CPU and be much slower."
+    Write-Warning "CUDA not available - embeddings will run on CPU and be much slower."
     $confirm = Read-Host "Continue anyway? (y/N)"
     if ($confirm -ne "y") { exit 1 }
 }
@@ -140,28 +140,28 @@ New-Item -ItemType Directory -Force $TransferDir | Out-Null
 Write-Host "Baseline counts (before indexing):"
 Invoke-Mysql "SELECT COUNT(DISTINCT doc_id) AS ir_docs, COUNT(*) AS ir_field_rows FROM ir_reports;"
 
-# ───────────────────────────────────────────────────────────────
-# Phase 1B — Local backup
-# ───────────────────────────────────────────────────────────────
+# ============================================================
+# Phase 1B - Local backup
+# ============================================================
 if ($SkipBackup) {
-    Write-Phase "Phase 1B — Local backup (SKIPPED)"
+    Write-Phase "Phase 1B - Local backup (SKIPPED)"
 } else {
-    Write-Phase "Phase 1B — Local backup → $BackupRun"
+    Write-Phase "Phase 1B - Local backup -> $BackupRun"
     New-Item -ItemType Directory -Force $BackupRun | Out-Null
 
     $backupSql = "$BackupRun/local_pre_index_ISDIntelligence.sql"
-    Write-Host "Dumping MySQL → $backupSql"
+    Write-Host "Dumping MySQL -> $backupSql"
     & mysqldump -u $MysqlUser "-p$MysqlPwd" --single-transaction --routines $MysqlDb |
         Out-File -Encoding utf8 -FilePath $backupSql
     if ($LASTEXITCODE -ne 0) { Write-Error "mysqldump failed"; exit 1 }
     $sqlSize = (Get-Item $backupSql).Length
-    Write-Host "  Done — $sqlSize bytes"
+    Write-Host "  Done - $sqlSize bytes"
 
     foreach ($folder in @("chroma_db_ir_v6", "chroma_db_smac_v6")) {
         $src = "$BackendDir/$folder"
         $dst = "$BackupRun/local_pre_index_$folder"
         if (Test-Path $src) {
-            Write-Host "Copying $folder → $dst"
+            Write-Host "Copying $folder -> $dst"
             Copy-Item -Recurse -Force $src $dst
         }
     }
@@ -173,10 +173,10 @@ if ($SkipBackup) {
     }
 }
 
-# ───────────────────────────────────────────────────────────────
-# Phase 1C — Local indexing
-# ───────────────────────────────────────────────────────────────
-Write-Phase "Phase 1C — Local indexing"
+# ============================================================
+# Phase 1C - Local indexing
+# ============================================================
+Write-Phase "Phase 1C - Local indexing"
 
 if (-not $Password) {
     $sec  = Read-Host "Backend password for $Username" -AsSecureString
@@ -191,7 +191,7 @@ try {
     if ($LASTEXITCODE -ne 0) { Write-Error "Dry-run failed"; exit 1 }
 
     if ($DryRun) {
-        Write-Host "Dry-run only — stopping here."
+        Write-Host "Dry-run only - stopping here."
         exit 0
     }
 
@@ -202,30 +202,30 @@ try {
     Write-Host "Real run starting..."
     python bulk_index_ir.py --folder $Folder --username $Username --password $Password --backend-url $BackendUrl
     if ($LASTEXITCODE -ne 0) {
-        Write-Warning "bulk_index_ir.py exited non-zero — some files failed. Check logfiles/bulk_index_ir.log; re-run this script to retry only failed files."
+        Write-Warning "bulk_index_ir.py exited non-zero - some files failed. Check logfiles/bulk_index_ir.log; re-run this script to retry only failed files."
     }
 } finally {
     Pop-Location
 }
 
-# ───────────────────────────────────────────────────────────────
-# Phase 1D — Verification
-# ───────────────────────────────────────────────────────────────
-Write-Phase "Phase 1D — Local verification"
+# ============================================================
+# Phase 1D - Verification
+# ============================================================
+Write-Phase "Phase 1D - Local verification"
 Write-Host "Counts after indexing (compare to Phase 1A baseline):"
 Invoke-Mysql "SELECT COUNT(DISTINCT doc_id) AS ir_docs, COUNT(*) AS ir_field_rows FROM ir_reports;"
 Write-Host ""
-Write-Host "→ Now spot-check 1-2 new files via the frontend Q&A before the transfer."
+Write-Host "-> Now spot-check 1-2 new files via the frontend Q&A before the transfer."
 
-# ───────────────────────────────────────────────────────────────
-# Phase 1E — Transfer artifacts
-# ───────────────────────────────────────────────────────────────
+# ============================================================
+# Phase 1E - Transfer artifacts
+# ============================================================
 if ($SkipTransfer) {
-    Write-Phase "Phase 1E — Transfer artifacts (SKIPPED)"
+    Write-Phase "Phase 1E - Transfer artifacts (SKIPPED)"
 } else {
-    Write-Phase "Phase 1E — Prepare transfer artifacts"
+    Write-Phase "Phase 1E - Prepare transfer artifacts"
 
-    # Fresh transfer dir each run (safe — old USB content is gone after deploy)
+    # Fresh transfer dir each run (safe - old USB content is gone after deploy)
     if (Test-Path "$TransferDir/chroma_db_ir_v6") {
         Remove-Item -Recurse -Force "$TransferDir/chroma_db_ir_v6"
     }
@@ -234,22 +234,22 @@ if ($SkipTransfer) {
     }
 
     $transferSql = "$TransferDir/post_index_ISDIntelligence_no_ranking.sql"
-    Write-Host "Dumping MySQL (excluding ranking table) → $transferSql"
+    Write-Host "Dumping MySQL (excluding ranking table) -> $transferSql"
     & mysqldump -u $MysqlUser "-p$MysqlPwd" --single-transaction --routines `
         "--ignore-table=$MysqlDb.ranking" $MysqlDb |
         Out-File -Encoding utf8 -FilePath $transferSql
     if ($LASTEXITCODE -ne 0) { Write-Error "Transfer mysqldump failed"; exit 1 }
     $transferSize = (Get-Item $transferSql).Length
-    Write-Host "  Done — $transferSize bytes"
+    Write-Host "  Done - $transferSize bytes"
 
-    Write-Host "Copying chroma_db_ir_v6 → $TransferDir"
+    Write-Host "Copying chroma_db_ir_v6 -> $TransferDir"
     Copy-Item -Recurse "$BackendDir/chroma_db_ir_v6" "$TransferDir/chroma_db_ir_v6"
 
     Write-Host ""
     Write-Host ("=" * 62) -ForegroundColor Green
-    Write-Host "  PART 1 COMPLETE — Windows work done" -ForegroundColor Green
+    Write-Host "  PART 1 COMPLETE - Windows work done" -ForegroundColor Green
     Write-Host ("=" * 62) -ForegroundColor Green
     Write-Host ""
-    Write-Host "Next: copy ${TransferDir} to USB → server /opt/transfer/v6/"
+    Write-Host "Next: copy ${TransferDir} to USB -> server /opt/transfer/v6/"
     Write-Host "Then on server: sudo bash /opt/isd/ISDDocumentIntelligence_V6/dbscripts/reindex_server.sh"
 }
