@@ -115,14 +115,27 @@ if (-not (Test-Path $Folder)) {
 Write-Host "IR folder: $Folder"
 
 Write-Host "Checking CUDA..."
-# Single-quote outside, double-quotes inside - avoids PS 5.1 parser issues
-# with parentheses inside a double-quoted python -c string.
-$cudaOut = python -c 'import torch; print("CUDA:", torch.cuda.is_available()); print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NONE")'
-$cudaOut | ForEach-Object { Write-Host "  $_" }
-if ($cudaOut -notmatch "CUDA: True") {
-    Write-Warning "CUDA not available - embeddings will run on CPU and be much slower."
-    $confirm = Read-Host "Continue anyway? (y/N)"
-    if ($confirm -ne "y") { exit 1 }
+# Use a temp .py file - PS 5.1 native-command quoting strips inner double
+# quotes when passing python -c "..." with embedded quotes/parens. Writing
+# to a file sidesteps the entire quoting problem.
+$cudaCheckPy = @'
+import torch
+ok = torch.cuda.is_available()
+print("CUDA:", "True" if ok else "False")
+print("GPU:", torch.cuda.get_device_name(0) if ok else "NONE")
+'@
+$tmpPy = [System.IO.Path]::Combine($env:TEMP, "v6_cuda_check_$([guid]::NewGuid().ToString('N')).py")
+Set-Content -Path $tmpPy -Value $cudaCheckPy -Encoding ASCII
+try {
+    $cudaOut = python $tmpPy
+    $cudaOut | ForEach-Object { Write-Host "  $_" }
+    if ($cudaOut -notmatch "CUDA: True") {
+        Write-Warning "CUDA not available - embeddings will run on CPU and be much slower."
+        $confirm = Read-Host "Continue anyway? (y/N)"
+        if ($confirm -ne "y") { exit 1 }
+    }
+} finally {
+    Remove-Item -Force $tmpPy -ErrorAction SilentlyContinue
 }
 
 Write-Host "Checking backend health at $BackendUrl..."
@@ -157,11 +170,13 @@ if ($SkipBackup) {
     $sqlSize = (Get-Item $backupSql).Length
     Write-Host "  Done - $sqlSize bytes"
 
-    foreach ($folder in @("chroma_db_ir_v6", "chroma_db_smac_v6")) {
-        $src = "$BackendDir/$folder"
-        $dst = "$BackupRun/local_pre_index_$folder"
+    # NOTE: deliberately NOT named $folder - that would case-insensitively
+    # clobber the $Folder parameter (PS variable names are case-insensitive).
+    foreach ($chromaDir in @("chroma_db_ir_v6", "chroma_db_smac_v6")) {
+        $src = "$BackendDir/$chromaDir"
+        $dst = "$BackupRun/local_pre_index_$chromaDir"
         if (Test-Path $src) {
-            Write-Host "Copying $folder -> $dst"
+            Write-Host "Copying $chromaDir -> $dst"
             Copy-Item -Recurse -Force $src $dst
         }
     }
