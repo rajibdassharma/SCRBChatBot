@@ -12,7 +12,50 @@ Server gets a full overwrite of everything *except* the `ranking` table.
 ---
 
 # ════════════════════════════════════════════════════════════
-#  PART 1 — LOCAL (Windows machine)
+#  QUICK START — automated path (use this for repeat runs)
+# ════════════════════════════════════════════════════════════
+
+Two wrapper scripts run all the phases below in order. MySQL credentials
+come from `backend/.env`; the only thing that changes between runs is the
+folder path.
+
+**On Windows (Part 1 — does Phases 1A through 1E):**
+```powershell
+cd c:/VSCProjects/SCRBChatBot/YAIA-main/ISDDocumentIntelligence_V6/dbscripts
+.\reindex_local.ps1 -Folder "C:/IR_Files_Batch2026May"
+```
+The script will: prompt for the backend password, run pre-flight + CUDA
+check + dry-run, ask you to confirm, then do timestamped backup, real
+indexing, verification, and produce transfer artifacts in `C:/Transfer/V6/`.
+
+Useful flags:
+- `-DryRun` — only do the file-discovery dry-run, then stop
+- `-SkipBackup` — skip Phase 1B (re-running with an existing fresh backup)
+- `-SkipTransfer` — skip Phase 1E (index locally, no server deploy)
+
+**Carry the USB stick to the server**, copy `C:/Transfer/V6/` contents to
+`/opt/transfer/v6/` on the server.
+
+**On Ubuntu server (Part 2 — does Phases 2A through 2D):**
+```bash
+sudo bash /opt/isd/ISDDocumentIntelligence_V6/dbscripts/reindex_server.sh
+```
+The script will: pre-flight, timestamped server backup, stop `isd-backend`,
+restore MySQL (excluding ranking), replace ChromaDB, chown to `isd:isd`,
+verify ranking is intact, restart `isd-backend`, validate.
+
+Both scripts are idempotent (safe to re-run) and use `set -e` style behavior
+(abort on first error). Backups go into timestamped subfolders, never
+clobbering prior runs.
+
+The detailed manual procedure below is the fallback — use it if a script
+step fails and you need to drop into the individual commands, or for
+auditing what each script does step-by-step.
+
+---
+
+# ════════════════════════════════════════════════════════════
+#  PART 1 — LOCAL (Windows machine) — manual procedure
 # ════════════════════════════════════════════════════════════
 
 ## Phase 1A — Pre-flight (local, ~10 min)
@@ -153,7 +196,7 @@ Then copy `C:/Transfer/V6/` to USB stick. ✅ All Windows work done.
 ---
 
 # ════════════════════════════════════════════════════════════
-#  PART 2 — SERVER (Ubuntu, via RDP/SSH)
+#  PART 2 — SERVER (Ubuntu, via RDP/SSH) — manual procedure
 # ════════════════════════════════════════════════════════════
 
 ## Phase 2A — Plug in USB and pre-flight (~5 min)
