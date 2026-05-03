@@ -229,7 +229,7 @@ CREATE TABLE cases (
     user_id     INT NOT NULL,
     name        VARCHAR(200) NOT NULL,
     description VARCHAR(500),
-    collection  VARCHAR(50) DEFAULT 'SMAC',
+    collection  VARCHAR(50) NOT NULL DEFAULT 'IR',
     created_at  DATETIME DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
 );
@@ -518,7 +518,7 @@ async def some_route(user: CurrentUser = Depends(get_current_user)):
 
 **Module:** `frontend/src/App.tsx` (single monolithic component)
 
-### Four Tabs
+### Tabs
 
 | Tab | Features | Key API Calls |
 |-----|----------|---------------|
@@ -526,6 +526,8 @@ async def some_route(user: CurrentUser = Depends(get_current_user)):
 | **Connections Map (Graph)** | Force-directed graph, entity type filtering, node details, search | `/graph/data`, `/graph/extract-all`, `/graph/extraction-status` |
 | **Connections Map (Map)** | Location markers on map, person-address mapping | `/locations/data`, `/locations/extract-all`, `/locations/extraction-status` |
 | **Activity Timeline** | Chronological events, group filtering, breadcrumb trails, cross-refs | `/timeline/data`, `/timeline/groups`, `/timeline/extract-all`, `/timeline/breadcrumb` |
+| **Translation** | Upload IR DOCX, extract Kannada narrative, translate to English via TranslateGemma, download translated DOCX | `/translate/upload`, `/translate/text`, `/translate/download` |
+| **QA Testing** | Bulk-run prompts against indexed docs for quality regression | (internal QA endpoints) |
 
 ### State Management
 - React `useState` hooks for all state (no external state library)

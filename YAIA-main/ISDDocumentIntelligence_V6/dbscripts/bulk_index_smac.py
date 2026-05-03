@@ -30,7 +30,7 @@ from pathlib import Path
 import requests
 
 # ── Defaults ──────────────────────────────────────────────────────────────────
-DEFAULT_BACKEND    = "http://localhost:8001"
+DEFAULT_BACKEND    = "http://localhost:8003"
 DEFAULT_WORKERS    = 3
 DEFAULT_COLLECTION = "SMAC"
 # Progress DB stored in the same folder as this script

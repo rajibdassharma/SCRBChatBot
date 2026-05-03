@@ -42,7 +42,7 @@ See @Architecture.md for system design decisions and detailed schema reference.
   chroma_db_smac_v6/    # ChromaDB persistent store (SMAC collection)
   chroma_db_ir_v6/      # ChromaDB persistent store (IR collection)
 /frontend               # React 19 + TypeScript + Vite SPA (port 5176)
-  src/App.tsx           # Main component (4 tabs: Doc Intel, Connections, Timeline, QA)
+  src/App.tsx           # Main component (5 tabs: Doc Intel, Connections, Timeline, Translation, QA)
   src/App.css           # KSP-branded styling
 /dbscripts              # Bulk indexing utilities with SQLite progress tracking
   bulk_index_smac.py    # Parallel SMAC PDF indexing (ThreadPoolExecutor)

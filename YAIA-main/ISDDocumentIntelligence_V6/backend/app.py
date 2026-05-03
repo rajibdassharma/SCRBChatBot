@@ -929,7 +929,7 @@ def locations_data(
 # Structured Data Endpoints (SMAC and IR tables)
 # ------------------------------------------------------------------------------
 @app.get("/structured/smac")
-def structured_smac_list():
+def structured_smac_list(current_user: CurrentUser = Depends(get_current_user)):
     """Return all SMAC reports from the structured table."""
     try:
         reports = get_all_smac_reports()
@@ -939,7 +939,7 @@ def structured_smac_list():
 
 
 @app.get("/structured/smac/{doc_id}")
-def structured_smac_detail(doc_id: str):
+def structured_smac_detail(doc_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """Return a single SMAC report by doc_id."""
     try:
         report = get_smac_report_by_doc(doc_id)
@@ -951,7 +951,7 @@ def structured_smac_detail(doc_id: str):
 
 
 @app.get("/structured/ir")
-def structured_ir_list():
+def structured_ir_list(current_user: CurrentUser = Depends(get_current_user)):
     """Return all IR reports (main table) from the structured table."""
     try:
         reports = get_all_ir_reports()
@@ -961,7 +961,7 @@ def structured_ir_list():
 
 
 @app.get("/structured/ir/{doc_id}")
-def structured_ir_detail(doc_id: str):
+def structured_ir_detail(doc_id: str, current_user: CurrentUser = Depends(get_current_user)):
     """Return a complete IR report with all child table data."""
     try:
         report = get_ir_report_full(doc_id)
@@ -982,12 +982,12 @@ class NLSQLQuestion(BaseModel):
 
 
 @app.post("/structured/query")
-def structured_nl_query(payload: NLSQLQuestion):
+def structured_nl_query(payload: NLSQLQuestion, current_user: CurrentUser = Depends(get_current_user)):
     """
     Natural Language → SQL query pipeline.
     1. User asks a question in natural language
     2. LLM receives the table schema + question, generates a SQL SELECT query
-    3. SQL is executed against MSSQL
+    3. SQL is executed against MySQL
     4. LLM formats the raw results into a natural language answer
     """
     try:
@@ -995,19 +995,19 @@ def structured_nl_query(payload: NLSQLQuestion):
 
         # Step 1: Generate SQL from natural language
         sql_prompt = (
-            "You are a SQL expert for T-SQL (Microsoft SQL Server).\n"
+            "You are a SQL expert for MySQL.\n"
             "Given the database schema below and the user's question, generate a SQL SELECT query.\n\n"
             f"DATABASE SCHEMA:\n{schema}\n\n"
             f"USER QUESTION: {payload.question}\n\n"
             "RULES:\n"
             "- Return ONLY the SQL query, no explanation.\n"
-            "- Use T-SQL syntax (TOP instead of LIMIT, NVARCHAR, etc.).\n"
+            "- Use MySQL syntax (LIMIT instead of TOP, VARCHAR/TEXT instead of NVARCHAR).\n"
             "- The table is a key-value store: each row has field_key (field name) and field_value (value).\n"
             "- To find a value, search field_key with LIKE '%keyword%' and return field_value.\n"
             "- Use LIKE with '%keyword%' for text matching (case-insensitive).\n"
-            "- Filter by collection = 'SMAC' for SMAC reports, 'IR' for IR reports.\n"
+            "- For SMAC reports query the smac_reports table; for IR reports query ir_reports.\n"
             "- Filter by doc_name LIKE '%name%' to find specific documents.\n"
-            "- To compare fields across documents, self-join document_fields on doc_id.\n"
+            "- To compare fields across documents, self-join the relevant table on doc_id.\n"
             "- Always use SELECT, never INSERT/UPDATE/DELETE.\n"
             "- Return all relevant columns that answer the question.\n"
         )

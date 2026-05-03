@@ -226,20 +226,29 @@ def delete_case(
     """
     case = _get_case_for_user(case_id, current_user.user_id)
 
-    # Purge ChromaDB collections for this case
+    # Purge case-scoped ChromaDB collections from both stores.
+    # Naming scheme is "{prefix}{case_id}" inside each store's PersistentClient
+    # (e.g. SMAC_c5 in chroma_db_smac_v6, IR_c5 in chroma_db_ir_v6). The
+    # global "SMAC" / "IR_db" collections are NEVER touched here.
     try:
         import chromadb
-        from config import CHROMA_PATH
-        import os
-        chroma_path = os.path.join(
-            os.path.dirname(__file__), CHROMA_PATH, f"case_{case_id}"
-        )
-        client = chromadb.PersistentClient(path=chroma_path)
-        for col in client.list_collections():
-            client.delete_collection(col.name)
-        print(f"[Cases] Purged ChromaDB collections for case {case_id}")
+        from config import CHROMA_PATH_SMAC, CHROMA_PATH_IR
+        for chroma_path, prefix in (
+            (CHROMA_PATH_SMAC, "SMAC_c"),
+            (CHROMA_PATH_IR,   "IR_c"),
+        ):
+            try:
+                client = chromadb.PersistentClient(path=chroma_path)
+                col_name = f"{prefix}{case_id}"
+                try:
+                    client.delete_collection(col_name)
+                    print(f"[Cases] Deleted ChromaDB collection {col_name} in {chroma_path}")
+                except Exception:
+                    pass  # collection may simply not exist for this case
+            except Exception as inner_e:
+                print(f"[Cases] Could not open ChromaDB at {chroma_path}: {inner_e}")
     except Exception as e:
-        print(f"[Cases] Warning: could not purge ChromaDB for case {case_id}: {e}")
+        print(f"[Cases] Warning: ChromaDB cleanup error for case {case_id}: {e}")
 
     # Delete the case row (FK cascade deletes child MySQL rows)
     conn = get_conn()

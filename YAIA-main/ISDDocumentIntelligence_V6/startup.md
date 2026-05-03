@@ -82,8 +82,8 @@ Open http://localhost:5176
 ## Verification
 
 - `curl http://localhost:8003/health` → `{"status": "ok"}`
-- Browser http://localhost:5176 → login page, then four tabs after auth
-  (Doc Intel, Graph, Map, Timeline)
+- Browser http://localhost:5176 → login page, then five tabs after auth
+  (Doc Intel, Connections Map, Activity Timeline, Translation, QA Testing)
 - Register a test user via `/auth/register`, log in, create a case, upload
   a sample PDF — should extract entities/timeline in the background
 - Ollama reachable: `curl http://localhost:11434/api/tags` should list
