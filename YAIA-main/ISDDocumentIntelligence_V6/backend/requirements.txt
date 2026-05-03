@@ -8,7 +8,9 @@ pymysql
 gunicorn
 
 # Auth
-pyjwt
+# auth.py uses `from jose import ...` — that is python-jose, NOT pyjwt.
+# The two packages provide different `jwt` modules and are not interchangeable.
+python-jose[cryptography]
 passlib==1.7.4
 bcrypt==4.0.1
 
