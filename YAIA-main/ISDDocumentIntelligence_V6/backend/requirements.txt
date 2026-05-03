@@ -18,10 +18,16 @@ python-docx
 openpyxl
 
 # ML / Embeddings
-# NOTE: Install torch FIRST, then the rest.
-# For GPU: pip install torch --index-url https://download.pytorch.org/whl/cu124
-# For CPU (compatible with docling): pip install torch
+# NOTE: Install torch + torchvision + torchaudio FIRST (matched versions, same index), then the rest.
+#   For GPU (CUDA 12.4):
+#     pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu124
+#   For CPU only:
+#     pip install torch torchvision torchaudio
+# torchvision is REQUIRED — docling-ibm-models depends on it. Without it,
+# the docling import in llm_kv_extractor.py / ocr_index_smac.py fails.
 torch
+torchvision
+torchaudio
 sentence-transformers
 
 # Vector DB & search
