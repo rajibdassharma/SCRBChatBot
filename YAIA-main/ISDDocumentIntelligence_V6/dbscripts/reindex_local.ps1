@@ -129,7 +129,12 @@ Set-Content -Path $tmpPy -Value $cudaCheckPy -Encoding ASCII
 try {
     $cudaOut = python $tmpPy
     $cudaOut | ForEach-Object { Write-Host "  $_" }
-    if ($cudaOut -notmatch "CUDA: True") {
+    # NOTE: $cudaOut is an array. -match / -notmatch on arrays return
+    # the matching/non-matching elements (not a boolean), so naive
+    # `if ($arr -notmatch "...")` is always truthy when ANY element
+    # doesn't match. Join to a single string before the check.
+    $cudaJoined = $cudaOut -join "`n"
+    if ($cudaJoined -notmatch "CUDA:\s*True") {
         Write-Warning "CUDA not available - embeddings will run on CPU and be much slower."
         $confirm = Read-Host "Continue anyway? (y/N)"
         if ($confirm -ne "y") { exit 1 }
