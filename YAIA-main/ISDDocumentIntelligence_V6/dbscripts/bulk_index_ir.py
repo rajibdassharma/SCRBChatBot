@@ -223,12 +223,17 @@ def main():
         add_pending(conn, str(f))
     conn.commit()
 
-    pending = get_pending(conn)
+    # get_pending() returns ALL pending+failed rows across every past run
+    # (the progress DB is global). Filter down to only files that exist in
+    # the folder the user just specified — prevents leftover entries from
+    # earlier runs against other folders being silently re-attempted.
+    all_files_set = {str(f) for f in all_files}
+    pending = [p for p in get_pending(conn) if p in all_files_set]
     if args.limit > 0:
         pending = pending[:args.limit]
 
     total = len(pending)
-    print(f"Processing {total} files...")
+    print(f"Processing {total} files (filtered to current --folder)...")
     print(f"Log: {LOG_FILE}")
     print()
 
