@@ -115,7 +115,7 @@ def upload_file(backend_url: str, token: str, file_path: str, filename: str) -> 
             headers={"Authorization": f"Bearer {token}"},
             files={"file": (filename, fh, "application/octet-stream")},
             data={"collection": "IR", "source": "digital"},
-            timeout=120,
+            timeout=600,  # 10 min — large/complex IRs can exceed 120s, especially first calls when sentence-transformers model is loading into VRAM
         )
     resp.raise_for_status()
     return resp.json()
