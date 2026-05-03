@@ -115,7 +115,9 @@ if (-not (Test-Path $Folder)) {
 Write-Host "IR folder: $Folder"
 
 Write-Host "Checking CUDA..."
-$cudaOut = python -c "import torch; print('CUDA:', torch.cuda.is_available()); print('GPU:', torch.cuda.get_device_name(0) if torch.cuda.is_available() else 'NONE')" 2>&1
+# Single-quote outside, double-quotes inside — avoids PS 5.1 parser issues
+# with parentheses inside a double-quoted python -c string.
+$cudaOut = python -c 'import torch; print("CUDA:", torch.cuda.is_available()); print("GPU:", torch.cuda.get_device_name(0) if torch.cuda.is_available() else "NONE")'
 $cudaOut | ForEach-Object { Write-Host "  $_" }
 if ($cudaOut -notmatch "CUDA: True") {
     Write-Warning "CUDA not available — embeddings will run on CPU and be much slower."
