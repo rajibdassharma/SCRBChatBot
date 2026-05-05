@@ -169,8 +169,11 @@ if ($SkipBackup) {
 
     $backupSql = "$BackupRun/local_pre_index_ISDIntelligence.sql"
     Write-Host "Dumping MySQL -> $backupSql"
-    & mysqldump -u $MysqlUser "-p$MysqlPwd" --single-transaction --routines $MysqlDb |
-        Out-File -Encoding utf8 -FilePath $backupSql
+    # IMPORTANT: --result-file=, NOT shell redirection. PS5.1's > and Out-File
+    # default to UTF-16 LE with BOM AND treat the binary stream as text -
+    # which truncates dumps at \0 bytes and produces tiny/corrupt files.
+    & mysqldump -u $MysqlUser "-p$MysqlPwd" --single-transaction --routines `
+        "--result-file=$backupSql" $MysqlDb
     if ($LASTEXITCODE -ne 0) { Write-Error "mysqldump failed"; exit 1 }
     $sqlSize = (Get-Item $backupSql).Length
     Write-Host "  Done - $sqlSize bytes"
@@ -249,15 +252,22 @@ if ($SkipTransfer) {
     if (Test-Path "$TransferDir/chroma_db_ir_v6") {
         Remove-Item -Recurse -Force "$TransferDir/chroma_db_ir_v6"
     }
-    if (Test-Path "$TransferDir/post_index_ISDIntelligence_no_ranking.sql") {
-        Remove-Item -Force "$TransferDir/post_index_ISDIntelligence_no_ranking.sql"
+    foreach ($oldFile in @("post_index_ISDIntelligence_no_ranking.sql", "ir_reports_only.sql")) {
+        $oldPath = "$TransferDir/$oldFile"
+        if (Test-Path $oldPath) { Remove-Item -Force $oldPath }
     }
 
-    $transferSql = "$TransferDir/post_index_ISDIntelligence_no_ranking.sql"
-    Write-Host "Dumping MySQL (excluding ranking table) -> $transferSql"
-    & mysqldump -u $MysqlUser "-p$MysqlPwd" --single-transaction --routines `
-        "--ignore-table=$MysqlDb.ranking" $MysqlDb |
-        Out-File -Encoding utf8 -FilePath $transferSql
+    # Single-table approach: only dump the ir_reports table. Server-side
+    # restore will DROP+CREATE+INSERT just that one table, leaving every
+    # other table on the server (users, cases, smac_reports, entities,
+    # answer_ratings, etc.) completely untouched. Much safer than
+    # restoring the whole DB and relying on --ignore-table.
+    # Use --result-file= (NOT > or Out-File) so the binary stream isn't
+    # mangled by PS5.1 text-mode redirection.
+    $transferSql = "$TransferDir/ir_reports_only.sql"
+    Write-Host "Dumping ir_reports table -> $transferSql"
+    & mysqldump -u $MysqlUser "-p$MysqlPwd" --single-transaction `
+        "--result-file=$transferSql" $MysqlDb ir_reports
     if ($LASTEXITCODE -ne 0) { Write-Error "Transfer mysqldump failed"; exit 1 }
     $transferSize = (Get-Item $transferSql).Length
     Write-Host "  Done - $transferSize bytes"

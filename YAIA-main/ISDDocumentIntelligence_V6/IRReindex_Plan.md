@@ -5,7 +5,10 @@ local V6 instance on Windows, then mirror the resulting MySQL + ChromaDB state
 onto the Ubuntu production server. Server's `ranking` table is preserved.
 
 **Strategy:** Local indexing only (script-based, with resume support).
-Server gets a full overwrite of everything *except* the `ranking` table.
+Server gets a **single-table** import — only `ir_reports` is replaced, every
+other table on the server (users, cases, smac_reports, entities,
+answer_ratings, etc.) is left untouched. Much safer than a full-DB
+restore-with-exclusions.
 
 **Estimated wall time:** 30–90 min for indexing + ~30 min for transfer/verify.
 
@@ -179,17 +182,20 @@ will be NULL. This matches the existing data layout — no behavioral change.
 
 ## Phase 1E — Prepare transfer artifacts (~5 min)
 
-Local Windows → USB.
+Local Windows → USB. **Single-table approach** — only `ir_reports` and the
+chroma folder go to the server.
 
 ```powershell
-# 1. Dump local MySQL EXCLUDING the ranking table (server's ranking stays as-is)
-mysqldump -u root -pSandy@411 --single-transaction --routines --ignore-table=ISDIntelligence.ranking ISDIntelligence > C:/Transfer/V6/post_index_ISDIntelligence_no_ranking.sql
+# 1. Dump ONLY the ir_reports table. CRITICAL: use --result-file=, NOT > or
+#    Out-File. PowerShell 5.1's > defaults to UTF-16 LE with BOM AND processes
+#    the binary stream as text, which truncates dumps at \0 bytes and produces
+#    tiny/corrupt files. --result-file= makes mysqldump write the file directly
+#    in proper UTF-8.
+mysqldump -u root -pSandy@411 --single-transaction --result-file="C:/Transfer/V6/ir_reports_only.sql" ISDIntelligence ir_reports
 
 # 2. Copy the IR ChromaDB folder to transfer area
 Copy-Item -Recurse c:/VSCProjects/SCRBChatBot/YAIA-main/ISDDocumentIntelligence_V6/backend/chroma_db_ir_v6 C:/Transfer/V6/chroma_db_ir_v6
 ```
-
-(Skip SMAC ChromaDB unless you also indexed SMAC files in this batch.)
 
 Then copy `C:/Transfer/V6/` to USB stick. ✅ All Windows work done.
 
@@ -205,71 +211,79 @@ Then copy `C:/Transfer/V6/` to USB stick. ✅ All Windows work done.
 2. Confirm artifacts arrived:
    ```bash
    ls -lh /opt/transfer/v6/
-   # Expect: post_index_ISDIntelligence_no_ranking.sql + chroma_db_ir_v6/
+   # Expect: ir_reports_only.sql + chroma_db_ir_v6/
    ```
-3. Backup folder exists:
+3. **Sanity-check the dump file isn't UTF-16** (would happen if you used `>`
+   instead of `--result-file=` on Windows):
+   ```bash
+   head -c 2 /opt/transfer/v6/ir_reports_only.sql | xxd -p
+   # Want: 2d2d  (= "--", start of mysqldump comments)
+   # Bad:  fffe  (UTF-16 LE BOM — re-dump on Windows with --result-file)
+   ```
+4. Backup folder exists:
    ```bash
    sudo mkdir -p /opt/backups/v6
    ```
-4. Note baseline server counts (compare to Phase 2D later):
+5. Note baseline server counts (compare to Phase 2D later):
    ```bash
-   mysql -u root -pisdadmin ISDIntelligence -e "SELECT COUNT(*) FROM ir_reports; SELECT COUNT(*) FROM ranking;"
+   mysql -u root -pisdadmin ISDIntelligence -e "SELECT COUNT(DISTINCT doc_id) AS docs, COUNT(*) AS rows FROM ir_reports;"
    ```
 
 ---
 
-## Phase 2B — Backup server state (~10–20 min)
+## Phase 2B — Backup server state (~5 min)
 
-Fall-back point if the apply step goes wrong. **Two backups** for defense
-in depth.
+Single-table approach means a much smaller backup — just `ir_reports` plus
+the IR chroma folder.
 
 ```bash
-# 1. Server MySQL — full dump (includes ranking)
-sudo mysqldump -u root -pisdadmin --single-transaction --routines ISDIntelligence > /opt/backups/v6/server_pre_deploy_ISDIntelligence.sql
+# Tip on Linux: shell redirection here works fine (mysqldump on Linux
+# doesn't have the PowerShell UTF-16 issue). But sudo with redirection
+# fails — use `sudo tee` or sudo bash -c.
 
-# 2. Server MySQL — ranking table only (safety net)
-sudo mysqldump -u root -pisdadmin ISDIntelligence ranking > /opt/backups/v6/server_pre_deploy_ranking_table_only.sql
+sudo bash -c 'mysqldump -u root -pisdadmin --single-transaction ISDIntelligence ir_reports > /opt/backups/v6/server_pre_deploy_ir_reports.sql'
 
-# 3. Server ChromaDB folders
 sudo cp -r /opt/isd/ISDDocumentIntelligence_V6/backend/chroma_db_ir_v6 /opt/backups/v6/server_pre_deploy_chroma_ir_v6
-sudo cp -r /opt/isd/ISDDocumentIntelligence_V6/backend/chroma_db_smac_v6 /opt/backups/v6/server_pre_deploy_chroma_smac_v6
 ```
 
-Verify backups exist with non-zero size:
+Verify both backups exist:
 ```bash
 ls -lh /opt/backups/v6/
 ```
 
 ---
 
-## Phase 2C — Apply on server (~10–20 min)
+## Phase 2C — Apply on server (~5 min)
 
-The server runs `isd-backend` as a systemd service under user `isd`, NOT
-root. So we use `systemctl` to stop/start, and `chown` after every copy
-so the `isd` user can read/write the new ChromaDB files.
+**Backend lifecycle on this server is currently MANUAL uvicorn**, not
+systemd (the `isd-backend.service` file exists in `deploy/` but was
+never installed via `sudo cp deploy/isd-backend.service ...`). So the
+stop/start steps are Ctrl+C / re-run, not systemctl.
 
 ```bash
-# 1. Stop the backend service (frontend service can stay up)
-sudo systemctl stop isd-backend
+# 1. Stop backend: Ctrl+C in the console where you started uvicorn
+#    (verify it's down):
+sudo ss -tlnp | grep :8003     # should print nothing
 
-# 2. Restore MySQL — drops & recreates all tables in the dump (ranking
-#    is excluded, stays intact)
-sudo mysql -u root -pisdadmin ISDIntelligence < /opt/transfer/v6/post_index_ISDIntelligence_no_ranking.sql
+# 2. Restore ir_reports (drops + recreates JUST that table)
+sudo mysql -u root -pisdadmin ISDIntelligence < /opt/transfer/v6/ir_reports_only.sql
 
 # 3. Replace ChromaDB IR folder
 sudo rm -rf /opt/isd/ISDDocumentIntelligence_V6/backend/chroma_db_ir_v6
 sudo cp -r /opt/transfer/v6/chroma_db_ir_v6 /opt/isd/ISDDocumentIntelligence_V6/backend/
 
-# 4. CRITICAL — chown so the isd-backend service user can access the files
-sudo chown -R isd:isd /opt/isd/ISDDocumentIntelligence_V6/backend/chroma_db_ir_v6
+# 4. chown to whichever user runs uvicorn (your SSH user, or root if you
+#    sudo'd uvicorn). Adjust the user:group below.
+sudo chown -R $USER:$USER /opt/isd/ISDDocumentIntelligence_V6/backend/chroma_db_ir_v6
 
-# 5. Verify ranking table is intact (count must match Phase 2A baseline)
-mysql -u root -pisdadmin ISDIntelligence -e "SELECT COUNT(*) FROM ranking;"
-
-# 6. Start the backend service
-sudo systemctl start isd-backend
-sudo systemctl status isd-backend --no-pager | head -10
+# 5. Restart backend in the same console you used before:
+#    cd /opt/isd/ISDDocumentIntelligence_V6/backend
+#    uvicorn app:app --host 0.0.0.0 --port 8003 --reload
 ```
+
+(If you eventually install the systemd service per `deploy/README.md`,
+swap step 1 for `sudo systemctl stop isd-backend`, step 5 for
+`sudo systemctl start isd-backend`, and the chown user for `isd:isd`.)
 
 ---
 
