@@ -43,19 +43,30 @@ const initialForm = (): CaseEntry => ({
 
 /* --- Reusable field components --- */
 
-function TextField({ label, value, onChange, placeholder, type = 'text' }: {
-  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string;
+function TextField({ label, value, onChange, placeholder, type = 'text', readOnly = false, hint }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; readOnly?: boolean; hint?: string;
 }) {
   return (
     <div>
-      <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>{label}</label>
+      <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>
+        {label}
+        {readOnly && hint && (
+          <span className="ml-2 font-normal italic" style={{ color: 'rgba(11,44,74,0.6)' }}>({hint})</span>
+        )}
+      </label>
       <input
         type={type}
         value={value}
-        onChange={(e) => onChange(e.target.value)}
+        onChange={(e) => !readOnly && onChange(e.target.value)}
+        readOnly={readOnly}
         className="w-full px-3 py-2 rounded-xl text-sm outline-none"
-        style={{ border: '2px solid var(--ksp-navy)', background: '#fff' }}
-        placeholder={placeholder ?? ''}
+        style={{
+          border: readOnly ? '1px solid rgba(11,44,74,0.15)' : '2px solid var(--ksp-navy)',
+          background: readOnly ? 'rgba(11,44,74,0.04)' : '#fff',
+          color: readOnly ? 'rgba(0,0,0,0.6)' : 'inherit',
+          cursor: readOnly ? 'not-allowed' : 'text',
+        }}
+        placeholder={readOnly ? '' : (placeholder ?? '')}
       />
     </div>
   );
@@ -326,7 +337,7 @@ export function CaseEntryPage() {
         {/* === TAB 1 -- Case Details === */}
         {tab === 0 && (
           <Section title="Case Information">
-            <TextField label="FIR No" value={f.fir_no} onChange={(v) => setF(p => ({ ...p, fir_no: v }))} placeholder="e.g. 123/2026" />
+            <TextField label="FIR No" value={f.fir_no} onChange={(v) => setF(p => ({ ...p, fir_no: v }))} placeholder="e.g. 123/2026" readOnly={isEdit} hint={isEdit ? "FIR number cannot be changed after creation" : undefined} />
             <TextField label="Registration Date" value={f.registration_date} onChange={(v) => setF(p => ({ ...p, registration_date: v }))} type="date" />
             <SelectField label="Case Type" value={f.case_type}
               onChange={(v) => setF(p => ({ ...p, case_type: v as CaseEntry['case_type'] }))}

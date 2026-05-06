@@ -517,6 +517,54 @@ def test_7_8_fir_no_immutable_on_put(base_url, admin_token):
         )
 
 
+def test_7_8_mule_ack_and_fir_immutable_on_put(base_url, admin_token):
+    """Per product rule (2026-05-05): both acknowledgement_no and fir_no on
+    a mule report are immutable on PUT. Sending different values in the
+    body must be silently preserved-as-original."""
+    original_ack = f"ACK-IMMUT-{int(time.time())}"
+    original_fir = f"FIR-IMMUT-{int(time.time())}"
+    create = requests.post(
+        f"{base_url}/api/v1/mule-reports/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "acknowledgement_no": original_ack,
+            "fir_no": original_fir,
+            "status": "draft",
+        },
+        timeout=10,
+    )
+    assert create.status_code == 200, create.text
+    rid = create.json()["id"]
+
+    try:
+        put_r = requests.put(
+            f"{base_url}/api/v1/mule-reports/{rid}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={
+                "acknowledgement_no": "ATTEMPTED-ACK-CHANGE",  # should be ignored
+                "fir_no": "ATTEMPTED-FIR-CHANGE",              # should be ignored
+                "status": "draft",
+            },
+            timeout=10,
+        )
+        assert put_r.status_code == 200, put_r.text
+        body = put_r.json()
+        assert body["acknowledgement_no"] == original_ack, (
+            f"acknowledgement_no changed via PUT! original={original_ack!r}, "
+            f"after={body['acknowledgement_no']!r}"
+        )
+        assert body["fir_no"] == original_fir, (
+            f"fir_no changed via PUT on mule report! original={original_fir!r}, "
+            f"after={body['fir_no']!r}"
+        )
+    finally:
+        requests.delete(
+            f"{base_url}/api/v1/mule-reports/{rid}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        )
+
+
 # ─────────────────────────────────────────────────────────────────────
 # 7.10  XLSX cell content unsanitized in mule upload.
 # Fix: _safe_str() in routes_mule_report.py now pipes cell values through

@@ -58,19 +58,29 @@ const initialForm = (): MuleReport => ({
 
 /* --- Reusable field components --- */
 
-function TextField({ label, value, onChange, placeholder, type = 'text', readOnly = false }: {
-  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; readOnly?: boolean;
+function TextField({ label, value, onChange, placeholder, type = 'text', readOnly = false, hint }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; readOnly?: boolean; hint?: string;
 }) {
   return (
     <div>
-      <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>{label}</label>
+      <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>
+        {label}
+        {readOnly && hint && (
+          <span className="ml-2 font-normal italic" style={{ color: 'rgba(11,44,74,0.6)' }}>({hint})</span>
+        )}
+      </label>
       <input
         type={type}
         value={value}
         onChange={(e) => !readOnly && onChange(e.target.value)}
         readOnly={readOnly}
         className="w-full px-3 py-2 rounded-xl text-sm outline-none"
-        style={{ border: readOnly ? '1px solid rgba(11,44,74,0.15)' : '2px solid var(--ksp-navy)', background: readOnly ? 'rgba(11,44,74,0.04)' : '#fff' }}
+        style={{
+          border: readOnly ? '1px solid rgba(11,44,74,0.15)' : '2px solid var(--ksp-navy)',
+          background: readOnly ? 'rgba(11,44,74,0.04)' : '#fff',
+          color: readOnly ? 'rgba(0,0,0,0.6)' : 'inherit',
+          cursor: readOnly ? 'not-allowed' : 'text',
+        }}
         placeholder={readOnly ? '' : (placeholder ?? '')}
       />
     </div>
@@ -294,8 +304,22 @@ export function MuleReportEntryPage() {
       <form onSubmit={handleSubmit} className="space-y-5 max-w-5xl">
         {/* Top fields always visible */}
         <Section title="Report Information">
-          <TextField readOnly={fromExcel} label="Acknowledgement No" value={f.acknowledgement_no} onChange={(v) => setF(p => ({ ...p, acknowledgement_no: v }))} placeholder="e.g. ACK-2026-001" />
-          <TextField readOnly={fromExcel} label="FIR No" value={f.fir_no} onChange={(v) => setF(p => ({ ...p, fir_no: v }))} placeholder="e.g. 123/2026" />
+          <TextField
+            readOnly={isEdit || fromExcel}
+            hint={isEdit ? "Acknowledgement number cannot be changed after creation" : undefined}
+            label="Acknowledgement No"
+            value={f.acknowledgement_no}
+            onChange={(v) => setF(p => ({ ...p, acknowledgement_no: v }))}
+            placeholder="e.g. ACK-2026-001"
+          />
+          <TextField
+            readOnly={isEdit || fromExcel}
+            hint={isEdit ? "FIR number cannot be changed after creation" : undefined}
+            label="FIR No"
+            value={f.fir_no}
+            onChange={(v) => setF(p => ({ ...p, fir_no: v }))}
+            placeholder="e.g. 123/2026"
+          />
         </Section>
 
         {/* Tab bar */}

@@ -447,10 +447,10 @@ async def update_mule_report(
     _validate_submitted_report(body)
 
     # Update report fields.
-    # NOTE: acknowledgement_no is intentionally NOT updated - per product
-    # decision, the bank acknowledgement number is immutable after
-    # creation. Sending a different value in the body is silently ignored.
-    report.fir_no = body.fir_no or None
+    # NOTE: acknowledgement_no AND fir_no are intentionally NOT updated -
+    # per product decision (2026-05-05), both identifying numbers are
+    # immutable after creation. Sending different values in the body is
+    # silently ignored.
     report.status = body.status
     # NOTE: submitted_by is intentionally NOT changed on update. The
     # original submitter remains the owner of the record (used by the
