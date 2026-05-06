@@ -24,7 +24,8 @@ from models.aeps_transaction import AepsTransaction
 from models.atm_withdrawal import AtmWithdrawal
 from models.unit import Unit
 from schemas.mule import MuleReportCreate, MuleReportResponse, MuleReportListItem
-from api.deps import get_current_user, require_admin, CurrentUser
+from api.deps import get_current_user, require_admin, CurrentUser, check_record_access
+from utils.sanitize import strip_html
 
 router = APIRouter(prefix="/api/v1/mule-reports", tags=["mule-reports"])
 
@@ -32,9 +33,16 @@ router = APIRouter(prefix="/api/v1/mule-reports", tags=["mule-reports"])
 # -- Excel parsing helpers -------------------------------------------------
 
 def _safe_str(val) -> str:
+    """Return a clean string from a raw cell value.
+
+    Sanitises HTML tags, javascript: URIs and on*= event handlers (VAPT
+    7.10) so a malicious XLSX cell payload like `<script>alert(1)</script>`
+    cannot be persisted or reflected back in API responses.
+    """
     if val is None:
         return ""
-    return str(val).strip()
+    cleaned = strip_html(str(val).strip())
+    return cleaned or ""
 
 
 def _safe_decimal(val) -> Decimal:
@@ -345,14 +353,21 @@ async def list_mule_reports(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """List mule reports scoped to the caller (VAPT 7.7 + 7.8).
+
+    - admin     : all reports in their PS
+    - unit_user : only reports they personally submitted, in their PS
+    """
     unit_id = current_user.unit_id
     if not unit_id:
         raise HTTPException(status_code=403, detail="No unit assigned.")
 
+    q = select(MuleReport).where(MuleReport.unit_id == unit_id)
+    if current_user.role != "admin":
+        q = q.where(MuleReport.submitted_by == current_user.user_id)
+
     reports = (await db.execute(
-        select(MuleReport)
-        .where(MuleReport.unit_id == unit_id)
-        .options(*_eager_options())
+        q.options(*_eager_options())
         .order_by(MuleReport.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -370,11 +385,18 @@ async def search_mule_report(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Search for a mule report by acknowledgement number within the user's unit."""
+    """Search for a mule report by acknowledgement number within the caller's scope (VAPT 7.7+7.8)."""
     unit_id = current_user.unit_id
-    q = select(MuleReport).where(MuleReport.acknowledgement_no == ack_no).options(*_eager_options())
-    if unit_id and current_user.role != "admin":
-        q = q.where(MuleReport.unit_id == unit_id)
+    if not unit_id:
+        raise HTTPException(status_code=403, detail="No unit assigned.")
+
+    q = (
+        select(MuleReport)
+        .where(MuleReport.acknowledgement_no == ack_no, MuleReport.unit_id == unit_id)
+        .options(*_eager_options())
+    )
+    if current_user.role != "admin":
+        q = q.where(MuleReport.submitted_by == current_user.user_id)
     report = (await db.execute(q)).scalar_one_or_none()
     if not report:
         return None
@@ -396,8 +418,8 @@ async def get_mule_report(
     if not report:
         raise HTTPException(status_code=404, detail="Mule report not found")
 
-    if current_user.role != "admin" and report.unit_id != current_user.unit_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # VAPT 7.7 + 7.8: enforce per-record + per-PS authorization.
+    check_record_access(report, current_user)
 
     unit_name = await _get_unit_name(report.unit_id, db)
     return _report_to_response(report, unit_name)
@@ -418,16 +440,21 @@ async def update_mule_report(
 
     if not report:
         raise HTTPException(status_code=404, detail="Mule report not found")
-    if current_user.role != "admin" and report.unit_id != current_user.unit_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+
+    # VAPT 7.7 + 7.8: enforce per-record + per-PS authorization.
+    check_record_access(report, current_user)
 
     _validate_submitted_report(body)
 
-    # Update report fields
-    report.acknowledgement_no = body.acknowledgement_no or None
+    # Update report fields.
+    # NOTE: acknowledgement_no is intentionally NOT updated - per product
+    # decision, the bank acknowledgement number is immutable after
+    # creation. Sending a different value in the body is silently ignored.
     report.fir_no = body.fir_no or None
     report.status = body.status
-    report.submitted_by = current_user.user_id
+    # NOTE: submitted_by is intentionally NOT changed on update. The
+    # original submitter remains the owner of the record (used by the
+    # per-record authorization check).
 
     # Delete all existing children
     for child in list(report.money_transfers):
@@ -471,8 +498,9 @@ async def delete_mule_report(
 
     if not report:
         raise HTTPException(status_code=404, detail="Mule report not found")
-    if current_user.role != "admin" and report.unit_id != current_user.unit_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+
+    # VAPT 7.7 + 7.8: enforce per-record + per-PS authorization.
+    check_record_access(report, current_user)
 
     await db.delete(report)
     await db.commit()

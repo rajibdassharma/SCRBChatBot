@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import List
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -18,30 +18,46 @@ from api.deps import require_admin, CurrentUser
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
 
 
+# Per VAPT 7.8: there is no global admin role. Every admin is a PS admin and
+# is scoped to their own unit_id. Dashboard aggregates therefore reflect a
+# single PS - never cross-PS data.
+
+
 @router.get("/summary", response_model=KpiSummary)
 async def get_summary(
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    total_cases = (await db.execute(select(func.count(Case.id)))).scalar() or 0
-    total_arrests = (await db.execute(
-        select(func.count(Arrest.id)).join(Case, Arrest.case_id == Case.id)
+    if not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    total_cases = (await db.execute(
+        select(func.count(Case.id)).where(Case.unit_id == admin.unit_id)
     )).scalar() or 0
+
+    total_arrests = (await db.execute(
+        select(func.count(Arrest.id))
+        .join(Case, Arrest.case_id == Case.id)
+        .where(Case.unit_id == admin.unit_id)
+    )).scalar() or 0
+
     total_amount_lien_marked = float((await db.execute(
         select(func.coalesce(func.sum(LienAccount.amount_lien_marked), 0))
         .join(Case, LienAccount.case_id == Case.id)
+        .where(Case.unit_id == admin.unit_id)
     )).scalar() or 0)
+
     total_amount_refunded = float((await db.execute(
         select(func.coalesce(func.sum(Refund.amount), 0))
         .join(Case, Refund.case_id == Case.id)
-        .where(Refund.refunded == "yes")
+        .where(Case.unit_id == admin.unit_id, Refund.refunded == "yes")
     )).scalar() or 0)
-    units_submitted = (await db.execute(
-        select(func.count(func.distinct(Case.unit_id)))
-    )).scalar() or 0
-    units_total = (await db.execute(
-        select(func.count(Unit.id)).where(Unit.is_active == True)
-    )).scalar() or 0
+
+    # With per-PS scoping, "units submitted" is a 0/1 indicator for the
+    # admin's own PS, and "units total" is fixed at 1. Kept in the response
+    # for backward-compat with the existing frontend KPI tiles.
+    units_submitted = 1 if total_cases > 0 else 0
+    units_total = 1
 
     return KpiSummary(
         total_cases=int(total_cases),
@@ -58,38 +74,35 @@ async def get_unit_comparison(
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    rows = (await db.execute(
-        select(
-            Unit.name.label("unit_name"),
-            func.coalesce(func.count(Case.id), 0).label("cases"),
-        )
-        .outerjoin(Case, Case.unit_id == Unit.id)
-        .where(Unit.is_active == True)
-        .group_by(Unit.id, Unit.name)
-        .order_by(func.count(Case.id).desc())
-    )).all()
+    """Returns a single row for the admin's PS only (VAPT 7.8 - no cross-PS)."""
+    if not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
 
-    results = []
-    for r in rows:
-        arrest_count = (await db.execute(
-            select(func.count(Arrest.id))
-            .join(Case, Arrest.case_id == Case.id)
-            .join(Unit, Case.unit_id == Unit.id)
-            .where(Unit.name == r.unit_name)
-        )).scalar() or 0
+    unit = (await db.execute(
+        select(Unit).where(Unit.id == admin.unit_id)
+    )).scalar_one_or_none()
+    if not unit:
+        return []
 
-        lien_amount = float((await db.execute(
-            select(func.coalesce(func.sum(LienAccount.amount_lien_marked), 0))
-            .join(Case, LienAccount.case_id == Case.id)
-            .join(Unit, Case.unit_id == Unit.id)
-            .where(Unit.name == r.unit_name)
-        )).scalar() or 0)
+    case_count = (await db.execute(
+        select(func.count(Case.id)).where(Case.unit_id == admin.unit_id)
+    )).scalar() or 0
 
-        results.append(UnitComparison(
-            unit_name=r.unit_name,
-            cases=int(r.cases),
-            arrests=int(arrest_count),
-            amount_lien_marked=lien_amount,
-        ))
+    arrest_count = (await db.execute(
+        select(func.count(Arrest.id))
+        .join(Case, Arrest.case_id == Case.id)
+        .where(Case.unit_id == admin.unit_id)
+    )).scalar() or 0
 
-    return results
+    lien_amount = float((await db.execute(
+        select(func.coalesce(func.sum(LienAccount.amount_lien_marked), 0))
+        .join(Case, LienAccount.case_id == Case.id)
+        .where(Case.unit_id == admin.unit_id)
+    )).scalar() or 0)
+
+    return [UnitComparison(
+        unit_name=unit.name,
+        cases=int(case_count),
+        arrests=int(arrest_count),
+        amount_lien_marked=lien_amount,
+    )]

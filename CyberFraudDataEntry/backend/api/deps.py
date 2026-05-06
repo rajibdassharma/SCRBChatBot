@@ -73,3 +73,22 @@ def require_unit_user(current_user: CurrentUser = Depends(get_current_user)) -> 
     if current_user.role != "unit_user" or not current_user.unit_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Unit user access required")
     return current_user
+
+
+def check_record_access(record, current_user: CurrentUser) -> None:
+    """Enforce per-record authorization (VAPT 7.7 + 7.8).
+
+    Model:
+      - admin (PS admin): sees all records in their own unit_id; NEVER cross-PS
+      - unit_user        : sees only records they submitted, in their own unit_id
+
+    There is no global admin role - every account is scoped to a single PS.
+    Use on every detail/edit endpoint that takes a record id from the URL.
+    Caller is responsible for handling 404 (record not found) before calling.
+    """
+    # Cross-PS access is denied for everyone, including admins.
+    if current_user.unit_id is None or getattr(record, "unit_id", None) != current_user.unit_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    # Within the PS, unit_users can only touch records they personally submitted.
+    if current_user.role != "admin" and getattr(record, "submitted_by", None) != current_user.user_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")

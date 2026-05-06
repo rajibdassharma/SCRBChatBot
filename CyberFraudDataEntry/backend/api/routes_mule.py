@@ -115,11 +115,21 @@ async def get_all_mule(
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    """Admin view of mule entries on a date.
+
+    Per VAPT 7.8: scoped to the admin's own PS only (no cross-PS data).
+    There is no global admin role - this endpoint is now equivalent to
+    GET /mule/?date= when called by an admin and is kept for frontend
+    backward compatibility.
+    """
+    if not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
     entries = (await db.execute(
-        select(MuleEntry).where(MuleEntry.report_date == date)
+        select(MuleEntry).where(
+            MuleEntry.report_date == date,
+            MuleEntry.unit_id == admin.unit_id,
+        )
     )).scalars().all()
 
-    units = (await db.execute(select(Unit))).scalars().all()
-    unit_map = {u.id: u.name for u in units}
-
-    return [_entry_to_response(e, unit_map.get(e.unit_id)) for e in entries]
+    return [_entry_to_response(e, admin.unit_name) for e in entries]

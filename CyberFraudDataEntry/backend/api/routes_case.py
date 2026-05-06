@@ -17,7 +17,7 @@ from models.lien_account import LienAccount
 from models.unfreeze_detail import UnfreezeDetail
 from models.refund import Refund
 from schemas.case import CaseCreate, CaseResponse, CaseListItem
-from api.deps import get_current_user, require_admin, CurrentUser
+from api.deps import get_current_user, require_admin, CurrentUser, check_record_access
 
 router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 
@@ -305,8 +305,18 @@ async def list_all_cases(
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    """Admin view of all cases in the admin's PS (NOT cross-PS - VAPT 7.8).
+
+    There is no global admin role - PS admins are scoped to their own unit_id.
+    Equivalent to GET /cases/ when called by an admin; kept for backward
+    compatibility with any frontend code that still hits /all.
+    """
+    if not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
     cases = (await db.execute(
         select(Case)
+        .where(Case.unit_id == admin.unit_id)
         .options(selectinload(Case.arrests))
         .order_by(Case.created_at.desc())
         .limit(limit)
@@ -325,14 +335,21 @@ async def list_cases(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    """List cases scoped to the caller (VAPT 7.7 + 7.8).
+
+    - admin     : all cases in their PS
+    - unit_user : only cases they personally submitted, in their PS
+    """
     unit_id = current_user.unit_id
     if not unit_id:
-        raise HTTPException(status_code=403, detail="No unit assigned. Use /all for admin access.")
+        raise HTTPException(status_code=403, detail="No unit assigned to this account.")
+
+    q = select(Case).where(Case.unit_id == unit_id)
+    if current_user.role != "admin":
+        q = q.where(Case.submitted_by == current_user.user_id)
 
     cases = (await db.execute(
-        select(Case)
-        .where(Case.unit_id == unit_id)
-        .options(selectinload(Case.arrests))
+        q.options(selectinload(Case.arrests))
         .order_by(Case.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -350,11 +367,18 @@ async def search_case_by_fir(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Search for a case by FIR number within the user's unit."""
+    """Search for a case by FIR number within the caller's scope (VAPT 7.7+7.8)."""
     unit_id = current_user.unit_id
-    q = select(Case).where(Case.fir_no == fir_no).options(*_eager_options())
-    if unit_id and current_user.role != "admin":
-        q = q.where(Case.unit_id == unit_id)
+    if not unit_id:
+        raise HTTPException(status_code=403, detail="No unit assigned to this account.")
+
+    q = (
+        select(Case)
+        .where(Case.fir_no == fir_no, Case.unit_id == unit_id)
+        .options(*_eager_options())
+    )
+    if current_user.role != "admin":
+        q = q.where(Case.submitted_by == current_user.user_id)
     case = (await db.execute(q)).scalar_one_or_none()
     if not case:
         return None
@@ -369,11 +393,18 @@ async def search_case_by_petition(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Search for a case by petition number within the user's unit."""
+    """Search for a case by petition number within the caller's scope (VAPT 7.7+7.8)."""
     unit_id = current_user.unit_id
-    q = select(Case).where(Case.petition_no == petition_no).options(*_eager_options())
-    if unit_id and current_user.role != "admin":
-        q = q.where(Case.unit_id == unit_id)
+    if not unit_id:
+        raise HTTPException(status_code=403, detail="No unit assigned to this account.")
+
+    q = (
+        select(Case)
+        .where(Case.petition_no == petition_no, Case.unit_id == unit_id)
+        .options(*_eager_options())
+    )
+    if current_user.role != "admin":
+        q = q.where(Case.submitted_by == current_user.user_id)
     case = (await db.execute(q)).scalar_one_or_none()
     if not case:
         return None
@@ -395,9 +426,8 @@ async def get_case(
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    # Non-admin users can only see their own unit cases
-    if current_user.role != "admin" and case.unit_id != current_user.unit_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    # VAPT 7.7 + 7.8: enforce per-record + per-PS authorization.
+    check_record_access(case, current_user)
 
     return _case_to_response(case)
 
@@ -417,20 +447,25 @@ async def update_case(
 
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if current_user.role != "admin" and case.unit_id != current_user.unit_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+
+    # VAPT 7.7 + 7.8: enforce per-record + per-PS authorization.
+    check_record_access(case, current_user)
 
     _validate_submitted_case(body)
 
-    # Update case fields
-    case.fir_no = body.fir_no
+    # Update case fields.
+    # NOTE: fir_no is intentionally NOT updated - per product decision,
+    # the FIR number is immutable after creation. Sending a different
+    # value in the body is silently ignored.
     case.petition_no = body.petition_no
     case.registration_date = body.registration_date
     case.case_type = body.case_type
     case.crime_type = body.crime_type
     case.facts = body.facts
     case.status = body.status
-    case.submitted_by = current_user.user_id
+    # NOTE: submitted_by is intentionally NOT changed on update. The
+    # original submitter remains the owner of the record (used by the
+    # per-record authorization check).
 
     # Delete all existing children (cascade handles grandchildren)
     for arrest in list(case.arrests):
@@ -472,8 +507,9 @@ async def delete_case(
 
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
-    if current_user.role != "admin" and case.unit_id != current_user.unit_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+
+    # VAPT 7.7 + 7.8: enforce per-record + per-PS authorization.
+    check_record_access(case, current_user)
 
     await db.delete(case)  # cascade deletes children
     await db.commit()

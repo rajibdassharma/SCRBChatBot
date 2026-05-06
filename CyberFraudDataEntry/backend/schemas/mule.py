@@ -4,7 +4,13 @@ from datetime import date
 from decimal import Decimal
 from typing import List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from utils.sanitize import strip_html
+
+
+def _sanitize(cls, v):  # noqa: N805 - Pydantic validator signature
+    return strip_html(v) if isinstance(v, str) else v
 
 
 class MuleCreate(BaseModel):
@@ -21,6 +27,15 @@ class MuleCreate(BaseModel):
     cheque_withdrawal_branches: str | None = None
     money_left_system_stats: str | None = None
     crypto_mule_accounts: str | None = None
+
+    _sanitize_text = field_validator(
+        "accounts_most_liens", "recruiters_for_lien_accounts",
+        "accounts_max_money_routed", "accounts_max_transactions",
+        "recency_atm_transactions", "cash_withdrawals_mule_wise",
+        "atm_geo_identification", "atm_table_by_transactions",
+        "cheque_withdrawal_branches", "money_left_system_stats",
+        "crypto_mule_accounts",
+    )(_sanitize)
 
 
 class MuleResponse(MuleCreate):
@@ -53,6 +68,12 @@ class MoneyTransferCreate(BaseModel):
     action_taken_by_bank: Optional[str] = None
     date_of_action: Optional[str] = None
 
+    _sanitize_text = field_validator(
+        "account_no", "transaction_id", "bank", "dest_account_no", "ifsc_code",
+        "transaction_date", "dest_transaction_id", "reference_no", "remarks",
+        "action_taken_by_bank", "date_of_action",
+    )(_sanitize)
+
 
 class OtherTransactionCreate(BaseModel):
     account_no: Optional[str] = None
@@ -64,6 +85,11 @@ class OtherTransactionCreate(BaseModel):
     action_taken_by_bank: Optional[str] = None
     date_of_action: Optional[str] = None
 
+    _sanitize_text = field_validator(
+        "account_no", "transaction_id", "transaction_date",
+        "reference_no", "remarks", "action_taken_by_bank", "date_of_action",
+    )(_sanitize)
+
 
 class TransactionOnHoldCreate(BaseModel):
     account_no: Optional[str] = None
@@ -74,6 +100,11 @@ class TransactionOnHoldCreate(BaseModel):
     date_of_action: Optional[str] = None
     layer: Optional[int] = None
 
+    _sanitize_text = field_validator(
+        "account_no", "transaction_id", "hold_date",
+        "action_taken_by_bank", "date_of_action",
+    )(_sanitize)
+
 
 class OtherLessThan500Create(BaseModel):
     account_no: Optional[str] = None
@@ -82,6 +113,11 @@ class OtherLessThan500Create(BaseModel):
     remarks: Optional[str] = None
     action_taken_by_bank: Optional[str] = None
     date_of_action: Optional[str] = None
+
+    _sanitize_text = field_validator(
+        "account_no", "transaction_id", "reference_no", "remarks",
+        "action_taken_by_bank", "date_of_action",
+    )(_sanitize)
 
 
 class AepsTransactionCreate(BaseModel):
@@ -94,6 +130,11 @@ class AepsTransactionCreate(BaseModel):
     action_taken_by_bank: Optional[str] = None
     date_of_action: Optional[str] = None
     layer: Optional[int] = None
+
+    _sanitize_text = field_validator(
+        "account_no", "transaction_id", "withdrawal_date",
+        "reference_no", "remarks", "action_taken_by_bank", "date_of_action",
+    )(_sanitize)
 
 
 class AtmWithdrawalCreate(BaseModel):
@@ -109,6 +150,12 @@ class AtmWithdrawalCreate(BaseModel):
     action_taken_by_bank: Optional[str] = None
     date_of_action: Optional[str] = None
 
+    _sanitize_text = field_validator(
+        "account_no", "transaction_id", "withdrawal_datetime",
+        "atm_id", "atm_location", "reference_no", "remarks",
+        "action_taken_by_bank", "date_of_action",
+    )(_sanitize)
+
 
 # -- Mule Report Create / Response ------------------------------------
 
@@ -122,6 +169,8 @@ class MuleReportCreate(BaseModel):
     others_less_than_500: List[OtherLessThan500Create] = Field(default_factory=list)
     aeps_transactions: List[AepsTransactionCreate] = Field(default_factory=list)
     atm_withdrawals: List[AtmWithdrawalCreate] = Field(default_factory=list)
+
+    _sanitize_text = field_validator("acknowledgement_no", "fir_no")(_sanitize)
 
 
 class MuleReportResponse(BaseModel):

@@ -101,3 +101,76 @@ def lockout_user(seed_users) -> dict:
     # Use the LAST user so we don't collide with other tests that might
     # borrow the first unit_user row
     return users[-1]
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Station-pair fixtures (for VAPT 7.7 + 7.8 BOLA tests)
+#
+# Seed CSV columns: username, password, role, station, must_change_*
+# Each station has 2 users — one admin and one unit_user. The fixtures
+# below find pairs grouped by `station` so the BOLA tests can act as
+# distinct accounts within / across stations.
+# ─────────────────────────────────────────────────────────────────────
+
+def _users_by_station(seed_users) -> dict[str, dict[str, dict]]:
+    """Return {station_name: {role: user_row}} for stations that have both
+    an admin and a unit_user."""
+    grouped: dict[str, dict[str, dict]] = {}
+    for role, rows in seed_users.items():
+        for row in rows:
+            station = row.get("station") or ""
+            if not station:
+                continue
+            grouped.setdefault(station, {})[role] = row
+    # Keep only stations that have BOTH roles
+    return {st: roles for st, roles in grouped.items()
+            if "admin" in roles and "unit_user" in roles}
+
+
+def _login(base_url: str, creds: dict) -> str:
+    r = requests.post(
+        f"{base_url}/api/v1/auth/login",
+        json={"username": creds["username"], "password": creds["password"]},
+        timeout=10,
+    )
+    assert r.status_code == 200, f"login failed for {creds['username']}: {r.text}"
+    return r.json()["token"]
+
+
+@pytest.fixture(scope="session")
+def station_pairs(seed_users) -> list[tuple[str, dict, dict]]:
+    """List of (station_name, admin_row, unit_user_row) for stations that
+    have both roles seeded."""
+    grouped = _users_by_station(seed_users)
+    return [(st, roles["admin"], roles["unit_user"]) for st, roles in grouped.items()]
+
+
+@pytest.fixture
+def ps_admin_login(base_url, station_pairs):
+    """Callable returning a fresh JWT for the admin of station #0 (used
+    paired with `ps_user_login` for VAPT 7.7 within-PS BOLA tests)."""
+    if not station_pairs:
+        pytest.skip("No station has both admin + unit_user in seed CSV")
+    _, admin_row, _ = station_pairs[0]
+    return lambda: _login(base_url, admin_row)
+
+
+@pytest.fixture
+def ps_user_login(base_url, station_pairs):
+    """Callable returning a fresh JWT for the unit_user of the SAME station
+    as `ps_admin_login`."""
+    if not station_pairs:
+        pytest.skip("No station has both admin + unit_user in seed CSV")
+    _, _, user_row = station_pairs[0]
+    return lambda: _login(base_url, user_row)
+
+
+@pytest.fixture
+def other_ps_admin_login(base_url, station_pairs):
+    """Callable returning a fresh JWT for an admin of a DIFFERENT station
+    (used for VAPT 7.8 cross-PS BOLA tests). Skips if there's only one
+    station seeded."""
+    if len(station_pairs) < 2:
+        pytest.skip("Need at least 2 stations with admins seeded for cross-PS test")
+    _, admin_row, _ = station_pairs[1]
+    return lambda: _login(base_url, admin_row)
