@@ -231,6 +231,40 @@ def test_7_5_case_payload_sanitized(base_url, admin_token):
         )
 
 
+def test_7_5_dsr_case_type_sanitized(base_url, admin_token):
+    """VAPT v1.0.1 rec #5 ("review all modules"): the DSR endpoint has a
+    free-text case_type field. Even though the audit didn't list /dsr in
+    the affected URLs, defense-in-depth requires the same sanitizer."""
+    payload = {
+        "report_date": "2026-05-05",
+        "cases": 1,
+        "petitions": 0,
+        "details_of_arrest": 0,
+        "case_type": "<script>alert(1)</script>NCRP",
+        "cumulative_amount_lien_marked": 0,
+        "cumulative_accounts_lien_marked": 0,
+        "cumulative_accounts_defreezed": 0,
+        "amount_refunded_to_victim": 0,
+        "ui_cases_pending_2021": 0, "ui_cases_pending_2022": 0,
+        "ui_cases_pending_2023": 0, "ui_cases_pending_2024": 0,
+        "ui_cases_pending_2025": 0, "ui_cases_pending_2026": 0,
+        "disposed_detected_chargesheeted": 0, "disposed_transferred": 0,
+        "disposed_false": 0, "disposed_undetected": 0,
+        "trial_convicted": 0, "trial_discharged": 0, "trial_acquitted": 0,
+        "trial_abated": 0, "trial_compounded": 0, "trial_ut": 0,
+    }
+    r = requests.post(
+        f"{base_url}/api/v1/dsr/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json=payload,
+        timeout=10,
+    )
+    assert r.status_code == 200, f"DSR upsert failed: {r.status_code} {r.text}"
+    body = r.json()
+    case_type = (body.get("case_type") or "").lower()
+    assert "<script" not in case_type, f"<script survived in DSR case_type: {body!r}"
+
+
 def test_7_5_mule_report_payload_sanitized(base_url, admin_token):
     """VAPT v1.0.1 (2026-05-05) extended item 5 to cover /mule/new and
     /petitions/new in addition to /cases/new. This test exercises the

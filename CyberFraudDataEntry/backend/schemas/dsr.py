@@ -3,7 +3,13 @@ from __future__ import annotations
 from datetime import date
 from decimal import Decimal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
+
+from utils.sanitize import strip_html
+
+
+def _sanitize(cls, v):  # noqa: N805 - Pydantic validator signature
+    return strip_html(v) if isinstance(v, str) else v
 
 
 class DsrCreate(BaseModel):
@@ -16,6 +22,11 @@ class DsrCreate(BaseModel):
 
     # Amount Lien Marked
     case_type: str | None = None
+
+    # VAPT 7.5 (rec #5 - "review all modules"): case_type is the only
+    # free-text field on the DSR. Sanitize to defend against stored
+    # XSS from any future endpoint that renders it.
+    _sanitize_text = field_validator("case_type")(_sanitize)
     cumulative_amount_lien_marked: Decimal = Field(default=Decimal("0"), ge=0)
     cumulative_accounts_lien_marked: int = Field(default=0, ge=0)
     cumulative_accounts_defreezed: int = Field(default=0, ge=0)
