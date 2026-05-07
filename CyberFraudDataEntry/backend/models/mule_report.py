@@ -1,10 +1,12 @@
+import uuid
+
 from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, UniqueConstraint, func
 from sqlalchemy.orm import relationship
 from database import Base
 
 class MuleReport(Base):
     __tablename__ = "mule_reports"
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     unit_id = Column(Integer, ForeignKey("units.id"), nullable=False)
     acknowledgement_no = Column(String(50), nullable=True, unique=True)
     fir_no = Column(String(50), nullable=True, unique=True)

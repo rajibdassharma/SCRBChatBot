@@ -129,8 +129,8 @@ class CaseCreate(BaseModel):
 # ── Child Response schemas ────────────────────────────────────────
 
 class AccompliceResponse(BaseModel):
-    id: int
-    arrest_id: int
+    id: str
+    arrest_id: str
     where_met: Optional[str] = None
     where_stayed: Optional[str] = None
     interrogation_details: Optional[str] = None
@@ -141,8 +141,8 @@ class AccompliceResponse(BaseModel):
 
 
 class AccusedDetailResponse(BaseModel):
-    id: int
-    arrest_id: int
+    id: str
+    arrest_id: str
     photo_path: Optional[str] = None
     email: Optional[str] = None
     mobile: Optional[str] = None
@@ -155,8 +155,8 @@ class AccusedDetailResponse(BaseModel):
 
 
 class ArrestResponse(BaseModel):
-    id: int
-    case_id: int
+    id: str
+    case_id: str
     name: str
     address: Optional[str] = None
     email: Optional[str] = None
@@ -172,8 +172,8 @@ class ArrestResponse(BaseModel):
 
 
 class PetitionResponse(BaseModel):
-    id: int
-    case_id: int
+    id: str
+    case_id: str
     fir_registered: str
     why_not: Optional[str] = None
     nature: Optional[str] = None
@@ -186,8 +186,8 @@ class PetitionResponse(BaseModel):
 
 
 class LienAccountResponse(BaseModel):
-    id: int
-    case_id: int
+    id: str
+    case_id: str
     case_type: str
     account_no: str
     amount_lien_marked: float = 0
@@ -201,8 +201,8 @@ class LienAccountResponse(BaseModel):
 
 
 class UnfreezeDetailResponse(BaseModel):
-    id: int
-    case_id: int
+    id: str
+    case_id: str
     unfreeze_type: str
     crime_no: Optional[str] = None
     bank_name: Optional[str] = None
@@ -215,8 +215,8 @@ class UnfreezeDetailResponse(BaseModel):
 
 
 class RefundResponse(BaseModel):
-    id: int
-    case_id: int
+    id: str
+    case_id: str
     refunded: str
     victim_name: Optional[str] = None
     amount: float = 0
@@ -230,7 +230,7 @@ class RefundResponse(BaseModel):
 # ── Case Response schemas ─────────────────────────────────────────
 
 class CaseResponse(BaseModel):
-    id: int
+    id: str
     unit_id: int
     fir_no: str
     petition_no: Optional[str] = None
@@ -254,7 +254,7 @@ class CaseResponse(BaseModel):
 
 
 class CaseListItem(BaseModel):
-    id: int
+    id: str
     unit_id: int
     fir_no: str
     petition_no: Optional[str] = None

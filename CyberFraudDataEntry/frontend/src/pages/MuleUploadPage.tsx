@@ -8,7 +8,7 @@ interface UploadResult {
   filename: string;
   ok: boolean;
   error?: string;
-  report_id?: number;
+  report_id?: string;
   acknowledgement_no?: string;
   total_transactions?: number;
 }

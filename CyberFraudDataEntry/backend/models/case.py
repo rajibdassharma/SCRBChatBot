@@ -1,10 +1,12 @@
+import uuid
+
 from sqlalchemy import Column, Integer, String, Date, DateTime, Text, ForeignKey, UniqueConstraint, func
 from sqlalchemy.orm import relationship
 from database import Base
 
 class Case(Base):
     __tablename__ = "cases"
-    id = Column(Integer, primary_key=True, autoincrement=True)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     unit_id = Column(Integer, ForeignKey("units.id"), nullable=False)
     fir_no = Column(String(50), nullable=True)
     petition_no = Column(String(50), nullable=True)

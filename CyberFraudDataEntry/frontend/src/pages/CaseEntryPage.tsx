@@ -183,14 +183,14 @@ export function CaseEntryPage() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
   const [f, setF] = useState<CaseEntry>(initialForm());
-  const [caseId, setCaseId] = useState<number | undefined>(id ? Number(id) : undefined);
+  const [caseId, setCaseId] = useState<string | undefined>(id);
   const [uploadingIdx, setUploadingIdx] = useState<number | null>(null);
 
   useEffect(() => {
     if (!id) return;
     setLoading(true);
-    setCaseId(Number(id));
-    getCase(Number(id))
+    setCaseId(id);
+    getCase(id)
       .then((data) => setF({ ...initialForm(), ...data }))
       .catch((err) => toast.error(`Failed to load case: ${err.message}`))
       .finally(() => setLoading(false));

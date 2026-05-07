@@ -18,6 +18,12 @@ Coverage map:
   7.9  Username-in-password policy               -> deferred (seed-time fix)
   7.10 XLSX cell content unsanitized             -> test_7_10_*
 
+  Item 8 rec #2 — UUID identifiers (non-sequential)  -> test_uuid_*
+  Item 10 rec #2 — XLSX per-cell allow-list          -> test_xlsx_validation_*
+
+  Exec summary (p.8): duplicate FIR/Ack must return 409, not 500
+                                                     -> test_duplicate_*
+
 Run:  cd backend && pytest tests/ -v
 Pre-req:  backend running on localhost:8000, fresh `python seed.py` run
 """
@@ -25,11 +31,17 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 import time
 from pathlib import Path
 
 import pytest
 import requests
+
+UUID_RE = re.compile(
+    r"^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+    re.IGNORECASE,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -661,6 +673,338 @@ def test_7_10_xlsx_cell_payload_sanitized(base_url, admin_token, tmp_path):
     finally:
         requests.delete(
             f"{base_url}/api/v1/mule-reports/{report_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Item 8 rec #2 — UUIDs in place of sequential integer IDs.
+# Replaces VAPT recommendation: prevent IDOR/enumeration by making
+# /cases/{id} and /mule-reports/{id} take a UUIDv4. A guessed sequential
+# integer must now produce a 404, not the next record.
+# ─────────────────────────────────────────────────────────────────────
+
+def test_uuid_case_id_is_uuid(base_url, admin_token):
+    create = requests.post(
+        f"{base_url}/api/v1/cases/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "fir_no": f"UUID-CASE-{int(time.time())}",
+            "registration_date": "2026-05-07",
+            "case_type": "NCRP",
+            "crime_type": "Internet",
+            "facts": "uuid pk smoke test",
+            "status": "draft",
+        },
+        timeout=10,
+    )
+    assert create.status_code == 200, create.text
+    case_id = create.json()["id"]
+    try:
+        assert isinstance(case_id, str), f"case id must be a string, got {type(case_id)}"
+        assert UUID_RE.match(case_id), f"case id is not a UUID: {case_id!r}"
+    finally:
+        requests.delete(
+            f"{base_url}/api/v1/cases/{case_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        )
+
+
+def test_uuid_mule_report_id_is_uuid(base_url, admin_token):
+    create = requests.post(
+        f"{base_url}/api/v1/mule-reports/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json={
+            "acknowledgement_no": f"UUID-ACK-{int(time.time())}",
+            "fir_no": f"UUID-FIR-{int(time.time())}",
+            "status": "draft",
+        },
+        timeout=10,
+    )
+    assert create.status_code == 200, create.text
+    rid = create.json()["id"]
+    try:
+        assert isinstance(rid, str), f"mule report id must be a string, got {type(rid)}"
+        assert UUID_RE.match(rid), f"mule report id is not a UUID: {rid!r}"
+    finally:
+        requests.delete(
+            f"{base_url}/api/v1/mule-reports/{rid}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        )
+
+
+def test_uuid_sequential_case_id_returns_404(base_url, admin_token):
+    """A guessed integer id should no longer resolve to a real record."""
+    r = requests.get(
+        f"{base_url}/api/v1/cases/1",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        timeout=10,
+    )
+    assert r.status_code in (404, 422), (
+        f"sequential id /cases/1 still resolves: {r.status_code} {r.text}"
+    )
+
+
+def test_uuid_sequential_mule_report_id_returns_404(base_url, admin_token):
+    r = requests.get(
+        f"{base_url}/api/v1/mule-reports/1",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        timeout=10,
+    )
+    assert r.status_code in (404, 422), (
+        f"sequential id /mule-reports/1 still resolves: {r.status_code} {r.text}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Item 10 rec #2 — XLSX upload per-cell allow-list (Option A).
+# Lightweight defense: length caps, control-character rejection, and an
+# IFSC-format check inside the XLSX parser so a malicious workbook cell
+# can't smuggle oversize / binary / malformed data into the DB.
+# ─────────────────────────────────────────────────────────────────────
+
+def test_xlsx_validation_oversize_field_truncated_or_rejected(base_url, admin_token, tmp_path):
+    """A cell exceeding the per-field length cap must not be persisted at
+    full length. Either the upload is rejected, or the value is truncated
+    to the cap."""
+    from openpyxl import Workbook
+    long_account = "A" * 200  # account_no cap is 30
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Money Transfer"
+    ws.append(["fir_no", "ack_no", "account", "txn", "bank"])
+    ws.append([
+        f"FIR-OVR-{int(time.time())}",
+        f"ACK-OVR-{int(time.time())}",
+        long_account,
+        "TXN-001",
+        "SBI",
+    ])
+    p = tmp_path / "vapt_10_oversize.xlsx"
+    wb.save(p)
+
+    with open(p, "rb") as fh:
+        r = requests.post(
+            f"{base_url}/api/v1/mule-reports/upload-excel",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            files={"files": (p.name, fh,
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            timeout=20,
+        )
+    assert r.status_code == 200, r.text
+    first = r.json()["results"][0]
+    if not first.get("ok"):
+        return  # upload was rejected outright — pass
+    rid = first["report_id"]
+    try:
+        fetched = requests.get(
+            f"{base_url}/api/v1/mule-reports/{rid}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        ).json()
+        for mt in fetched.get("money_transfers", []):
+            acct = mt.get("account_no") or ""
+            assert len(acct) <= 30, (
+                f"account_no cap violated: stored len={len(acct)} value={acct!r}"
+            )
+    finally:
+        requests.delete(
+            f"{base_url}/api/v1/mule-reports/{rid}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        )
+
+
+def test_xlsx_validation_control_chars_stripped():
+    """Control characters (bytes < 0x20 except \\t \\n \\r) must be stripped
+    by `_safe_str` before persistence.
+
+    Tested at the unit level: openpyxl itself refuses to write control
+    chars to a cell (its own defense layer), so an end-to-end XLSX
+    upload test isn't possible without forging the workbook's XML by
+    hand. The function-level check still covers the case where a
+    malformed/forged XLSX bypasses openpyxl and reaches our parser."""
+    import sys
+    from pathlib import Path
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from api.routes_mule_report import _safe_str
+
+    out = _safe_str("ACCT\x00\x01\x021234", field="account_no")
+    assert "\x00" not in out, f"NUL survived: {out!r}"
+    assert "\x01" not in out, f"SOH survived: {out!r}"
+    assert "\x02" not in out, f"STX survived: {out!r}"
+    assert out == "ACCT1234", f"unexpected stripped value: {out!r}"
+
+    # Whitelisted whitespace must be preserved
+    preserved = _safe_str("line1\nline2\tcol\rend", field="remarks")
+    assert "\n" in preserved and "\t" in preserved and "\r" in preserved, (
+        f"whitespace was incorrectly stripped: {preserved!r}"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────
+# Exec summary (page 8) — duplicate FIR / Ack must return 409 with a
+# clear message, not a 500 from a bubbled-up IntegrityError.
+# ─────────────────────────────────────────────────────────────────────
+
+def test_duplicate_case_fir_returns_409(base_url, admin_token):
+    fir = f"DUP-CASE-{int(time.time())}"
+    payload = {
+        "fir_no": fir,
+        "registration_date": "2026-05-07",
+        "case_type": "NCRP",
+        "crime_type": "Internet",
+        "facts": "first",
+        "status": "draft",
+    }
+    first = requests.post(
+        f"{base_url}/api/v1/cases/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json=payload,
+        timeout=10,
+    )
+    assert first.status_code == 200, first.text
+    case_id = first.json()["id"]
+    try:
+        # Re-submit the same FIR
+        second = requests.post(
+            f"{base_url}/api/v1/cases/",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={**payload, "facts": "second"},
+            timeout=10,
+        )
+        assert second.status_code == 409, (
+            f"expected 409 on duplicate FIR, got {second.status_code} {second.text}"
+        )
+        assert fir in second.json().get("detail", ""), (
+            f"detail should mention the FIR, got: {second.text}"
+        )
+    finally:
+        requests.delete(
+            f"{base_url}/api/v1/cases/{case_id}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        )
+
+
+def test_duplicate_mule_ack_returns_409(base_url, admin_token):
+    ack = f"DUP-ACK-{int(time.time())}"
+    fir = f"DUP-FIR-{int(time.time())}"
+    payload = {"acknowledgement_no": ack, "fir_no": fir, "status": "draft"}
+    first = requests.post(
+        f"{base_url}/api/v1/mule-reports/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json=payload,
+        timeout=10,
+    )
+    assert first.status_code == 200, first.text
+    rid = first.json()["id"]
+    try:
+        # Same ack, different fir → must still 409 on ack uniqueness
+        second = requests.post(
+            f"{base_url}/api/v1/mule-reports/",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={**payload, "fir_no": f"OTHER-{int(time.time())}"},
+            timeout=10,
+        )
+        assert second.status_code == 409, (
+            f"expected 409 on duplicate ack, got {second.status_code} {second.text}"
+        )
+        assert ack in second.json().get("detail", ""), (
+            f"detail should mention the ack, got: {second.text}"
+        )
+    finally:
+        requests.delete(
+            f"{base_url}/api/v1/mule-reports/{rid}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        )
+
+
+def test_duplicate_mule_fir_returns_409(base_url, admin_token):
+    ack = f"DUP-ACK2-{int(time.time())}"
+    fir = f"DUP-FIR2-{int(time.time())}"
+    payload = {"acknowledgement_no": ack, "fir_no": fir, "status": "draft"}
+    first = requests.post(
+        f"{base_url}/api/v1/mule-reports/",
+        headers={"Authorization": f"Bearer {admin_token}"},
+        json=payload,
+        timeout=10,
+    )
+    assert first.status_code == 200, first.text
+    rid = first.json()["id"]
+    try:
+        # Different ack, same fir → must 409 on fir uniqueness
+        second = requests.post(
+            f"{base_url}/api/v1/mule-reports/",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            json={**payload, "acknowledgement_no": f"OTHER-ACK-{int(time.time())}"},
+            timeout=10,
+        )
+        assert second.status_code == 409, (
+            f"expected 409 on duplicate fir, got {second.status_code} {second.text}"
+        )
+        assert fir in second.json().get("detail", ""), (
+            f"detail should mention the fir, got: {second.text}"
+        )
+    finally:
+        requests.delete(
+            f"{base_url}/api/v1/mule-reports/{rid}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        )
+
+
+def test_xlsx_validation_invalid_ifsc_blanked(base_url, admin_token, tmp_path):
+    """IFSC codes must match ^[A-Z]{4}0[A-Z0-9]{6}$. Anything else gets
+    blanked rather than persisted (so a downstream consumer can't trust a
+    bogus IFSC to dispatch action)."""
+    from openpyxl import Workbook
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Money Transfer"
+    ws.append(["fir_no", "ack_no", "account", "txn", "bank", "layer",
+               "dest_account", "ifsc", "txn_date", "dest_txn_id", "amount"])
+    ws.append([
+        f"FIR-IFSC-{int(time.time())}",
+        f"ACK-IFSC-{int(time.time())}",
+        "ACCT001", "TXN-001", "SBI", 1, "DEST001",
+        "not-a-real-ifsc",  # invalid
+        "2026-05-07", "DTXN-001", 100,
+    ])
+    p = tmp_path / "vapt_10_ifsc.xlsx"
+    wb.save(p)
+
+    with open(p, "rb") as fh:
+        r = requests.post(
+            f"{base_url}/api/v1/mule-reports/upload-excel",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            files={"files": (p.name, fh,
+                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")},
+            timeout=20,
+        )
+    assert r.status_code == 200, r.text
+    first = r.json()["results"][0]
+    if not first.get("ok"):
+        return
+    rid = first["report_id"]
+    try:
+        fetched = requests.get(
+            f"{base_url}/api/v1/mule-reports/{rid}",
+            headers={"Authorization": f"Bearer {admin_token}"},
+            timeout=10,
+        ).json()
+        for mt in fetched.get("money_transfers", []):
+            ifsc = mt.get("ifsc_code") or ""
+            assert ifsc == "" or re.match(r"^[A-Z]{4}0[A-Z0-9]{6}$", ifsc), (
+                f"invalid IFSC was stored: {ifsc!r}"
+            )
+    finally:
+        requests.delete(
+            f"{base_url}/api/v1/mule-reports/{rid}",
             headers={"Authorization": f"Bearer {admin_token}"},
             timeout=10,
         )

@@ -19,6 +19,8 @@ from api.deps import get_current_user
 from api.routes_auth import router as auth_router
 from api.routes_case import router as case_router
 from api.routes_dashboard import router as dashboard_router
+from api.routes_dsr import router as dsr_router
+from api.routes_mule import router as mule_router
 from api.routes_mule_report import router as mule_report_router
 
 logger = logging.getLogger(__name__)
@@ -76,6 +78,8 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(case_router)
 app.include_router(dashboard_router)
+app.include_router(dsr_router)
+app.include_router(mule_router)
 app.include_router(mule_report_router)
 
 

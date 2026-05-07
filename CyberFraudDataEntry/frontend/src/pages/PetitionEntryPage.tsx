@@ -161,13 +161,13 @@ export function PetitionEntryPage() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
   const [f, setF] = useState<CaseEntry>(initialForm());
-  const [caseId, setCaseId] = useState<number | undefined>(id ? Number(id) : undefined);
+  const [caseId, setCaseId] = useState<string | undefined>(id);
 
   useEffect(() => {
     if (!id) return;
     setLoading(true);
-    setCaseId(Number(id));
-    getCase(Number(id))
+    setCaseId(id);
+    getCase(id)
       .then((data) => setF({ ...initialForm(), ...data }))
       .catch((err) => toast.error(`Failed to load petition: ${err.message}`))
       .finally(() => setLoading(false));

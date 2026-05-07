@@ -22,7 +22,7 @@ export function CaseListPage() {
 
   useEffect(() => { fetchCases(); }, []);
 
-  const handleDelete = async (id: number, firNo: string) => {
+  const handleDelete = async (id: string, firNo: string) => {
     if (!window.confirm(`Delete case ${firNo}? This action cannot be undone.`)) return;
     try {
       await deleteCase(id);

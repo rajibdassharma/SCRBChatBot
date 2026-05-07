@@ -17,6 +17,8 @@ from models.aeps_transaction import AepsTransaction
 from models.atm_withdrawal import AtmWithdrawal
 from models.police_station import PoliceStation
 from models.revoked_token import RevokedToken
+from models.dsr_entry import DsrEntry
+from models.mule_entry import MuleEntry
 
 __all__ = [
     "Unit", "User", "Case", "Arrest", "Accomplice", "AccusedDetail",
@@ -24,4 +26,5 @@ __all__ = [
     "MuleReport", "MoneyTransfer", "OtherTransaction", "TransactionOnHold",
     "OtherLessThan500", "AepsTransaction", "AtmWithdrawal",
     "PoliceStation", "RevokedToken",
+    "DsrEntry", "MuleEntry",
 ]

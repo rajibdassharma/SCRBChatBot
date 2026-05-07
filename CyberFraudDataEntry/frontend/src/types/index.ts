@@ -26,16 +26,19 @@ export interface UnitInfo {
 }
 
 // ── Case types ──
+// id fields are UUIDv4 strings (VAPT v1.0.1 item 8 rec #2). unit_id and
+// submitted_by remain numeric — those reference the still-INT users / units
+// tables.
 
 export interface Accomplice {
-  id?: number;
+  id?: string;
   where_met: string;
   where_stayed: string;
   interrogation_details: string;
 }
 
 export interface AccusedDetail {
-  id?: number;
+  id?: string;
   photo_path: string;
   email: string;
   mobile: string;
@@ -44,7 +47,7 @@ export interface AccusedDetail {
 }
 
 export interface Arrest {
-  id?: number;
+  id?: string;
   name: string;
   address: string;
   email: string;
@@ -57,7 +60,7 @@ export interface Arrest {
 }
 
 export interface Petition {
-  id?: number;
+  id?: string;
   fir_registered: 'yes' | 'no' | 'transferred';
   why_not: string;
   nature: string;
@@ -66,7 +69,7 @@ export interface Petition {
 }
 
 export interface LienAccount {
-  id?: number;
+  id?: string;
   case_type: 'FIR' | 'NCRP' | 'Petition';
   account_no: string;
   amount_lien_marked: number;
@@ -76,7 +79,7 @@ export interface LienAccount {
 }
 
 export interface UnfreezeDetail {
-  id?: number;
+  id?: string;
   unfreeze_type: 'letter' | 'court_order';
   crime_no: string;
   bank_name: string;
@@ -85,7 +88,7 @@ export interface UnfreezeDetail {
 }
 
 export interface Refund {
-  id?: number;
+  id?: string;
   refunded: 'yes' | 'no';
   victim_name: string;
   amount: number;
@@ -93,7 +96,7 @@ export interface Refund {
 }
 
 export interface CaseEntry {
-  id?: number;
+  id?: string;
   unit_id?: number;
   unit_name?: string;
   fir_no: string;
@@ -114,7 +117,7 @@ export interface CaseEntry {
 }
 
 export interface CaseListItem {
-  id: number;
+  id: string;
   unit_id: number;
   unit_name: string | null;
   fir_no: string;
@@ -130,7 +133,7 @@ export interface CaseListItem {
 // -- Mule Report types --
 
 export interface MoneyTransfer {
-  id?: number;
+  id?: string;
   account_no: string;
   transaction_id: string;
   bank: string;
@@ -148,7 +151,7 @@ export interface MoneyTransfer {
 }
 
 export interface OtherTransaction {
-  id?: number;
+  id?: string;
   account_no: string;
   transaction_id: string;
   transaction_date: string;
@@ -160,7 +163,7 @@ export interface OtherTransaction {
 }
 
 export interface TransactionOnHold {
-  id?: number;
+  id?: string;
   account_no: string;
   transaction_id: string;
   hold_date: string;
@@ -171,7 +174,7 @@ export interface TransactionOnHold {
 }
 
 export interface OtherLessThan500 {
-  id?: number;
+  id?: string;
   account_no: string;
   transaction_id: string;
   reference_no: string;
@@ -181,7 +184,7 @@ export interface OtherLessThan500 {
 }
 
 export interface AepsTransaction {
-  id?: number;
+  id?: string;
   account_no: string;
   transaction_id: string;
   withdrawal_date: string;
@@ -194,7 +197,7 @@ export interface AepsTransaction {
 }
 
 export interface AtmWithdrawal {
-  id?: number;
+  id?: string;
   account_no: string;
   transaction_id: string;
   withdrawal_datetime: string;
@@ -209,7 +212,7 @@ export interface AtmWithdrawal {
 }
 
 export interface MuleReport {
-  id?: number;
+  id?: string;
   unit_id?: number;
   unit_name?: string;
   acknowledgement_no: string;
@@ -226,7 +229,7 @@ export interface MuleReport {
 }
 
 export interface MuleReportListItem {
-  id: number;
+  id: string;
   acknowledgement_no: string;
   fir_no: string;
   unit_name: string | null;

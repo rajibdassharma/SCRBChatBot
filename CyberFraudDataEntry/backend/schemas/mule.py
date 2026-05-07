@@ -174,7 +174,7 @@ class MuleReportCreate(BaseModel):
 
 
 class MuleReportResponse(BaseModel):
-    id: int
+    id: str
     unit_id: int
     unit_name: Optional[str] = None
     acknowledgement_no: str
@@ -194,7 +194,7 @@ class MuleReportResponse(BaseModel):
 
 
 class MuleReportListItem(BaseModel):
-    id: int
+    id: str
     acknowledgement_no: str
     fir_no: str
     status: str = "draft"

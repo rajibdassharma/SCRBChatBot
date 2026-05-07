@@ -8,14 +8,14 @@ export async function createCase(data: CaseEntry): Promise<CaseEntry> {
   });
 }
 
-export async function updateCase(id: number, data: CaseEntry): Promise<CaseEntry> {
+export async function updateCase(id: string, data: CaseEntry): Promise<CaseEntry> {
   return apiFetch<CaseEntry>(`/api/v1/cases/${id}`, {
     method: 'PUT',
     body: JSON.stringify(data),
   });
 }
 
-export async function getCase(id: number): Promise<CaseEntry> {
+export async function getCase(id: string): Promise<CaseEntry> {
   return apiFetch<CaseEntry>(`/api/v1/cases/${id}`);
 }
 
@@ -23,7 +23,7 @@ export async function listCases(limit = 50, offset = 0): Promise<CaseListItem[]>
   return apiFetch<CaseListItem[]>(`/api/v1/cases/?limit=${limit}&offset=${offset}`);
 }
 
-export async function deleteCase(id: number): Promise<void> {
+export async function deleteCase(id: string): Promise<void> {
   return apiFetch<void>(`/api/v1/cases/${id}`, { method: 'DELETE' });
 }
 

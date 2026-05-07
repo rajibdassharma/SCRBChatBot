@@ -20,7 +20,7 @@ export function MuleReportListPage() {
 
   useEffect(() => { fetchReports(); }, []);
 
-  const handleDelete = async (id: number, ackNo: string) => {
+  const handleDelete = async (id: string, ackNo: string) => {
     if (!window.confirm(`Delete report ${ackNo}? This action cannot be undone.`)) return;
     try {
       await deleteMuleReport(id);

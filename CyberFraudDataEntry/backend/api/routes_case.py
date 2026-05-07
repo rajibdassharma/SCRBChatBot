@@ -270,6 +270,19 @@ async def create_case(
 
     _validate_submitted_case(body)
 
+    # Pre-check the (unit_id, fir_no) UNIQUE constraint and return a clean 409
+    # instead of letting the DB IntegrityError surface as 500 (Innspark VAPT
+    # exec summary, 2026-05-05).
+    if body.fir_no:
+        existing = (await db.execute(
+            select(Case).where(Case.unit_id == unit_id, Case.fir_no == body.fir_no)
+        )).scalar_one_or_none()
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A case with FIR No '{body.fir_no}' already exists in this PS.",
+            )
+
     case = Case(
         unit_id=unit_id,
         fir_no=body.fir_no,
@@ -415,7 +428,7 @@ async def search_case_by_petition(
 
 @router.get("/{case_id}", response_model=CaseResponse)
 async def get_case(
-    case_id: int,
+    case_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -436,7 +449,7 @@ async def get_case(
 
 @router.put("/{case_id}", response_model=CaseResponse)
 async def update_case(
-    case_id: int,
+    case_id: str,
     body: CaseCreate,
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -497,7 +510,7 @@ async def update_case(
 
 @router.delete("/{case_id}")
 async def delete_case(
-    case_id: int,
+    case_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):

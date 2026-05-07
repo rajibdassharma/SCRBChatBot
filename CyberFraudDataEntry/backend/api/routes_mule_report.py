@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import logging
+import re
 import tempfile
 from decimal import Decimal, InvalidOperation
 from typing import List
@@ -10,6 +11,37 @@ from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 
 logger = logging.getLogger(__name__)
 MAX_EXCEL_SIZE = 10 * 1024 * 1024  # 10 MB
+
+# VAPT v1.0.1 item 10 rec #2 (Option A): per-cell allow-list / size caps for
+# the XLSX bank-action upload. Anything that fails the allow-list is sanitised
+# server-side rather than rejected outright (banks regularly send dirty data
+# and a hard reject would block legitimate work).
+_FIELD_CAPS = {
+    # Identifiers & short fields
+    "account_no": 30,
+    "transaction_id": 50,
+    "dest_account_no": 30,
+    "dest_transaction_id": 50,
+    "reference_no": 50,
+    "ifsc_code": 11,
+    "atm_id": 50,
+    # Names / freeform short
+    "bank": 200,
+    "atm_location": 500,
+    "action_taken_by_bank": 500,
+    # Dates as strings (we keep them as strings — the Excel is messy)
+    "transaction_date": 30,
+    "hold_date": 30,
+    "withdrawal_date": 30,
+    "withdrawal_datetime": 30,
+    "date_of_action": 30,
+    # Long freeform
+    "remarks": 1000,
+}
+_DEFAULT_CAP = 200
+
+_IFSC_RE = re.compile(r"^[A-Z]{4}0[A-Z0-9]{6}$")
+_CTRL_CHAR_RE = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -32,17 +64,37 @@ router = APIRouter(prefix="/api/v1/mule-reports", tags=["mule-reports"])
 
 # -- Excel parsing helpers -------------------------------------------------
 
-def _safe_str(val) -> str:
+def _safe_str(val, field: str | None = None) -> str:
     """Return a clean string from a raw cell value.
 
-    Sanitises HTML tags, javascript: URIs and on*= event handlers (VAPT
-    7.10) so a malicious XLSX cell payload like `<script>alert(1)</script>`
-    cannot be persisted or reflected back in API responses.
+    Defenses applied (in order):
+      1. HTML / javascript: / on*= stripping  -> VAPT 7.10
+      2. Control-character stripping (bytes < 0x20 except \\t \\n \\r) -> Item 10 rec #2
+      3. Length cap from `_FIELD_CAPS` (or `_DEFAULT_CAP`)             -> Item 10 rec #2
+
+    `field` selects the cap; pass the destination column name. Caller is
+    responsible for using `_safe_ifsc` for IFSC fields, which adds a
+    format check on top.
     """
     if val is None:
         return ""
     cleaned = strip_html(str(val).strip())
+    cleaned = _CTRL_CHAR_RE.sub("", cleaned)
+    cap = _FIELD_CAPS.get(field, _DEFAULT_CAP) if field else _DEFAULT_CAP
+    if len(cleaned) > cap:
+        cleaned = cleaned[:cap]
     return cleaned or ""
+
+
+def _safe_ifsc(val) -> str:
+    """Validate IFSC codes — anything not matching ^[A-Z]{4}0[A-Z0-9]{6}$
+    is dropped to empty string. Banks include garbage IFSC values often
+    enough that we silently blank rather than reject the whole row."""
+    s = _safe_str(val, field="ifsc_code")
+    if not s:
+        return ""
+    s = s.upper()
+    return s if _IFSC_RE.match(s) else ""
 
 
 def _safe_decimal(val) -> Decimal:
@@ -72,16 +124,20 @@ def _parse_excel(file_bytes: bytes, filename: str) -> dict:
 
     wb = load_workbook(io.BytesIO(file_bytes), data_only=True)
 
-    # Extract acknowledgement_no from first data row of first sheet
+    # Extract fir_no (col A) and acknowledgement_no (col B) from the
+    # first data row of the first sheet. Both are mandatory on a mule
+    # report and the XLSX format always carries them in those columns.
+    fir_no = ""
     ack_no = ""
     first_sheet = wb[wb.sheetnames[0]]
     for row in first_sheet.iter_rows(min_row=2, max_row=2, values_only=True):
-        ack_no = _safe_str(row[1]) if len(row) > 1 else ""
+        fir_no = _safe_str(row[0], field="reference_no") if len(row) > 0 else ""
+        ack_no = _safe_str(row[1], field="reference_no") if len(row) > 1 else ""
         break
 
     result = {
         "acknowledgement_no": ack_no,
-        "fir_no": "",
+        "fir_no": fir_no,
         "money_transfers": [],
         "other_transactions": [],
         "transactions_on_hold": [],
@@ -127,81 +183,81 @@ def _parse_excel(file_bytes: bytes, filename: str) -> dict:
 
             if target == "money_transfers":
                 result[target].append({
-                    "account_no": _safe_str(row[2]) if len(row) > 2 else "",
-                    "transaction_id": _safe_str(row[3]) if len(row) > 3 else "",
-                    "bank": _safe_str(row[4]) if len(row) > 4 else "",
+                    "account_no": _safe_str(row[2], "account_no") if len(row) > 2 else "",
+                    "transaction_id": _safe_str(row[3], "transaction_id") if len(row) > 3 else "",
+                    "bank": _safe_str(row[4], "bank") if len(row) > 4 else "",
                     "layer": _safe_int(row[5]) if len(row) > 5 else 1,
-                    "dest_account_no": _safe_str(row[6]) if len(row) > 6 else "",
-                    "ifsc_code": _safe_str(row[7]) if len(row) > 7 else "",
-                    "transaction_date": _safe_str(row[8]) if len(row) > 8 else "",
-                    "dest_transaction_id": _safe_str(row[9]) if len(row) > 9 else "",
+                    "dest_account_no": _safe_str(row[6], "dest_account_no") if len(row) > 6 else "",
+                    "ifsc_code": _safe_ifsc(row[7]) if len(row) > 7 else "",
+                    "transaction_date": _safe_str(row[8], "transaction_date") if len(row) > 8 else "",
+                    "dest_transaction_id": _safe_str(row[9], "dest_transaction_id") if len(row) > 9 else "",
                     "transaction_amount": _safe_decimal(row[10]) if len(row) > 10 else Decimal("0"),
                     "disputed_amount": _safe_decimal(row[11]) if len(row) > 11 else Decimal("0"),
-                    "reference_no": _safe_str(row[12]) if len(row) > 12 else "",
-                    "remarks": _safe_str(row[13]) if len(row) > 13 else "",
-                    "action_taken_by_bank": _safe_str(row[14]) if len(row) > 14 else "",
-                    "date_of_action": _safe_str(row[15]) if len(row) > 15 else "",
+                    "reference_no": _safe_str(row[12], "reference_no") if len(row) > 12 else "",
+                    "remarks": _safe_str(row[13], "remarks") if len(row) > 13 else "",
+                    "action_taken_by_bank": _safe_str(row[14], "action_taken_by_bank") if len(row) > 14 else "",
+                    "date_of_action": _safe_str(row[15], "date_of_action") if len(row) > 15 else "",
                 })
 
             elif target == "other_transactions":
                 result[target].append({
-                    "account_no": _safe_str(row[2]) if len(row) > 2 else "",
-                    "transaction_id": _safe_str(row[3]) if len(row) > 3 else "",
-                    "transaction_date": _safe_str(row[4]) if len(row) > 4 else "",
+                    "account_no": _safe_str(row[2], "account_no") if len(row) > 2 else "",
+                    "transaction_id": _safe_str(row[3], "transaction_id") if len(row) > 3 else "",
+                    "transaction_date": _safe_str(row[4], "transaction_date") if len(row) > 4 else "",
                     "transaction_amount": _safe_decimal(row[5]) if len(row) > 5 else Decimal("0"),
-                    "reference_no": _safe_str(row[6]) if len(row) > 6 else "",
-                    "remarks": _safe_str(row[7]) if len(row) > 7 else "",
-                    "action_taken_by_bank": _safe_str(row[8]) if len(row) > 8 else "",
-                    "date_of_action": _safe_str(row[9]) if len(row) > 9 else "",
+                    "reference_no": _safe_str(row[6], "reference_no") if len(row) > 6 else "",
+                    "remarks": _safe_str(row[7], "remarks") if len(row) > 7 else "",
+                    "action_taken_by_bank": _safe_str(row[8], "action_taken_by_bank") if len(row) > 8 else "",
+                    "date_of_action": _safe_str(row[9], "date_of_action") if len(row) > 9 else "",
                 })
 
             elif target == "transactions_on_hold":
                 result[target].append({
-                    "account_no": _safe_str(row[2]) if len(row) > 2 else "",
-                    "transaction_id": _safe_str(row[3]) if len(row) > 3 else "",
-                    "hold_date": _safe_str(row[4]) if len(row) > 4 else "",
+                    "account_no": _safe_str(row[2], "account_no") if len(row) > 2 else "",
+                    "transaction_id": _safe_str(row[3], "transaction_id") if len(row) > 3 else "",
+                    "hold_date": _safe_str(row[4], "hold_date") if len(row) > 4 else "",
                     "hold_amount": _safe_decimal(row[5]) if len(row) > 5 else Decimal("0"),
-                    "action_taken_by_bank": _safe_str(row[6]) if len(row) > 6 else "",
-                    "date_of_action": _safe_str(row[7]) if len(row) > 7 else "",
+                    "action_taken_by_bank": _safe_str(row[6], "action_taken_by_bank") if len(row) > 6 else "",
+                    "date_of_action": _safe_str(row[7], "date_of_action") if len(row) > 7 else "",
                     "layer": _safe_int(row[8]) if len(row) > 8 else 0,
                 })
 
             elif target == "others_less_than_500":
                 result[target].append({
-                    "account_no": _safe_str(row[2]) if len(row) > 2 else "",
-                    "transaction_id": _safe_str(row[3]) if len(row) > 3 else "",
-                    "reference_no": _safe_str(row[4]) if len(row) > 4 else "",
-                    "remarks": _safe_str(row[5]) if len(row) > 5 else "",
-                    "action_taken_by_bank": _safe_str(row[6]) if len(row) > 6 else "",
-                    "date_of_action": _safe_str(row[7]) if len(row) > 7 else "",
+                    "account_no": _safe_str(row[2], "account_no") if len(row) > 2 else "",
+                    "transaction_id": _safe_str(row[3], "transaction_id") if len(row) > 3 else "",
+                    "reference_no": _safe_str(row[4], "reference_no") if len(row) > 4 else "",
+                    "remarks": _safe_str(row[5], "remarks") if len(row) > 5 else "",
+                    "action_taken_by_bank": _safe_str(row[6], "action_taken_by_bank") if len(row) > 6 else "",
+                    "date_of_action": _safe_str(row[7], "date_of_action") if len(row) > 7 else "",
                 })
 
             elif target == "aeps_transactions":
                 result[target].append({
-                    "account_no": _safe_str(row[2]) if len(row) > 2 else "",
-                    "transaction_id": _safe_str(row[3]) if len(row) > 3 else "",
-                    "withdrawal_date": _safe_str(row[4]) if len(row) > 4 else "",
+                    "account_no": _safe_str(row[2], "account_no") if len(row) > 2 else "",
+                    "transaction_id": _safe_str(row[3], "transaction_id") if len(row) > 3 else "",
+                    "withdrawal_date": _safe_str(row[4], "withdrawal_date") if len(row) > 4 else "",
                     "withdrawal_amount": _safe_decimal(row[5]) if len(row) > 5 else Decimal("0"),
-                    "reference_no": _safe_str(row[6]) if len(row) > 6 else "",
-                    "remarks": _safe_str(row[7]) if len(row) > 7 else "",
-                    "action_taken_by_bank": _safe_str(row[8]) if len(row) > 8 else "",
-                    "date_of_action": _safe_str(row[9]) if len(row) > 9 else "",
+                    "reference_no": _safe_str(row[6], "reference_no") if len(row) > 6 else "",
+                    "remarks": _safe_str(row[7], "remarks") if len(row) > 7 else "",
+                    "action_taken_by_bank": _safe_str(row[8], "action_taken_by_bank") if len(row) > 8 else "",
+                    "date_of_action": _safe_str(row[9], "date_of_action") if len(row) > 9 else "",
                     "layer": _safe_int(row[13]) if len(row) > 13 else 0,
                 })
 
             elif target == "atm_withdrawals":
                 result[target].append({
-                    "account_no": _safe_str(row[2]) if len(row) > 2 else "",
-                    "transaction_id": _safe_str(row[3]) if len(row) > 3 else "",
-                    "withdrawal_datetime": _safe_str(row[4]) if len(row) > 4 else "",
+                    "account_no": _safe_str(row[2], "account_no") if len(row) > 2 else "",
+                    "transaction_id": _safe_str(row[3], "transaction_id") if len(row) > 3 else "",
+                    "withdrawal_datetime": _safe_str(row[4], "withdrawal_datetime") if len(row) > 4 else "",
                     "withdrawal_amount": _safe_decimal(row[5]) if len(row) > 5 else Decimal("0"),
                     "disputed_amount": _safe_decimal(row[6]) if len(row) > 6 else Decimal("0"),
-                    "atm_id": _safe_str(row[7]) if len(row) > 7 else "",
-                    "atm_location": _safe_str(row[8]) if len(row) > 8 else "",
-                    "reference_no": _safe_str(row[9]) if len(row) > 9 else "",
-                    "remarks": _safe_str(row[10]) if len(row) > 10 else "",
-                    "action_taken_by_bank": _safe_str(row[11]) if len(row) > 11 else "",
-                    "date_of_action": _safe_str(row[12]) if len(row) > 12 else "",
+                    "atm_id": _safe_str(row[7], "atm_id") if len(row) > 7 else "",
+                    "atm_location": _safe_str(row[8], "atm_location") if len(row) > 8 else "",
+                    "reference_no": _safe_str(row[9], "reference_no") if len(row) > 9 else "",
+                    "remarks": _safe_str(row[10], "remarks") if len(row) > 10 else "",
+                    "action_taken_by_bank": _safe_str(row[11], "action_taken_by_bank") if len(row) > 11 else "",
+                    "date_of_action": _safe_str(row[12], "date_of_action") if len(row) > 12 else "",
                 })
 
     logger.info(f"[ExcelParse] Parsed: "
@@ -324,6 +380,28 @@ async def create_mule_report(
 
     _validate_submitted_report(body)
 
+    # Pre-check the global UNIQUE constraints on acknowledgement_no and fir_no
+    # so duplicate submissions return a clean 409 instead of a DB IntegrityError
+    # surfacing as 500 (Innspark VAPT exec summary, 2026-05-05).
+    if body.acknowledgement_no:
+        existing = (await db.execute(
+            select(MuleReport).where(MuleReport.acknowledgement_no == body.acknowledgement_no)
+        )).scalar_one_or_none()
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A mule report with Acknowledgement No '{body.acknowledgement_no}' already exists.",
+            )
+    if body.fir_no:
+        existing = (await db.execute(
+            select(MuleReport).where(MuleReport.fir_no == body.fir_no)
+        )).scalar_one_or_none()
+        if existing:
+            raise HTTPException(
+                status_code=409,
+                detail=f"A mule report with FIR No '{body.fir_no}' already exists.",
+            )
+
     report = MuleReport(
         unit_id=unit_id,
         acknowledgement_no=body.acknowledgement_no or None,
@@ -407,7 +485,7 @@ async def search_mule_report(
 
 @router.get("/{report_id}", response_model=MuleReportResponse)
 async def get_mule_report(
-    report_id: int,
+    report_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -429,7 +507,7 @@ async def get_mule_report(
 
 @router.put("/{report_id}", response_model=MuleReportResponse)
 async def update_mule_report(
-    report_id: int,
+    report_id: str,
     body: MuleReportCreate,
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -488,7 +566,7 @@ async def update_mule_report(
 
 @router.delete("/{report_id}")
 async def delete_mule_report(
-    report_id: int,
+    report_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -534,13 +612,30 @@ async def upload_mule_excel(
             parsed = _parse_excel(file_bytes, f.filename)
 
             ack_no = parsed["acknowledgement_no"]
+            fir_no = parsed.get("fir_no", "")
+
+            # Both identifiers are mandatory on every mule report — bank XLSX
+            # files always carry fir_no in col A and ack_no in col B of the
+            # first data row. A missing value indicates a malformed file
+            # rather than a real submission, so reject rather than persist
+            # a half-built report.
+            if not fir_no or not ack_no:
+                missing = []
+                if not fir_no:
+                    missing.append("fir_no (col A)")
+                if not ack_no:
+                    missing.append("ack_no (col B)")
+                results.append({
+                    "filename": f.filename,
+                    "ok": False,
+                    "error": f"Missing mandatory field(s): {', '.join(missing)}",
+                })
+                continue
 
             # Check if report with this ack_no already exists
-            existing = None
-            if ack_no:
-                existing = (await db.execute(
-                    select(MuleReport).where(MuleReport.acknowledgement_no == ack_no)
-                )).scalar_one_or_none()
+            existing = (await db.execute(
+                select(MuleReport).where(MuleReport.acknowledgement_no == ack_no)
+            )).scalar_one_or_none()
 
             if existing:
                 results.append({
@@ -553,8 +648,8 @@ async def upload_mule_excel(
             # Create the report
             report = MuleReport(
                 unit_id=unit_id,
-                acknowledgement_no=ack_no or None,
-                fir_no=parsed.get("fir_no") or None,
+                acknowledgement_no=ack_no,
+                fir_no=fir_no,
                 status="submitted",
                 submitted_by=current_user.user_id,
             )

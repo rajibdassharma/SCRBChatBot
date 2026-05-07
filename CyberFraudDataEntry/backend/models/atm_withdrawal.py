@@ -1,11 +1,13 @@
+import uuid
+
 from sqlalchemy import Column, Integer, String, DateTime, Numeric, ForeignKey, Text, func
 from sqlalchemy.orm import relationship
 from database import Base
 
 class AtmWithdrawal(Base):
     __tablename__ = "atm_withdrawals"
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    report_id = Column(Integer, ForeignKey("mule_reports.id", ondelete="CASCADE"), nullable=False)
+    id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
+    report_id = Column(String(36), ForeignKey("mule_reports.id", ondelete="CASCADE"), nullable=False)
     account_no = Column(String(100), nullable=True)
     transaction_id = Column(String(100), nullable=True)
     withdrawal_datetime = Column(String(50), nullable=True)

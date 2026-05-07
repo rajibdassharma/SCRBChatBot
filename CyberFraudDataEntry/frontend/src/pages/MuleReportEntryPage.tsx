@@ -158,7 +158,7 @@ export function MuleReportEntryPage() {
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(false);
   const [f, setF] = useState<MuleReport>(initialForm());
-  const [reportId, setReportId] = useState<number | undefined>(id ? Number(id) : undefined);
+  const [reportId, setReportId] = useState<string | undefined>(id);
 
   // Upload Excel to populate form
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -203,8 +203,8 @@ export function MuleReportEntryPage() {
   useEffect(() => {
     if (!id) return;
     setLoading(true);
-    setReportId(Number(id));
-    getMuleReport(Number(id))
+    setReportId(id);
+    getMuleReport(id)
       .then((data) => setF({ ...initialForm(), ...data }))
       .catch((err) => toast.error(`Failed to load report: ${err.message}`))
       .finally(() => setLoading(false));
