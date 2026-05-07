@@ -12,7 +12,8 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
 
 export function Sidebar() {
   const { user, logout } = useAuthStore();
-  const isAdmin = user?.role === 'admin';
+  // admin + super_admin both see Dashboard; only super_admin gets cross-PS data.
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
 
   return (
     <aside className="w-[280px] flex flex-col min-h-screen p-4 gap-3" style={{ background: 'var(--ksp-yellow-soft)', borderRight: '2px solid var(--ksp-yellow-border)' }}>
@@ -33,7 +34,7 @@ export function Sidebar() {
       <div className="h-[2px] mx-4" style={{ background: 'linear-gradient(to right, rgba(0,0,0,0), #b10000, rgba(0,0,0,0))' }} />
 
       {/* Navigation */}
-      <nav className="flex-1 space-y-1">
+      <nav className="space-y-1">
         {/* Daily Status Report Section */}
         <p className="px-4 pt-2 pb-2 text-sm font-extrabold uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>Daily Status Report</p>
         <NavLink to="/cases/new" className={linkClass}>
@@ -80,7 +81,9 @@ export function Sidebar() {
       {/* User info */}
       <div className="px-2">
         <p className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>{user?.unit_name}</p>
-        <p className="text-xs font-semibold" style={{ color: 'var(--ksp-red)' }}>{user?.role === 'admin' ? 'Admin' : 'User'}</p>
+        <p className="text-xs font-semibold" style={{ color: 'var(--ksp-red)' }}>
+          {user?.role === 'super_admin' ? 'Super Admin' : user?.role === 'admin' ? 'Admin' : 'User'}
+        </p>
       </div>
 
       <button

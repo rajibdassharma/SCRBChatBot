@@ -233,11 +233,22 @@ export function CaseEntryPage() {
     }
   };
 
+  /* Build the payload — both the unfreeze rows' crime_no and the refund
+   * rows' crime_no_or_petition_no mirror the case FIR No. Those fields
+   * are displayed read-only as "FIR No" in the UI; we keep the DB
+   * columns populated so downstream reports stay correct. */
+  const buildPayload = (status: 'draft' | 'submitted'): CaseEntry => ({
+    ...f,
+    status,
+    unfreeze_details: f.unfreeze_details.map(u => ({ ...u, crime_no: f.fir_no })),
+    refunds: f.refunds.map(r => ({ ...r, crime_no_or_petition_no: f.fir_no })),
+  });
+
   /* --- Save Draft --- */
   const handleSaveDraft = async () => {
     setSaving(true);
     try {
-      const payload = { ...f, status: 'draft' as const };
+      const payload = buildPayload('draft');
       if (caseId) {
         await updateCase(caseId, payload);
         toast.success('Draft saved');
@@ -261,7 +272,7 @@ export function CaseEntryPage() {
     if (!f.registration_date) { toast.error('Registration Date is required'); setTab(0); return; }
     setSaving(true);
     try {
-      const payload = { ...f, status: 'submitted' as const };
+      const payload = buildPayload('submitted');
       if (caseId) {
         await updateCase(caseId, payload);
         toast.success('Case submitted');
@@ -563,8 +574,8 @@ export function CaseEntryPage() {
                   <SelectField label="Type" value={u.unfreeze_type}
                     onChange={(v) => { const arr = [...f.unfreeze_details]; arr[ui] = { ...arr[ui], unfreeze_type: v as UnfreezeDetail['unfreeze_type'] }; setF(p => ({ ...p, unfreeze_details: arr })); }}
                     options={[{ value: 'letter', label: 'Letter' }, { value: 'court_order', label: 'Court Order' }]} />
-                  <TextField label="Crime No" value={u.crime_no}
-                    onChange={(v) => { const arr = [...f.unfreeze_details]; arr[ui] = { ...arr[ui], crime_no: v }; setF(p => ({ ...p, unfreeze_details: arr })); }} />
+                  <TextField label="FIR No" value={f.fir_no} onChange={() => {}}
+                    readOnly hint="Auto-filled from the case FIR number" />
                   <TextField label="Bank Name" value={u.bank_name}
                     onChange={(v) => { const arr = [...f.unfreeze_details]; arr[ui] = { ...arr[ui], bank_name: v }; setF(p => ({ ...p, unfreeze_details: arr })); }} />
                   <TextField label="Account No" value={u.account_no}
@@ -595,8 +606,8 @@ export function CaseEntryPage() {
                     onChange={(v) => { const arr = [...f.refunds]; arr[ri] = { ...arr[ri], victim_name: v }; setF(p => ({ ...p, refunds: arr })); }} />
                   <NumField label="Amount" value={r.amount}
                     onChange={(v) => { const arr = [...f.refunds]; arr[ri] = { ...arr[ri], amount: v }; setF(p => ({ ...p, refunds: arr })); }} />
-                  <TextField label="Crime No / Petition No" value={r.crime_no_or_petition_no}
-                    onChange={(v) => { const arr = [...f.refunds]; arr[ri] = { ...arr[ri], crime_no_or_petition_no: v }; setF(p => ({ ...p, refunds: arr })); }} />
+                  <TextField label="FIR No" value={f.fir_no} onChange={() => {}}
+                    readOnly hint="Auto-filled from the case FIR number" />
                 </div>
               </div>
             ))}

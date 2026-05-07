@@ -85,23 +85,6 @@ function SelectField({ label, value, onChange, options }: {
   );
 }
 
-function TextAreaField({ label, value, onChange, rows = 3 }: {
-  label: string; value: string; onChange: (v: string) => void; rows?: number;
-}) {
-  return (
-    <div className="col-span-full">
-      <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>{label}</label>
-      <textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        rows={rows}
-        className="w-full px-3 py-2 rounded-xl text-sm outline-none resize-y"
-        style={{ border: '2px solid var(--ksp-navy)', background: '#fff' }}
-      />
-    </div>
-  );
-}
-
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
     <div className="rounded-2xl p-5" style={{ background: '#fff', border: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 6px 16px rgba(0,0,0,0.08)' }}>

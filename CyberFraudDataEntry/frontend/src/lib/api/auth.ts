@@ -30,7 +30,7 @@ export async function getDistrictsPublic(): Promise<{name: string}[]> {
   return res.json();
 }
 
-export async function getPoliceStationsPublic(district: string): Promise<{id: number, district_name: string, station_name: string}[]> {
+export async function getPoliceStationsPublic(district: string): Promise<{id: number, district_name: string, station_name: string, has_super_admin: boolean}[]> {
   const base = import.meta.env.VITE_API_BASE ?? '';
   const res = await fetch(`${base}/api/v1/police-stations/public?district=${encodeURIComponent(district)}`);
   if (!res.ok) throw new Error('Failed to load police stations');

@@ -62,7 +62,7 @@ export function MuleForm() {
     getOwnMule(date).then((entry) => {
       if (entry) {
         const loaded: Record<string, string> = {};
-        ALL_FIELDS.forEach((f) => { loaded[f.key] = (entry as Record<string, unknown>)[f.key] as string ?? ''; });
+        ALL_FIELDS.forEach((f) => { loaded[f.key] = (entry as unknown as Record<string, unknown>)[f.key] as string ?? ''; });
         setForm(loaded);
       } else {
         const clean: Record<string, string> = {};

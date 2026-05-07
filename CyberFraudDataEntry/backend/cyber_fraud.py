@@ -113,14 +113,34 @@ async def list_police_stations_public(
     district: str = Query(None, max_length=100),
     db: AsyncSession = Depends(get_db),
 ):
-    """Public endpoint for police station dropdown (no auth required)."""
+    """Public endpoint for police station dropdown (no auth required).
+
+    Each row includes `has_super_admin` so the login form knows whether
+    to expose the Super toggle for that PS — only the one PS where the
+    Senior Officer is anchored will return True.
+    """
     from models.police_station import PoliceStation
+    from models.user import User
     q = select(PoliceStation).where(PoliceStation.is_active == True)
     if district:
         q = q.where(PoliceStation.district_name == district)
     q = q.order_by(PoliceStation.station_name)
     stations = (await db.execute(q)).scalars().all()
-    return [{"id": s.id, "district_name": s.district_name, "station_name": s.station_name} for s in stations]
+
+    # One small query lookup-set: PS ids that have at least one super_admin.
+    super_ps_ids = set((await db.execute(
+        select(User.ps_id).where(User.role == "super_admin", User.is_active == True)
+    )).scalars().all())
+
+    return [
+        {
+            "id": s.id,
+            "district_name": s.district_name,
+            "station_name": s.station_name,
+            "has_super_admin": s.id in super_ps_ids,
+        }
+        for s in stations
+    ]
 
 
 @app.get("/api/v1/districts/public")

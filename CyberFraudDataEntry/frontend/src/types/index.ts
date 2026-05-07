@@ -2,7 +2,7 @@ export interface User {
   id: number;
   username: string;
   full_name: string | null;
-  role: 'admin' | 'unit_user';
+  role: 'admin' | 'unit_user' | 'super_admin';
   unit_id: number | null;
   unit_name: string | null;
   ps_name: string | null;
@@ -250,6 +250,8 @@ export interface KpiSummary {
   total_arrests: number;
   total_amount_lien_marked: number;
   total_amount_refunded: number;
+  total_accounts_lien_marked: number;
+  total_accounts_defreezed: number;
   units_submitted: number;
   units_total: number;
 }
@@ -259,4 +261,75 @@ export interface UnitComparison {
   cases: number;
   arrests: number;
   amount_lien_marked: number;
+}
+
+export interface TrendPoint {
+  report_date: string;
+  total_cases: number;
+  total_arrests: number;
+  total_petitions: number;
+}
+
+export interface SubmissionStatus {
+  unit_id: number;
+  unit_name: string;
+  dsr_submitted: boolean;
+  mule_submitted: boolean;
+}
+
+// -- DSR + Mule daily entries --
+
+export interface DsrEntry {
+  id?: number;
+  unit_id?: number;
+  unit_name?: string | null;
+  report_date: string;
+  cases: number;
+  petitions: number;
+  details_of_arrest: number;
+  case_type?: string | null;
+  cumulative_amount_lien_marked: number;
+  cumulative_accounts_lien_marked: number;
+  cumulative_accounts_defreezed: number;
+  amount_refunded_to_victim: number;
+  ui_cases_pending_2021: number;
+  ui_cases_pending_2022: number;
+  ui_cases_pending_2023: number;
+  ui_cases_pending_2024: number;
+  ui_cases_pending_2025: number;
+  ui_cases_pending_2026: number;
+  disposed_detected_chargesheeted: number;
+  disposed_transferred: number;
+  disposed_false: number;
+  disposed_undetected: number;
+  trial_convicted: number;
+  trial_discharged: number;
+  trial_acquitted: number;
+  trial_abated: number;
+  trial_compounded: number;
+  trial_ut: number;
+  submitted_by?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface MuleEntry {
+  id?: number;
+  unit_id?: number;
+  unit_name?: string | null;
+  report_date: string;
+  accounts_most_liens?: string | null;
+  recruiters_for_lien_accounts?: string | null;
+  accounts_max_money_routed?: string | null;
+  accounts_max_transactions?: string | null;
+  recency_atm_transactions?: string | null;
+  cash_withdrawals_mule_wise?: string | null;
+  atm_geo_identification?: string | null;
+  atm_table_by_transactions?: string | null;
+  cheque_withdrawal_branches?: string | null;
+  money_left_system_stats?: string | null;
+  crypto_mule_accounts?: string | null;
+  submitted_by?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
 }

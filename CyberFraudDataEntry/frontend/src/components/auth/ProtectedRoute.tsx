@@ -5,7 +5,9 @@ export function ProtectedRoute({ children, requireAdmin }: { children: React.Rea
   const { token, user } = useAuthStore();
 
   if (!token || !user) return <Navigate to="/login" replace />;
-  if (requireAdmin && user.role !== 'admin') return <Navigate to="/dsr" replace />;
+  if (requireAdmin && user.role !== 'admin' && user.role !== 'super_admin') {
+    return <Navigate to="/cases/new" replace />;
+  }
 
   return <>{children}</>;
 }

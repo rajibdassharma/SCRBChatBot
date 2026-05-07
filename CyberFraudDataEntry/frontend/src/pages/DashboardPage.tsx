@@ -35,21 +35,22 @@ export function DashboardPage() {
     from.setDate(from.getDate() - 30);
     const fromStr = from.toISOString().split('T')[0];
 
-    Promise.all([
+    // allSettled so a single endpoint failing (e.g. partial deploy) doesn't
+    // blank out the whole page — each section degrades to its empty state.
+    Promise.allSettled([
       getSummary(date),
       getUnitComparison(date),
       getTrends(fromStr, date),
       getSubmissionStatus(date),
     ]).then(([s, u, t, st]) => {
-      setSummary(s);
-      setUnits(u);
-      setTrends(t);
-      setStatuses(st);
+      setSummary(s.status === 'fulfilled' ? s.value : null);
+      setUnits(u.status === 'fulfilled' ? u.value : []);
+      setTrends(t.status === 'fulfilled' ? t.value : []);
+      setStatuses(st.status === 'fulfilled' ? st.value : []);
     }).finally(() => setLoading(false));
   }, [date]);
 
   const top15 = units.slice(0, 15);
-  const submittedCount = statuses.filter((s) => s.dsr_submitted).length;
 
   return (
     <div>
@@ -76,15 +77,10 @@ export function DashboardPage() {
       ) : (
         <div className="space-y-6">
           {/* KPI Cards */}
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             <KpiCard label="Total Cases" value={formatNumber(summary?.total_cases ?? 0)} />
             <KpiCard label="Total Arrests" value={formatNumber(summary?.total_arrests ?? 0)} />
             <KpiCard label="Amount Lien Marked" value={formatINR(summary?.total_amount_lien_marked ?? 0)} />
-            <KpiCard
-              label="Submitted"
-              value={`${submittedCount} / ${summary?.units_total ?? 1}`}
-              sub={submittedCount > 0 ? 'Submitted' : 'Not yet submitted'}
-            />
           </div>
 
           {/* Trend + Comparison */}
@@ -136,7 +132,7 @@ export function DashboardPage() {
                     <Cell fill="#0b2c4a" />
                     <Cell fill="#ffd400" />
                   </Pie>
-                  <Tooltip formatter={(val: number) => formatINR(val)} />
+                  <Tooltip formatter={(val) => formatINR(Number(val) || 0)} />
                   <Legend />
                 </PieChart>
               </ResponsiveContainer>

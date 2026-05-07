@@ -31,10 +31,18 @@ from auth.security import hash_password
 # server never sees this file.
 TEST_DISTRICT = "TestDistrict"
 TEST_STATION = "Test PS"
-TEST_ADMIN_USERNAME = "test_admin"
+# Usernames MUST follow the convention used by the frontend login form
+# (`toCode(station)_role`) and seed.py — otherwise the auto-derived
+# username on the login form won't match the row in the DB.
+TEST_ADMIN_USERNAME = "test_ps_admin"
 TEST_ADMIN_PASSWORD = "TestAdmin@2026"
-TEST_USER_USERNAME = "test_user"
+TEST_USER_USERNAME = "test_ps_user"
 TEST_USER_PASSWORD = "TestUser@2026"
+# super_admin gets cross-PS dashboard visibility (Senior Officer role).
+# Login form derives `test_ps_super` from the same toCode() formula when
+# "Sign in as super" is selected — see LoginForm.tsx.
+TEST_SUPER_USERNAME = "test_ps_super"
+TEST_SUPER_PASSWORD = "TestSuper@2026"
 
 
 async def main() -> None:
@@ -109,6 +117,27 @@ async def main() -> None:
         else:
             print(f"  = user '{TEST_USER_USERNAME}' already exists")
 
+        # 5. Super admin (Senior Officer) — cross-PS dashboard visibility.
+        # Anchored to TestDistrict / Test PS for login-form purposes; the
+        # backend ignores unit_id when role == 'super_admin' for dashboard
+        # queries. Per-record BOLA still applies on /cases/{id} etc.
+        super_admin = (await session.execute(
+            select(User).where(User.username == TEST_SUPER_USERNAME)
+        )).scalar_one_or_none()
+        if not super_admin:
+            session.add(User(
+                username=TEST_SUPER_USERNAME,
+                hashed_password=hash_password(TEST_SUPER_PASSWORD),
+                full_name="Test Super Admin",
+                role="super_admin",
+                unit_id=unit.id,
+                ps_id=ps.id,
+                must_change_password=False,
+            ))
+            print(f"  + user '{TEST_SUPER_USERNAME}' created")
+        else:
+            print(f"  = user '{TEST_SUPER_USERNAME}' already exists")
+
         await session.commit()
 
     print()
@@ -120,6 +149,7 @@ async def main() -> None:
     print()
     print(f"  admin   : {TEST_ADMIN_USERNAME} / {TEST_ADMIN_PASSWORD}")
     print(f"  user    : {TEST_USER_USERNAME} / {TEST_USER_PASSWORD}")
+    print(f"  super   : {TEST_SUPER_USERNAME} / {TEST_SUPER_PASSWORD}")
     print("=" * 60)
 
 

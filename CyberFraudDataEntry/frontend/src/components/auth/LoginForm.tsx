@@ -21,9 +21,9 @@ function toCode(name: string): string {
 export function LoginForm() {
   const [districts, setDistricts] = useState<{name: string}[]>([]);
   const [selectedDistrict, setSelectedDistrict] = useState('');
-  const [policeStations, setPoliceStations] = useState<{id: number, district_name: string, station_name: string}[]>([]);
+  const [policeStations, setPoliceStations] = useState<{id: number, district_name: string, station_name: string, has_super_admin: boolean}[]>([]);
   const [selectedPS, setSelectedPS] = useState('');
-  const [role, setRole] = useState<'user' | 'admin'>('user');
+  const [role, setRole] = useState<'user' | 'admin' | 'super'>('user');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -32,6 +32,10 @@ export function LoginForm() {
 
   // Derived username — always matches what seed.py wrote to the DB
   const derivedUsername = selectedPS ? `${toCode(selectedPS)}_${role}` : '';
+
+  // Only the one PS that has a Senior Officer seeded shows the Super option.
+  const selectedPSRow = policeStations.find(ps => ps.station_name === selectedPS);
+  const superAvailable = !!selectedPSRow?.has_super_admin;
 
   // Load districts on mount
   useEffect(() => {
@@ -53,6 +57,11 @@ export function LoginForm() {
       .catch(() => setPoliceStations([]));
   }, [selectedDistrict]);
 
+  // If the selected PS doesn't have a super user, snap the role back to admin.
+  useEffect(() => {
+    if (role === 'super' && !superAvailable) setRole('admin');
+  }, [role, superAvailable]);
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError('');
@@ -70,7 +79,7 @@ export function LoginForm() {
         id: 0,
         username: derivedUsername,
         full_name: null,
-        role: res.role as 'admin' | 'unit_user',
+        role: res.role as 'admin' | 'unit_user' | 'super_admin',
         unit_id: res.unit_id,
         unit_name: res.unit_name ?? selectedDistrict,
         ps_name: res.ps_name ?? selectedPS,
@@ -79,7 +88,8 @@ export function LoginForm() {
       if (res.must_change_password) {
         navigate('/change-password');
       } else {
-        navigate(res.role === 'admin' ? '/dashboard' : '/cases');
+        // admin + super_admin land on the dashboard, unit_user goes to cases.
+        navigate(res.role === 'unit_user' ? '/cases' : '/dashboard');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');
@@ -143,18 +153,29 @@ export function LoginForm() {
             </select>
           </div>
 
-          {/* Role toggle — default to User, click "Log in as admin" to switch */}
+          {/* Role cycle — User → Admin → (Super) → User. The Super option
+              only appears when the selected PS has the Senior Officer
+              account anchored to it. For every other PS the toggle is
+              binary (User / Admin). */}
           <div className="flex items-center justify-between text-xs">
             <span className="font-semibold" style={{ color: 'var(--ksp-navy)' }}>
-              Signing in as: <span style={{ color: 'var(--ksp-red)' }}>{role === 'admin' ? 'Admin' : 'User'}</span>
+              Signing in as: <span style={{ color: 'var(--ksp-red)' }}>
+                {role === 'admin' ? 'Admin' : role === 'super' ? 'Super Admin' : 'User'}
+              </span>
             </span>
             <button
               type="button"
-              onClick={() => setRole(role === 'admin' ? 'user' : 'admin')}
+              onClick={() => {
+                if (superAvailable) {
+                  setRole(role === 'user' ? 'admin' : role === 'admin' ? 'super' : 'user');
+                } else {
+                  setRole(role === 'admin' ? 'user' : 'admin');
+                }
+              }}
               className="font-semibold underline"
               style={{ color: 'var(--ksp-navy)' }}
             >
-              {role === 'admin' ? 'Log in as user' : 'Log in as admin'}
+              Switch role
             </button>
           </div>
 

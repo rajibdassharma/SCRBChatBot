@@ -64,7 +64,8 @@ async def get_current_user(
 
 
 def require_admin(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
-    if current_user.role != "admin":
+    # super_admin (Senior Officer) is also allowed through admin gates.
+    if current_user.role not in ("admin", "super_admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
     return current_user
 
@@ -89,6 +90,10 @@ def check_record_access(record, current_user: CurrentUser) -> None:
     # Cross-PS access is denied for everyone, including admins.
     if current_user.unit_id is None or getattr(record, "unit_id", None) != current_user.unit_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
-    # Within the PS, unit_users can only touch records they personally submitted.
-    if current_user.role != "admin" and getattr(record, "submitted_by", None) != current_user.user_id:
+    # Within the PS, unit_users can only touch records they personally
+    # submitted. admin and super_admin see all records in their PS.
+    if (
+        current_user.role not in ("admin", "super_admin")
+        and getattr(record, "submitted_by", None) != current_user.user_id
+    ):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")

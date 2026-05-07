@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { Routes, Route, Navigate } from 'react-router';
+import { Toaster } from 'sonner';
 import { useAuthStore } from './lib/stores/auth-store';
 import { ProtectedRoute } from './components/auth/ProtectedRoute';
 import { AppShell } from './components/layout/AppShell';
@@ -23,7 +24,9 @@ function App() {
   }, []);
 
   return (
-    <Routes>
+    <>
+      <Toaster position="top-right" richColors closeButton />
+      <Routes>
       <Route path="/login" element={<LoginPage />} />
       <Route path="/change-password" element={<ChangePasswordPage />} />
 
@@ -58,7 +61,8 @@ function App() {
       </Route>
 
       <Route path="*" element={<Navigate to="/cases/new" replace />} />
-    </Routes>
+      </Routes>
+    </>
   );
 }
 
