@@ -43,18 +43,31 @@ sudo chown -R cyberfraud:cyberfraud "$RUNTIME/backend" "$RUNTIME/frontend" "$RUN
 
 echo
 echo "=== 3. Reset DB (drop all tables) + re-seed (Item 8 rec #2) ==="
-echo "    Stopping backend before dropping tables to release FK locks..."
-sudo systemctl stop "$SVC" || true
 
-# Pre-production phase: drop EVERY application table (cases, mule reports
-# and children, users, revoked_tokens, mule/dsr entries, police_stations,
-# units) and let seed.py rebuild from `All District CEN_PS.xlsx`. Yields a
-# fresh seed_credentials_*.csv. Once real data exists, switch to per-table
-# migrations and remove this stage.
-sudo -u cyberfraud bash -c "cd $RUNTIME/backend && venv/bin/python reset_db.py"
+# This stage is destructive — it drops EVERY application table and lets
+# seed.py rebuild from `All District CEN_PS.xlsx`. It must run exactly
+# once (the first deploy after the UUID + super_admin migrations) and
+# never again, because real production data starts accumulating after.
+# The marker file below records that the migration has been applied.
+# To force a re-run (e.g. seed gone wrong), remove the marker:
+#     sudo rm /opt/cyberfraud/.db_migration_done
+MARKER="$RUNTIME/.db_migration_done"
 
-echo "    Re-seeding (this also recreates tables with String(36) PKs)..."
-sudo -u cyberfraud bash -c "cd $RUNTIME/backend && venv/bin/python seed.py"
+if [ -f "$MARKER" ]; then
+    echo "    SKIPPED — marker $MARKER present (DB migration already applied)."
+else
+    echo "    Stopping backend before dropping tables to release FK locks..."
+    sudo systemctl stop "$SVC" || true
+
+    sudo -u cyberfraud bash -c "cd $RUNTIME/backend && venv/bin/python reset_db.py"
+
+    echo "    Re-seeding (this also recreates tables with String(36) PKs)..."
+    sudo -u cyberfraud bash -c "cd $RUNTIME/backend && venv/bin/python seed.py"
+
+    sudo touch "$MARKER"
+    sudo chown cyberfraud:cyberfraud "$MARKER"
+    echo "    Created marker $MARKER — future runs will skip this stage."
+fi
 
 echo
 echo "=== 4. Restart backend so new code is loaded ==="
