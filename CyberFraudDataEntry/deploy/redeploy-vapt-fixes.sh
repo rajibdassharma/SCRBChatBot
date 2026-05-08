@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
-# CyberFraud — redeploy + verify ALL VAPT findings that have a code-level fix.
+# CyberFraud — full deploy: refresh source, build frontend, sync to runtime,
+# (one-shot) drop+reseed DB, restart backend, reload nginx, run 6 verifies,
+# and copy the fresh seed_credentials_*.csv into the invoking user's home.
 #
 # Cumulative coverage (Innspark Audit Reports v1.0.1 — Preliminary +
 # Full-Scope dated 2026-05-05):
@@ -11,38 +13,63 @@
 #   8 rec#2  UUID PKs on cases/mule_reports + 13 child tables
 #   10 rec#2 XLSX per-cell allow-list (length caps, control chars, IFSC fmt)
 #
-# UUID migration is destructive — the 15 affected tables are dropped and
-# re-seeded. SAFE only because the application has not been used in
-# production yet (seed data only). Do NOT re-run after real data exists.
+# Stage 3 (drop+reseed) is destructive but marker-gated: it fires once, on
+# the first deploy after the UUID + super_admin enum migrations, then
+# auto-skips on every subsequent run via /opt/cyberfraud/.db_migration_done.
+# To force a re-reset: sudo rm /opt/cyberfraud/.db_migration_done
 #
-# Idempotent for everything except the drop step. Aborts on first failure.
+# Idempotent end-to-end. Aborts on first failure (set -euo pipefail).
 #
-# Usage on the server (works regardless of where the source clone lives):
+# Usage on the server:
 #   cd /opt/scrb && git pull && bash CyberFraudDataEntry/deploy/redeploy-vapt-fixes.sh
+#
+# (the leading `git pull` is in the one-liner so this script picks up its
+#  own latest version; the script also pulls again internally to be safe.)
 
 set -euo pipefail
 
-# Resolve SOURCE relative to this script — works whether the clone is at
-# /opt/scrb, /opt/SCRBChatBot, or anywhere else.
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE="$(cd "$SCRIPT_DIR/.." && pwd)"
+SOURCE="$(cd "$SCRIPT_DIR/.." && pwd)"          # /opt/scrb/CyberFraudDataEntry
+REPO_ROOT="$(cd "$SOURCE/.." && pwd)"           # /opt/scrb
 RUNTIME=/opt/cyberfraud
 SVC=cyberfraud-backend
 NGINX_SITE=/etc/nginx/sites-available/cyberfraud
 
-echo "=== 1. Source commit currently on disk ==="
-echo "    SOURCE=$SOURCE"
-cd "$SOURCE/.." && git log -1 --oneline
+# Resolve the user who invoked the script (sudo or direct) so the
+# credentials CSV lands in their home, not root's.
+INVOKING_USER="${SUDO_USER:-$USER}"
+INVOKING_HOME="$(getent passwd "$INVOKING_USER" | cut -d: -f6)"
+
+echo "================================================================"
+echo "  CyberFraud full deploy"
+echo "  SOURCE: $SOURCE"
+echo "  REPO  : $REPO_ROOT"
+echo "  USER  : $INVOKING_USER  (home=$INVOKING_HOME)"
+echo "================================================================"
 
 echo
-echo "=== 2. Sync code from source to runtime ($RUNTIME) ==="
+echo "=== 1. git pull on $REPO_ROOT ==="
+cd "$REPO_ROOT"
+git pull
+echo "    HEAD: $(git log -1 --oneline)"
+
+echo
+echo "=== 2. Build frontend (npm install + npm run build) ==="
+cd "$SOURCE/frontend"
+npm install
+npm run build
+echo "    dist/ rebuilt:"
+ls -la "$SOURCE/frontend/dist/" | head -10
+
+echo
+echo "=== 3. Sync code from source to runtime ($RUNTIME) ==="
 sudo cp -r "$SOURCE"/backend "$RUNTIME/"
 sudo cp -r "$SOURCE"/frontend "$RUNTIME/"
 sudo cp -r "$SOURCE"/deploy "$RUNTIME/"
 sudo chown -R cyberfraud:cyberfraud "$RUNTIME/backend" "$RUNTIME/frontend" "$RUNTIME/deploy"
 
 echo
-echo "=== 3. Reset DB (drop all tables) + re-seed (Item 8 rec #2) ==="
+echo "=== 4. Reset DB (drop all tables) + re-seed (Item 8 rec #2) ==="
 
 # This stage is destructive — it drops EVERY application table and lets
 # seed.py rebuild from `All District CEN_PS.xlsx`. It must run exactly
@@ -70,19 +97,19 @@ else
 fi
 
 echo
-echo "=== 4. Restart backend so new code is loaded ==="
+echo "=== 5. Restart backend so new code is loaded ==="
 sudo systemctl restart "$SVC"
 sleep 2
 sudo systemctl is-active "$SVC"
 
 echo
-echo "=== 5. Apply nginx config (server_tokens off, proxy_hide_header Server) ==="
+echo "=== 6. Apply nginx config (server_tokens off, proxy_hide_header Server) ==="
 sudo cp "$RUNTIME/deploy/nginx.conf" "$NGINX_SITE"
 sudo nginx -t
 sudo systemctl reload nginx
 
 echo
-echo "=== 6. Verify #5 — sanitizer code is loaded (cases + mule schemas) ==="
+echo "=== 7. Verify #5 — sanitizer code is loaded (cases + mule schemas) ==="
 sudo -u cyberfraud bash -c "cd $RUNTIME/backend && venv/bin/python -c \"
 from utils.sanitize import strip_html
 assert '<script' not in (strip_html('<script>alert(1)</script>real') or '').lower()
@@ -100,7 +127,7 @@ print('PASS: sanitizer wired in case + mule schemas')
 \""
 
 echo
-echo "=== 7. Verify #6 — Server header does not disclose nginx version ==="
+echo "=== 8. Verify #6 — Server header does not disclose nginx version ==="
 HEADERS=$(curl -skI https://localhost/ 2>&1)
 SERVER_LINE=$(echo "$HEADERS" | grep -i '^server:' | head -1 | tr -d '\r')
 echo "    $SERVER_LINE"
@@ -112,7 +139,7 @@ else
 fi
 
 echo
-echo "=== 8. Verify #7 + #8 — per-record authz helper is wired into routes ==="
+echo "=== 9. Verify #7 + #8 — per-record authz helper is wired into routes ==="
 # These checks confirm the deployed code references the new helper.
 # Full behavioral validation requires the pytest suite (run locally
 # with seed users; see tests/README.md).
@@ -128,7 +155,7 @@ print('PASS: per-record authorization helper wired in case + mule-report routes'
 \""
 
 echo
-echo "=== 9. Verify #10 — XLSX _safe_str sanitises cell content ==="
+echo "=== 10. Verify #10 — XLSX _safe_str sanitises cell content ==="
 sudo -u cyberfraud bash -c "cd $RUNTIME/backend && venv/bin/python -c \"
 from api.routes_mule_report import _safe_str
 out = _safe_str('<script>alert(1)</script>1234')
@@ -139,7 +166,7 @@ print('PASS: XLSX cell parser strips HTML/script/handlers at parse time')
 \""
 
 echo
-echo "=== 10. Verify Item 8 rec #2 — UUID PKs on cases + mule_reports ==="
+echo "=== 11. Verify Item 8 rec #2 — UUID PKs on cases + mule_reports ==="
 sudo -u cyberfraud bash -c "cd $RUNTIME/backend && venv/bin/python -c \"
 from sqlalchemy import inspect as sa_inspect
 from models.case import Case
@@ -157,7 +184,7 @@ print('PASS: UUID PKs on UUID-affected tables')
 \""
 
 echo
-echo "=== 11. Verify Item 10 rec #2 — XLSX per-cell allow-list active ==="
+echo "=== 12. Verify Item 10 rec #2 — XLSX per-cell allow-list active ==="
 sudo -u cyberfraud bash -c "cd $RUNTIME/backend && venv/bin/python -c \"
 from api.routes_mule_report import _safe_str, _safe_ifsc, _FIELD_CAPS
 # Length cap
@@ -174,10 +201,52 @@ print('PASS: XLSX per-cell allow-list (length cap + ctrl-char + IFSC) active')
 \""
 
 echo
-echo "================================================="
-echo "  ALL CHECKS PASSED — VAPT 7.5-7.10 + Item 8/10 LIVE"
-echo "================================================="
-echo
-echo "For full behavioral verification (multi-user BOLA tests and XLSX upload"
-echo "round-trip), run the pytest suite from a workstation against the server:"
-echo "    cd backend && pytest tests/ -v"
+echo "=== 13. Hand off fresh seed_credentials_*.csv (if any) ==="
+shopt -s nullglob
+CRED_FILES=("$RUNTIME"/backend/seed_credentials_*.csv)
+shopt -u nullglob
+if [ ${#CRED_FILES[@]} -gt 0 ]; then
+    LATEST_CSV=$(ls -t "$RUNTIME"/backend/seed_credentials_*.csv | head -1)
+    DEST="$INVOKING_HOME/$(basename "$LATEST_CSV")"
+    sudo cp "$LATEST_CSV" "$DEST"
+    sudo chown "$INVOKING_USER:$INVOKING_USER" "$DEST"
+    echo "    Copied: $LATEST_CSV"
+    echo "    To    : $DEST"
+    echo
+    echo "    >>> scp this file off the server now, distribute to PSes,"
+    echo "    >>> then DELETE both copies (server + your laptop)."
+else
+    echo "    No seed_credentials_*.csv in $RUNTIME/backend/."
+    echo "    (Expected when stage 4 was skipped — no DB reset on re-runs.)"
+fi
+
+cat <<EOF
+
+================================================================
+  ALL CHECKS PASSED — proceed to browser smoke test
+================================================================
+
+VAPT 7.5-7.10 + Item 8/10 + super_admin role + dashboard fixes LIVE.
+
+Smoke-test https://117.200.49.38 :
+
+  1. Log in as a PS admin from the new CSV (use any production PS).
+  2. Visit /dashboard — KPI tiles render, no blank screen.
+  3. /cases/new -> save a draft -> URL becomes /cases/<long-uuid>.
+     Confirm a green "Draft saved" toast appears top-right.
+  4. Open the case's Unfreeze + Refunds tabs — the "FIR No" field
+     is locked and shows the case's FIR.
+  5. Edit it -> submit -> green toast "Case submitted".
+  6. Try /cases/1 directly in the address bar — must 404.
+  7. /mule/new -> create one manually, confirm UUID URL.
+  8. /mule/upload -> upload a bank XLSX, confirm rows appear in the
+     created mule report.
+  9. Sign out as admin, sign in as the matching unit_user.
+     /dashboard should be hidden from the sidebar.
+
+Server logs if needed:
+    sudo journalctl -u cyberfraud-backend -n 100 --no-pager
+
+Full behavioral test suite (run from a workstation):
+    cd backend && pytest tests/ -v
+EOF
