@@ -1,0 +1,24 @@
+[Unit]
+Description=CyberFraud Data Entry V2 Backend
+After=network.target mysql.service
+Requires=mysql.service
+
+[Service]
+Type=notify
+User=cyberfraud_v2
+Group=cyberfraud_v2
+WorkingDirectory=/opt/cyberfraud_v2/backend
+Environment="PATH=/opt/cyberfraud_v2/backend/venv/bin:/usr/bin"
+EnvironmentFile=/opt/cyberfraud_v2/backend/.env
+ExecStart=/opt/cyberfraud_v2/backend/venv/bin/gunicorn cyber_fraud:app -c gunicorn.conf.py
+ExecReload=/bin/kill -s HUP $MAINPID
+Restart=on-failure
+RestartSec=5
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/log/cyberfraud_v2 /opt/cyberfraud_v2/backend
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
