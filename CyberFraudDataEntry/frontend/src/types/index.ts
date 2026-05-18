@@ -8,6 +8,48 @@ export interface User {
   ps_name: string | null;
 }
 
+// ── User Management (PS-admin only) ──
+export interface ManagedUser {
+  id: number;
+  username: string;
+  full_name: string | null;
+  email: string | null;
+  mobile: string | null;
+  role: 'admin' | 'unit_user' | 'super_admin';
+  is_active: boolean;
+  must_change_password: boolean;
+  created_at: string | null;
+  deactivated_at: string | null;
+}
+
+export interface UserCreatePayload {
+  full_name: string;
+  email: string;
+  mobile: string;
+}
+
+export interface UserUpdatePayload {
+  full_name?: string;
+  email?: string;
+  mobile?: string;
+}
+
+export interface UserCreateResponse {
+  user: ManagedUser;
+  generated_password: string;
+}
+
+export interface PasswordResetResponse {
+  user_id: number;
+  username: string;
+  generated_password: string;
+}
+
+export interface UserCount {
+  total: number;
+  active: number;
+}
+
 export interface LoginResponse {
   ok: boolean;
   token: string;

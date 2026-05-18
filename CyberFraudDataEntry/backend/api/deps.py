@@ -15,12 +15,22 @@ bearer_scheme = HTTPBearer()
 
 
 class CurrentUser:
-    def __init__(self, user_id: int, username: str, role: str, unit_id: int | None, unit_name: str | None, jti: str | None = None):
+    def __init__(
+        self,
+        user_id: int,
+        username: str,
+        role: str,
+        unit_id: int | None,
+        unit_name: str | None,
+        ps_id: int | None = None,
+        jti: str | None = None,
+    ):
         self.user_id = user_id
         self.username = username
         self.role = role
         self.unit_id = unit_id
         self.unit_name = unit_name
+        self.ps_id = ps_id
         self.jti = jti
 
 
@@ -59,6 +69,7 @@ async def get_current_user(
         role=user.role,
         unit_id=user.unit_id,
         unit_name=unit_name,
+        ps_id=user.ps_id,
         jti=jti,
     )
 
@@ -67,6 +78,24 @@ def require_admin(current_user: CurrentUser = Depends(get_current_user)) -> Curr
     # super_admin (Senior Officer) is also allowed through admin gates.
     if current_user.role not in ("admin", "super_admin"):
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin access required")
+    return current_user
+
+
+def require_ps_admin(current_user: CurrentUser = Depends(get_current_user)) -> CurrentUser:
+    """Per-PS administrator — used by the User Management routes.
+
+    Allows `admin` and `super_admin` (a super_admin is always anchored
+    to a specific PS — typically the Cyber Crime PS — and retains
+    user-management rights for THEIR OWN PS only). unit_user is rejected.
+
+    The same-PS isolation is enforced in the routes themselves: every
+    mutate path loads the target user via `_load_target_user()` which
+    rejects any record whose ps_id differs from the current user's.
+    """
+    if current_user.role not in ("admin", "super_admin"):
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="PS admin access required")
+    if not current_user.ps_id or not current_user.unit_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Admin account is not assigned to a police station")
     return current_user
 
 

@@ -3,6 +3,8 @@ uvicorn[standard]>=0.32.0
 sqlalchemy[asyncio]>=2.0.0
 asyncmy>=0.2.9
 pydantic>=2.10.0
+# email-validator powers Pydantic's EmailStr — required by schemas/users.py
+email-validator>=2.0.0
 pydantic-settings>=2.7.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
@@ -14,5 +16,7 @@ python-dotenv>=1.0.0
 gunicorn>=23.0.0
 # Excel upload/parsing for bank transaction files + seed (All District CEN_PS.xlsx)
 openpyxl>=3.1.0
+# PDF report generation (DSR, Mule reports, Case files, Dashboard snapshot)
+reportlab>=4.2.0
 # HTTP client used by bulk indexing + tests
 requests>=2.31.0

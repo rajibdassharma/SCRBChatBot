@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { login, getDistrictsPublic, getPoliceStationsPublic } from '../../lib/api/auth';
 import { useAuthStore } from '../../lib/stores/auth-store';
+import { PasswordInput } from '../ui/PasswordInput';
 import kspLogo from '../../assets/ksp_logo.png';
 
 /**
@@ -196,14 +197,11 @@ export function LoginForm() {
           {/* Password */}
           <div>
             <label className="block text-sm font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>Password</label>
-            <input
-              type="password"
+            <PasswordInput
               value={password}
               onChange={(e) => setPassword(e.target.value)}
               required
               autoComplete="current-password"
-              className="w-full px-4 py-2.5 rounded-xl text-sm outline-none transition"
-              style={{ border: '2px solid var(--ksp-navy)' }}
               placeholder="Enter password"
             />
           </div>

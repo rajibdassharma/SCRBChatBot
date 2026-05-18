@@ -1,6 +1,6 @@
 import { NavLink } from 'react-router';
 import { useAuthStore } from '../../lib/stores/auth-store';
-import { FilePlus, Search, BarChart3, LogOut, FileText, Upload } from 'lucide-react';
+import { FilePlus, Search, BarChart3, LogOut, FileText, Upload, Users, FileDown } from 'lucide-react';
 import kspLogo from '../../assets/ksp_logo.png';
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
@@ -14,6 +14,9 @@ export function Sidebar() {
   const { user, logout } = useAuthStore();
   // admin + super_admin both see Dashboard; only super_admin gets cross-PS data.
   const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  // User Management — per-PS administrator (admin or super_admin who is
+  // anchored to a specific PS). Same-PS isolation is enforced server-side.
+  const isPsAdmin = user?.role === 'admin' || user?.role === 'super_admin';
 
   return (
     <aside className="w-[280px] flex flex-col min-h-screen p-4 gap-3" style={{ background: 'var(--ksp-yellow-soft)', borderRight: '2px solid var(--ksp-yellow-border)' }}>
@@ -65,11 +68,23 @@ export function Sidebar() {
           <Upload className="w-4 h-4" /> Upload Bulk Data
         </NavLink>
 
+        <div className="h-[1px] mx-4 my-2" style={{ background: 'rgba(11,44,74,0.15)' }} />
+        <NavLink to="/reports" className={linkClass}>
+          <FileDown className="w-4 h-4" /> Reports
+        </NavLink>
+
         {isAdmin && (
+          <NavLink to="/dashboard" className={linkClass}>
+            <BarChart3 className="w-4 h-4" /> Dashboard
+          </NavLink>
+        )}
+
+        {isPsAdmin && (
           <>
             <div className="h-[1px] mx-4 my-2" style={{ background: 'rgba(11,44,74,0.15)' }} />
-            <NavLink to="/dashboard" className={linkClass}>
-              <BarChart3 className="w-4 h-4" /> Dashboard
+            <p className="px-4 pt-1 pb-2 text-sm font-extrabold uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>Administration</p>
+            <NavLink to="/users" className={linkClass}>
+              <Users className="w-4 h-4" /> User Management
             </NavLink>
           </>
         )}

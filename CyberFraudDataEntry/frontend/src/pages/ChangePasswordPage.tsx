@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { changePassword } from '../lib/api/auth';
 import { useAuthStore } from '../lib/stores/auth-store';
+import { PasswordInput } from '../components/ui/PasswordInput';
 import kspLogo from '../assets/ksp_logo.png';
 
 export function ChangePasswordPage() {
@@ -65,39 +66,33 @@ export function ChangePasswordPage() {
 
           <div>
             <label className="block text-sm font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>Current Password</label>
-            <input
-              type="password"
+            <PasswordInput
               value={currentPassword}
               onChange={(e) => setCurrentPassword(e.target.value)}
               required
-              className="w-full px-4 py-2.5 rounded-xl text-sm outline-none transition"
-              style={{ border: '2px solid var(--ksp-navy)' }}
+              autoComplete="current-password"
               placeholder="Enter your current password"
             />
           </div>
 
           <div>
             <label className="block text-sm font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>New Password</label>
-            <input
-              type="password"
+            <PasswordInput
               value={newPassword}
               onChange={(e) => setNewPassword(e.target.value)}
               required
-              className="w-full px-4 py-2.5 rounded-xl text-sm outline-none transition"
-              style={{ border: '2px solid var(--ksp-navy)' }}
+              autoComplete="new-password"
               placeholder="At least 8 characters"
             />
           </div>
 
           <div>
             <label className="block text-sm font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>Confirm New Password</label>
-            <input
-              type="password"
+            <PasswordInput
               value={confirmPassword}
               onChange={(e) => setConfirmPassword(e.target.value)}
               required
-              className="w-full px-4 py-2.5 rounded-xl text-sm outline-none transition"
-              style={{ border: '2px solid var(--ksp-navy)' }}
+              autoComplete="new-password"
               placeholder="Re-enter new password"
             />
           </div>

@@ -14,6 +14,8 @@ import { MuleUploadPage } from './pages/MuleUploadPage';
 import { PetitionEntryPage } from './pages/PetitionEntryPage';
 import { PetitionUpdatePage } from './pages/PetitionUpdatePage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
+import { UserManagementPage } from './pages/UserManagementPage';
+import { ReportsPage } from './pages/ReportsPage';
 
 function App() {
   const { logout } = useAuthStore();
@@ -58,6 +60,17 @@ function App() {
             </ProtectedRoute>
           }
         />
+
+        <Route
+          path="/users"
+          element={
+            <ProtectedRoute requirePsAdmin>
+              <UserManagementPage />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route path="/reports" element={<ReportsPage />} />
       </Route>
 
       <Route path="*" element={<Navigate to="/cases/new" replace />} />
