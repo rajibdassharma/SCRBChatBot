@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# ============================================================================
+# CyberFraud Data Entry — MySQL backup script
+#
+# Fires every night at 02:00 IST via systemd timer `cyberfraud-backup.timer`.
+# Writes a gzipped mysqldump of `cyber_fraud_dsr` into /opt/cyberfraud/backups/
+# and prunes anything older than 14 days. Output goes to journal:
+#     sudo journalctl -u cyberfraud-backup.service -n 50 --no-pager
+#
+# Runs as the `cyberfraud` user (matches the backend service), so DB
+# credentials come from the same /opt/cyberfraud/backend/.env file the
+# backend already reads.
+# ============================================================================
+
+set -euo pipefail
+
+# Fail the whole pipeline if mysqldump fails before gzip sees its stdin
+set -o pipefail
+
+ENV_FILE=/opt/cyberfraud/backend/.env
+BACKUP_DIR=/opt/cyberfraud/backups
+RETENTION_DAYS=14
+
+# ── Read DB credentials from .env ────────────────────────────────────
+if [ ! -r "$ENV_FILE" ]; then
+    echo "ERROR: cannot read $ENV_FILE" >&2
+    exit 1
+fi
+
+# Strip comments/blank lines and pull each CFDSR_DB_* value. Use cut -d= -f2-
+# to preserve any '=' inside the value (e.g. in a password).
+DB_HOST=$(grep -E '^CFDSR_DB_HOST='     "$ENV_FILE" | tail -1 | cut -d'=' -f2- || true)
+DB_PORT=$(grep -E '^CFDSR_DB_PORT='     "$ENV_FILE" | tail -1 | cut -d'=' -f2- || true)
+DB_USER=$(grep -E '^CFDSR_DB_USER='     "$ENV_FILE" | tail -1 | cut -d'=' -f2- || true)
+DB_PASS=$(grep -E '^CFDSR_DB_PASSWORD=' "$ENV_FILE" | tail -1 | cut -d'=' -f2- || true)
+DB_NAME=$(grep -E '^CFDSR_DB_NAME='     "$ENV_FILE" | tail -1 | cut -d'=' -f2- || true)
+
+: "${DB_HOST:=localhost}"
+: "${DB_PORT:=3306}"
+: "${DB_USER:=root}"
+: "${DB_NAME:=cyber_fraud_dsr}"
+
+if [ -z "$DB_PASS" ]; then
+    echo "ERROR: CFDSR_DB_PASSWORD not found in $ENV_FILE" >&2
+    exit 1
+fi
+
+# ── Prepare output path ──────────────────────────────────────────────
+mkdir -p "$BACKUP_DIR"
+chmod 750 "$BACKUP_DIR"
+
+TIMESTAMP=$(date +'%Y-%m-%d_%H%M')
+OUTFILE="$BACKUP_DIR/${DB_NAME}_${TIMESTAMP}.sql.gz"
+
+echo "[backup-db] $(date -Iseconds) — dumping $DB_NAME → $OUTFILE"
+
+# ── Dump + compress in one streaming pipeline ────────────────────────
+# --single-transaction : consistent snapshot without table locks
+# --routines / --triggers : carry over stored procedures + triggers (cheap)
+# --quick : row-by-row streaming (memory-safe for large tables)
+# --hex-blob : safe encoding for any binary columns
+MYSQL_PWD="$DB_PASS" mysqldump \
+    --host="$DB_HOST" \
+    --port="$DB_PORT" \
+    --user="$DB_USER" \
+    --single-transaction \
+    --routines \
+    --triggers \
+    --quick \
+    --hex-blob \
+    "$DB_NAME" \
+  | gzip --best > "$OUTFILE"
+
+# Restrict access — dumps contain bcrypt hashes and operational data
+chmod 640 "$OUTFILE"
+
+# ── Sanity check: a dump of any real DB is well over 1 KB ────────────
+SIZE=$(stat -c '%s' "$OUTFILE")
+if [ "$SIZE" -lt 1024 ]; then
+    echo "ERROR: backup file $OUTFILE is suspiciously small ($SIZE bytes)" >&2
+    exit 2
+fi
+echo "[backup-db] OK — wrote $OUTFILE ($SIZE bytes)"
+
+# ── Prune anything older than RETENTION_DAYS ─────────────────────────
+PRUNED=$(find "$BACKUP_DIR" -maxdepth 1 -type f -name "${DB_NAME}_*.sql.gz" -mtime +${RETENTION_DAYS} -print -delete | wc -l)
+echo "[backup-db] pruned $PRUNED file(s) older than ${RETENTION_DAYS} days"
+
+# ── Show what's currently retained ───────────────────────────────────
+echo "[backup-db] current backups:"
+ls -lh "$BACKUP_DIR" | tail -n +2 | sort -k9

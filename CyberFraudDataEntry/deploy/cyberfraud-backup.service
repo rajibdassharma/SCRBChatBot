@@ -1,0 +1,23 @@
+[Unit]
+Description=CyberFraud Data Entry — daily MySQL backup
+After=mysql.service
+Requires=mysql.service
+
+[Service]
+Type=oneshot
+User=cyberfraud
+Group=cyberfraud
+WorkingDirectory=/opt/cyberfraud
+ExecStart=/opt/cyberfraud/deploy/backup-db.sh
+
+# Hardening — backup only needs to read .env, write backups, and talk to MySQL
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/opt/cyberfraud/backups
+
+StandardOutput=journal
+StandardError=journal
+
+# Triggered by .timer — no [Install] section in the .service itself
