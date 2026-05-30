@@ -42,29 +42,45 @@ systemctl is-enabled mysql nginx cyberfraud-backend    # all should print: enabl
 
 ## One-time backup install (cron-style, runs nightly at 02:00 IST)
 
+One command — wraps git pull, deploy sync, dir setup, systemd install,
+enable timer, and a manual smoke test:
+
 ```bash
-# 1. Create the backup target directory, owned by the service user
+sudo bash /opt/scrb/CyberFraudDataEntry/deploy/install-backup.sh
+```
+
+The script is idempotent — safe to re-run if a step fails or you tweak
+any of the unit files. It exits non-zero if the manual smoke test
+fails so you'll know not to rely on the nightly run yet.
+
+Manual steps it does (in case you ever need to do them by hand):
+
+```bash
+# 1. Pull source + sync deploy/
+cd /opt/scrb && sudo git pull
+sudo cp -r /opt/scrb/CyberFraudDataEntry/deploy /opt/cyberfraud/
+sudo chown -R cyberfraud:cyberfraud /opt/cyberfraud/deploy
+
+# 2. Backup directory
 sudo mkdir -p /opt/cyberfraud/backups
 sudo chown cyberfraud:cyberfraud /opt/cyberfraud/backups
 sudo chmod 750 /opt/cyberfraud/backups
 
-# 2. Make sure the backup script is executable + owned correctly
+# 3. Make the backup script executable
 sudo chmod +x /opt/cyberfraud/deploy/backup-db.sh
-sudo chown cyberfraud:cyberfraud /opt/cyberfraud/deploy/backup-db.sh
 
-# 3. Install the systemd unit files
-sudo cp deploy/cyberfraud-backup.service /etc/systemd/system/
-sudo cp deploy/cyberfraud-backup.timer   /etc/systemd/system/
+# 4. Install the systemd unit files
+sudo cp /opt/cyberfraud/deploy/cyberfraud-backup.service /etc/systemd/system/
+sudo cp /opt/cyberfraud/deploy/cyberfraud-backup.timer   /etc/systemd/system/
 
-# 4. Reload, enable, and start the timer (NOT the service — the timer fires it)
+# 5. Reload, enable, and start the timer (NOT the service — the timer fires it)
 sudo systemctl daemon-reload
 sudo systemctl enable --now cyberfraud-backup.timer
 
-# 5. Verify the timer is scheduled
+# 6. Verify the timer is scheduled
 systemctl list-timers cyberfraud-backup.timer --no-pager
-# Should show NEXT firing at 02:00 IST (= 20:30 UTC) the next morning.
 
-# 6. Run it ONCE manually to confirm it works, before waiting for 02:00
+# 7. Run it ONCE manually to confirm it works, before waiting for 02:00
 sudo systemctl start cyberfraud-backup.service
 sudo journalctl -u cyberfraud-backup.service -n 30 --no-pager
 ls -lh /opt/cyberfraud/backups/
