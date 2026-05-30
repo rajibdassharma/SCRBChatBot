@@ -16,6 +16,7 @@ from models.refund import Refund
 from models.petition import Petition
 from models.dsr_entry import DsrEntry
 from models.mule_entry import MuleEntry
+from models.mule_report import MuleReport
 from models.unit import Unit
 from schemas.dashboard import KpiSummary, UnitComparison, TrendPoint, SubmissionStatus
 from api.deps import require_admin, CurrentUser
@@ -39,21 +40,26 @@ def _scope_to_unit(query, current: CurrentUser, case_alias=Case):
 
 @router.get("/summary", response_model=KpiSummary)
 async def get_summary(
+    target_date: date = Query(..., alias="date", description="Cumulative cutoff date — include records created on or before this date"),
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
+    """Cumulative totals as of `date` (inclusive). Records entered after
+    this date are excluded — filter is `<created_at> <= date`."""
     if admin.role == "admin" and not admin.unit_id:
         raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
 
+    # MySQL DATE(x) <= :date  is inclusive of any time on that date
     total_cases = (await db.execute(
         _scope_to_unit(select(func.count(Case.id)), admin)
+        .where(func.date(Case.created_at) <= target_date)
     )).scalar() or 0
 
     total_arrests = (await db.execute(
         _scope_to_unit(
             select(func.count(Arrest.id)).join(Case, Arrest.case_id == Case.id),
             admin,
-        )
+        ).where(func.date(Arrest.created_at) <= target_date)
     )).scalar() or 0
 
     total_amount_lien_marked = float((await db.execute(
@@ -61,7 +67,7 @@ async def get_summary(
             select(func.coalesce(func.sum(LienAccount.amount_lien_marked), 0))
             .join(Case, LienAccount.case_id == Case.id),
             admin,
-        )
+        ).where(func.date(LienAccount.created_at) <= target_date)
     )).scalar() or 0)
 
     total_amount_refunded = float((await db.execute(
@@ -69,27 +75,30 @@ async def get_summary(
             select(func.coalesce(func.sum(Refund.amount), 0))
             .join(Case, Refund.case_id == Case.id),
             admin,
-        ).where(Refund.refunded == "yes")
+        )
+        .where(Refund.refunded == "yes")
+        .where(func.date(Refund.created_at) <= target_date)
     )).scalar() or 0)
 
     total_accounts_lien_marked = (await db.execute(
         _scope_to_unit(
             select(func.count(LienAccount.id)).join(Case, LienAccount.case_id == Case.id),
             admin,
-        )
+        ).where(func.date(LienAccount.created_at) <= target_date)
     )).scalar() or 0
 
     total_accounts_defreezed = (await db.execute(
         _scope_to_unit(
             select(func.count(UnfreezeDetail.id)).join(Case, UnfreezeDetail.case_id == Case.id),
             admin,
-        )
+        ).where(func.date(UnfreezeDetail.created_at) <= target_date)
     )).scalar() or 0
 
-    # Units submitted = how many distinct PSes have at least one case
+    # Units submitted = how many distinct PSes have at least one case as of date
     if admin.role == "super_admin":
         units_submitted = (await db.execute(
             select(func.count(func.distinct(Case.unit_id)))
+            .where(func.date(Case.created_at) <= target_date)
         )).scalar() or 0
         units_total = (await db.execute(
             select(func.count(Unit.id)).where(Unit.is_active == True)  # noqa: E712
@@ -112,10 +121,12 @@ async def get_summary(
 
 @router.get("/unit-comparison", response_model=List[UnitComparison])
 async def get_unit_comparison(
+    target_date: date = Query(..., alias="date", description="Cumulative cutoff date — include records created on or before this date"),
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """admin: single row for own PS. super_admin: row per PS that has cases."""
+    """admin: single row for own PS. super_admin: row per PS that has cases.
+    All counts are cumulative as of `date` (inclusive)."""
     if admin.role == "admin" and not admin.unit_id:
         raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
 
@@ -127,6 +138,7 @@ async def get_unit_comparison(
                 func.count(func.distinct(Case.id)).label("case_count"),
             )
             .join(Case, Case.unit_id == Unit.id)
+            .where(func.date(Case.created_at) <= target_date)
             .group_by(Unit.id, Unit.name)
             .order_by(func.count(func.distinct(Case.id)).desc())
         )).all()
@@ -139,6 +151,7 @@ async def get_unit_comparison(
             )
             .join(Case, Case.unit_id == Unit.id)
             .where(Unit.id == admin.unit_id)
+            .where(func.date(Case.created_at) <= target_date)
             .group_by(Unit.id, Unit.name)
         )).all()
 
@@ -148,11 +161,13 @@ async def get_unit_comparison(
             select(func.count(Arrest.id))
             .join(Case, Arrest.case_id == Case.id)
             .where(Case.unit_id == unit_id)
+            .where(func.date(Arrest.created_at) <= target_date)
         )).scalar() or 0
         lien_amount = float((await db.execute(
             select(func.coalesce(func.sum(LienAccount.amount_lien_marked), 0))
             .join(Case, LienAccount.case_id == Case.id)
             .where(Case.unit_id == unit_id)
+            .where(func.date(LienAccount.created_at) <= target_date)
         )).scalar() or 0)
         out.append(UnitComparison(
             unit_name=unit_name,
@@ -228,8 +243,23 @@ async def get_submission_status(
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """For a given date, list the PSes in scope with whether they
-    submitted their DSR. admin: own PS only. super_admin: all active PSes."""
+    """For each district in scope, has the team entered any real data
+    on or before `target_date`?
+
+    The boolean field names (`dsr_submitted` / `mule_submitted`) are
+    kept for API/UI compatibility, but the semantic now reflects the
+    team's actual workflow ("Case is part of DSR"):
+
+      dsr_submitted  ←  at least one CASE entered for this unit
+      mule_submitted ←  at least one MULE_REPORT entered for this unit
+
+    The original dsr_entries / mule_entries tables aren't used in
+    practice (their dedicated daily-summary forms were never wired
+    into the UI), so checking them would show all-red even on units
+    that are actively working.
+
+    admin: own PS only. super_admin: all active districts.
+    """
     if admin.role == "admin" and not admin.unit_id:
         raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
 
@@ -243,19 +273,31 @@ async def get_submission_status(
             select(Unit.id, Unit.name).where(Unit.id == admin.unit_id)
         )).all()
 
-    dsr_submitted_ids = set((await db.execute(
-        select(DsrEntry.unit_id).where(DsrEntry.report_date == target_date)
-    )).scalars().all())
-    mule_submitted_ids = set((await db.execute(
-        select(MuleEntry.unit_id).where(MuleEntry.report_date == target_date)
-    )).scalars().all())
+    # Per-district entry count = cases + mule_reports created on or before
+    # target_date. One total per district, no classification by record type
+    # (matches the simplified UI: just "how much have they entered").
+    case_rows = (await db.execute(
+        select(Case.unit_id, func.count(Case.id))
+        .where(func.date(Case.created_at) <= target_date)
+        .group_by(Case.unit_id)
+    )).all()
+    mule_rows = (await db.execute(
+        select(MuleReport.unit_id, func.count(MuleReport.id))
+        .where(func.date(MuleReport.created_at) <= target_date)
+        .group_by(MuleReport.unit_id)
+    )).all()
+
+    counts: dict[int, int] = {}
+    for uid, n in case_rows:
+        counts[uid] = counts.get(uid, 0) + int(n or 0)
+    for uid, n in mule_rows:
+        counts[uid] = counts.get(uid, 0) + int(n or 0)
 
     return [
         SubmissionStatus(
             unit_id=int(uid),
             unit_name=uname,
-            dsr_submitted=uid in dsr_submitted_ids,
-            mule_submitted=uid in mule_submitted_ids,
+            entry_count=counts.get(uid, 0),
         )
         for uid, uname in units
     ]

@@ -315,8 +315,8 @@ export interface TrendPoint {
 export interface SubmissionStatus {
   unit_id: number;
   unit_name: string;
-  dsr_submitted: boolean;
-  mule_submitted: boolean;
+  /** Total entries (cases + mule reports) this district has made up to the selected date. */
+  entry_count: number;
 }
 
 // -- DSR + Mule daily entries --

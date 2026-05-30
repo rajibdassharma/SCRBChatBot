@@ -29,5 +29,6 @@ class TrendPoint(BaseModel):
 class SubmissionStatus(BaseModel):
     unit_id: int
     unit_name: str
-    dsr_submitted: bool
-    mule_submitted: bool
+    # Total entries (cases + mule_reports) made by this district up to the
+    # selected date. Replaces the old dsr_submitted / mule_submitted bools.
+    entry_count: int = 0

@@ -6,7 +6,7 @@ import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
-import { BarChart3, CheckCircle, XCircle } from 'lucide-react';
+import { BarChart3 } from 'lucide-react';
 
 const cardStyle = { background: '#fff', border: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 6px 16px rgba(0,0,0,0.08)' };
 
@@ -130,7 +130,7 @@ export function DashboardPage() {
                     dataKey="value" label={({ name, value }) => `${name}: ${formatINR(value)}`}
                   >
                     <Cell fill="#0b2c4a" />
-                    <Cell fill="#ffd400" />
+                    <Cell fill="#b10000" />
                   </Pie>
                   <Tooltip formatter={(val) => formatINR(Number(val) || 0)} />
                   <Legend />
@@ -152,7 +152,7 @@ export function DashboardPage() {
                   <Tooltip />
                   <Legend />
                   <Bar dataKey="lien_marked" fill="#0b2c4a" name="Accounts Lien Marked" />
-                  <Bar dataKey="defreezed" fill="#ffd400" name="Accounts De-Freezed" />
+                  <Bar dataKey="defreezed" fill="#b10000" name="Accounts De-Freezed" />
                 </BarChart>
               </ResponsiveContainer>
             </div>
@@ -167,25 +167,25 @@ export function DashboardPage() {
               <thead style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)' }}>
                 <tr>
                   <th className="px-4 py-3 text-xs uppercase font-bold">#</th>
-                  <th className="px-4 py-3 text-xs uppercase font-bold">Unit Name</th>
-                  <th className="px-4 py-3 text-xs uppercase font-bold text-center">DSR</th>
-                  <th className="px-4 py-3 text-xs uppercase font-bold text-center">Mule</th>
+                  <th className="px-4 py-3 text-xs uppercase font-bold">District</th>
+                  <th className="px-4 py-3 text-xs uppercase font-bold text-right">Entries</th>
                 </tr>
               </thead>
               <tbody>
-                {statuses.map((s, i) => (
+                {[...statuses]
+                  .sort((a, b) =>
+                    b.entry_count - a.entry_count
+                    || a.unit_name.localeCompare(b.unit_name)
+                  )
+                  .map((s, i) => (
                   <tr key={s.unit_id} className="border-t hover:bg-[#fff3b0]/30" style={{ borderColor: 'rgba(0,0,0,0.06)' }}>
                     <td className="px-4 py-2 opacity-50">{i + 1}</td>
                     <td className="px-4 py-2 font-semibold" style={{ color: 'var(--ksp-navy)' }}>{s.unit_name}</td>
-                    <td className="px-4 py-2 text-center">
-                      {s.dsr_submitted
-                        ? <CheckCircle className="w-4 h-4 inline" style={{ color: '#0a5c2a' }} />
-                        : <XCircle className="w-4 h-4 inline" style={{ color: 'var(--ksp-red)' }} />}
-                    </td>
-                    <td className="px-4 py-2 text-center">
-                      {s.mule_submitted
-                        ? <CheckCircle className="w-4 h-4 inline" style={{ color: '#0a5c2a' }} />
-                        : <XCircle className="w-4 h-4 inline" style={{ color: 'var(--ksp-red)' }} />}
+                    <td
+                      className="px-4 py-2 text-right font-bold"
+                      style={{ color: s.entry_count === 0 ? 'var(--ksp-red)' : 'var(--ksp-navy)' }}
+                    >
+                      {formatNumber(s.entry_count)}
                     </td>
                   </tr>
                 ))}
