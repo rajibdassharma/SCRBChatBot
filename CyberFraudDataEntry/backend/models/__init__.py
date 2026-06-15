@@ -8,6 +8,7 @@ from models.petition import Petition
 from models.lien_account import LienAccount
 from models.unfreeze_detail import UnfreezeDetail
 from models.refund import Refund
+from models.victim import Victim
 from models.mule_report import MuleReport
 from models.money_transfer import MoneyTransfer
 from models.other_transaction import OtherTransaction
@@ -22,7 +23,7 @@ from models.mule_entry import MuleEntry
 
 __all__ = [
     "Unit", "User", "Case", "Arrest", "Accomplice", "AccusedDetail",
-    "Petition", "LienAccount", "UnfreezeDetail", "Refund",
+    "Petition", "LienAccount", "UnfreezeDetail", "Refund", "Victim",
     "MuleReport", "MoneyTransfer", "OtherTransaction", "TransactionOnHold",
     "OtherLessThan500", "AepsTransaction", "AtmWithdrawal",
     "PoliceStation", "RevokedToken",

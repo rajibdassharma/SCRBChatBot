@@ -28,6 +28,9 @@ class Case(Base):
     lien_accounts = relationship("LienAccount", back_populates="case", cascade="all, delete-orphan")
     unfreeze_details = relationship("UnfreezeDetail", back_populates="case", cascade="all, delete-orphan")
     refunds = relationship("Refund", back_populates="case", cascade="all, delete-orphan")
+    # 1:1 — uselist=False so SQLAlchemy returns a single Victim (or None)
+    # instead of a list. Enforced by UNIQUE (case_id) on the child table.
+    victim = relationship("Victim", back_populates="case", cascade="all, delete-orphan", uselist=False)
 
     __table_args__ = (
         # Per-PS FIR namespace. Replaced uq_case_unit_fir in migration 002.

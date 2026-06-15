@@ -116,6 +116,33 @@ class RefundCreate(BaseModel):
     _check_amount = field_validator("amount")(_validate_amount)
 
 
+class VictimCreate(BaseModel):
+    """Victim profile captured at FIR time. 1:1 with Case (enforced by
+    UNIQUE (case_id) at the DB level — migration 003).
+
+    Required-field enforcement (first_name, last_name, bank_account_no,
+    bank_name) happens at submit time, not on the schema — same pattern
+    as fir_no / registration_date so Save Draft with partial data works.
+    See _validate_submitted_case in routes_case.py."""
+    first_name: str = Field(default="", max_length=100)
+    last_name: str = Field(default="", max_length=100)
+    age: Optional[int] = Field(default=None, ge=1, le=120)
+    gender: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    amount_lost: Decimal = Decimal("0")
+    bank_account_no: str = Field(default="", max_length=50)
+    bank_name: str = Field(default="", max_length=200)
+    bank_branch_address: Optional[str] = None
+
+    _sanitize_text = field_validator(
+        "first_name", "last_name", "gender", "phone", "email", "address",
+        "bank_account_no", "bank_name", "bank_branch_address",
+    )(_sanitize)
+    _check_amount = field_validator("amount_lost")(_validate_amount)
+
+
 # ── Case Create schema ────────────────────────────────────────────
 
 class CaseCreate(BaseModel):
@@ -132,6 +159,9 @@ class CaseCreate(BaseModel):
     lien_accounts: List[LienAccountCreate] = Field(default_factory=list)
     unfreeze_details: List[UnfreezeDetailCreate] = Field(default_factory=list)
     refunds: List[RefundCreate] = Field(default_factory=list)
+    # Optional so legacy cases without a victim record can still be updated.
+    # New cases enforce this at the frontend layer.
+    victim: Optional[VictimCreate] = None
 
     _sanitize_text = field_validator("fir_no", "petition_no", "facts")(_sanitize)
 
@@ -237,6 +267,26 @@ class RefundResponse(BaseModel):
         from_attributes = True
 
 
+class VictimResponse(BaseModel):
+    id: str
+    case_id: str
+    first_name: str
+    last_name: str
+    age: Optional[int] = None
+    gender: Optional[str] = None
+    phone: Optional[str] = None
+    email: Optional[str] = None
+    address: Optional[str] = None
+    amount_lost: float = 0
+    bank_account_no: str
+    bank_name: str
+    bank_branch_address: Optional[str] = None
+    created_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 # ── Case Response schemas ─────────────────────────────────────────
 
 class CaseResponse(BaseModel):
@@ -258,6 +308,8 @@ class CaseResponse(BaseModel):
     lien_accounts: List[LienAccountResponse] = []
     unfreeze_details: List[UnfreezeDetailResponse] = []
     refunds: List[RefundResponse] = []
+    # Optional — legacy cases pre-migration-003 have no victim row.
+    victim: Optional[VictimResponse] = None
 
     class Config:
         from_attributes = True

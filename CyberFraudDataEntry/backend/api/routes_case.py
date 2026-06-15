@@ -16,6 +16,7 @@ from models.petition import Petition
 from models.lien_account import LienAccount
 from models.unfreeze_detail import UnfreezeDetail
 from models.refund import Refund
+from models.victim import Victim
 from schemas.case import CaseCreate, CaseResponse, CaseListItem
 from api.deps import get_current_user, require_admin, CurrentUser, check_record_access
 
@@ -33,6 +34,7 @@ def _eager_options():
         selectinload(Case.lien_accounts),
         selectinload(Case.unfreeze_details),
         selectinload(Case.refunds),
+        selectinload(Case.victim),
     ]
 
 
@@ -48,6 +50,21 @@ def _validate_submitted_case(body: CaseCreate):
             errors.append("fir_no is required when submitting")
         if not body.registration_date:
             errors.append("registration_date is required when submitting")
+        # Victim required fields — first_name, last_name, bank_account_no,
+        # bank_name. amount_lost defaults to 0 which is acceptable
+        # (some cases catch the fraud before money is lost).
+        if body.victim is None:
+            errors.append("victim details are required when submitting")
+        else:
+            v = body.victim
+            if not (v.first_name or "").strip():
+                errors.append("victim first_name is required when submitting")
+            if not (v.last_name or "").strip():
+                errors.append("victim last_name is required when submitting")
+            if not (v.bank_account_no or "").strip():
+                errors.append("victim bank_account_no is required when submitting")
+            if not (v.bank_name or "").strip():
+                errors.append("victim bank_name is required when submitting")
         if errors:
             raise HTTPException(status_code=422, detail="; ".join(errors))
 
@@ -157,6 +174,25 @@ def _case_to_response(c: Case) -> dict:
             }
             for r in c.refunds
         ],
+        "victim": (
+            {
+                "id": c.victim.id,
+                "case_id": c.victim.case_id,
+                "first_name": c.victim.first_name,
+                "last_name": c.victim.last_name,
+                "age": c.victim.age,
+                "gender": c.victim.gender,
+                "phone": c.victim.phone,
+                "email": c.victim.email,
+                "address": c.victim.address,
+                "amount_lost": float(c.victim.amount_lost) if c.victim.amount_lost else 0,
+                "bank_account_no": c.victim.bank_account_no,
+                "bank_name": c.victim.bank_name,
+                "bank_branch_address": c.victim.bank_branch_address,
+                "created_at": _ts(c.victim.created_at),
+            }
+            if c.victim else None
+        ),
     }
 
 
@@ -217,6 +253,23 @@ async def _create_children_from_body(case: Case, body: CaseCreate, db: AsyncSess
             victim_name=ref.victim_name,
             amount=ref.amount,
             crime_no_or_petition_no=ref.crime_no_or_petition_no,
+        ))
+
+    # 1:1 victim — None on legacy cases until the operator fills it in.
+    if body.victim is not None:
+        db.add(Victim(
+            case_id=case.id,
+            first_name=body.victim.first_name,
+            last_name=body.victim.last_name,
+            age=body.victim.age,
+            gender=body.victim.gender,
+            phone=body.victim.phone,
+            email=body.victim.email,
+            address=body.victim.address,
+            amount_lost=body.victim.amount_lost,
+            bank_account_no=body.victim.bank_account_no,
+            bank_name=body.victim.bank_name,
+            bank_branch_address=body.victim.bank_branch_address,
         ))
 
     # Arrests need flush for arrest.id before creating accomplices/accused
@@ -526,6 +579,8 @@ async def update_case(
         await db.delete(ud)
     for ref in list(case.refunds):
         await db.delete(ref)
+    if case.victim is not None:
+        await db.delete(case.victim)
 
     await db.flush()
 

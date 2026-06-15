@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { Save, ChevronRight, ChevronLeft, Plus, Trash2, X, Upload } from 'lucide-react';
 import { createCase, updateCase, getCase, deleteCase } from '../lib/api/cases';
 import { useAuthStore } from '../lib/stores/auth-store';
-import type { CaseEntry, Arrest, Accomplice, Petition, LienAccount, UnfreezeDetail, Refund } from '../types';
+import type { CaseEntry, Arrest, Accomplice, Petition, LienAccount, UnfreezeDetail, Refund, Victim } from '../types';
 
 const BASE = import.meta.env.VITE_API_BASE ?? '';
 
@@ -35,9 +35,16 @@ const emptyRefund = (): Refund => ({
   refunded: 'yes', victim_name: '', amount: 0, crime_no_or_petition_no: '',
 });
 
+const emptyVictim = (): Victim => ({
+  first_name: '', last_name: '', age: null, gender: '',
+  phone: '', email: '', address: '',
+  amount_lost: 0, bank_account_no: '', bank_name: '', bank_branch_address: '',
+});
+
 const initialForm = (): CaseEntry => ({
   fir_no: '', registration_date: '', case_type: 'NCRP', crime_type: 'Internet', facts: '',
   arrests: [], petitions: [], lien_accounts: [], unfreeze_details: [], refunds: [],
+  victim: emptyVictim(),
   status: 'draft',
 });
 
@@ -236,13 +243,27 @@ export function CaseEntryPage() {
   /* Build the payload — both the unfreeze rows' crime_no and the refund
    * rows' crime_no_or_petition_no mirror the case FIR No. Those fields
    * are displayed read-only as "FIR No" in the UI; we keep the DB
-   * columns populated so downstream reports stay correct. */
-  const buildPayload = (status: 'draft' | 'submitted'): CaseEntry => ({
-    ...f,
-    status,
-    unfreeze_details: f.unfreeze_details.map(u => ({ ...u, crime_no: f.fir_no })),
-    refunds: f.refunds.map(r => ({ ...r, crime_no_or_petition_no: f.fir_no })),
-  });
+   * columns populated so downstream reports stay correct.
+   *
+   * Victim: if the operator hasn't touched the section, omit it from the
+   * payload (send null) so we don't create an empty victim row on disk.
+   * Backend's submit-time validator separately requires the victim block
+   * with non-empty mandatory fields when status === 'submitted'. */
+  const buildPayload = (status: 'draft' | 'submitted'): CaseEntry => {
+    const v = f.victim;
+    const hasVictimData = !!v && (
+      !!v.first_name || !!v.last_name || !!v.age || !!v.gender ||
+      !!v.phone || !!v.email || !!v.address || !!v.amount_lost ||
+      !!v.bank_account_no || !!v.bank_name || !!v.bank_branch_address
+    );
+    return {
+      ...f,
+      status,
+      unfreeze_details: f.unfreeze_details.map(u => ({ ...u, crime_no: f.fir_no })),
+      refunds: f.refunds.map(r => ({ ...r, crime_no_or_petition_no: f.fir_no })),
+      victim: hasVictimData ? v : null,
+    };
+  };
 
   /* --- Save Draft --- */
   const handleSaveDraft = async () => {
@@ -347,17 +368,54 @@ export function CaseEntryPage() {
 
         {/* === TAB 1 -- Case Details === */}
         {tab === 0 && (
-          <Section title="Case Information">
-            <TextField label="FIR No" value={f.fir_no} onChange={(v) => setF(p => ({ ...p, fir_no: v }))} placeholder="e.g. 123/2026" readOnly={isEdit} hint={isEdit ? "FIR number cannot be changed after creation" : undefined} />
-            <TextField label="Registration Date" value={f.registration_date} onChange={(v) => setF(p => ({ ...p, registration_date: v }))} type="date" />
-            <SelectField label="Case Type" value={f.case_type}
-              onChange={(v) => setF(p => ({ ...p, case_type: v as CaseEntry['case_type'] }))}
-              options={[{ value: 'NCRP', label: 'NCRP' }, { value: 'Walk-In', label: 'Walk-In' }]} />
-            <SelectField label="Crime Type" value={f.crime_type}
-              onChange={(v) => setF(p => ({ ...p, crime_type: v as CaseEntry['crime_type'] }))}
-              options={[{ value: 'Internet', label: 'Internet' }, { value: 'Digital', label: 'Digital' }, { value: 'Crypto', label: 'Crypto' }]} />
-            <TextAreaField label="Facts" value={f.facts} onChange={(v) => setF(p => ({ ...p, facts: v }))} rows={4} />
-          </Section>
+          <div className="space-y-5">
+            <Section title="Case Information">
+              <TextField label="FIR No" value={f.fir_no} onChange={(v) => setF(p => ({ ...p, fir_no: v }))} placeholder="e.g. 123/2026" readOnly={isEdit} hint={isEdit ? "FIR number cannot be changed after creation" : undefined} />
+              <TextField label="Registration Date" value={f.registration_date} onChange={(v) => setF(p => ({ ...p, registration_date: v }))} type="date" />
+              <SelectField label="Case Type" value={f.case_type}
+                onChange={(v) => setF(p => ({ ...p, case_type: v as CaseEntry['case_type'] }))}
+                options={[{ value: 'NCRP', label: 'NCRP' }, { value: 'Walk-In', label: 'Walk-In' }]} />
+              <SelectField label="Crime Type" value={f.crime_type}
+                onChange={(v) => setF(p => ({ ...p, crime_type: v as CaseEntry['crime_type'] }))}
+                options={[{ value: 'Internet', label: 'Internet' }, { value: 'Digital', label: 'Digital' }, { value: 'Crypto', label: 'Crypto' }]} />
+            </Section>
+
+            <Section title="Victim Details">
+              <TextField label="First Name *" value={f.victim?.first_name ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), first_name: v } }))} />
+              <TextField label="Last Name *" value={f.victim?.last_name ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), last_name: v } }))} />
+              <NumField label="Age" value={f.victim?.age ?? 0}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), age: v || null } }))} />
+              <SelectField label="Gender" value={f.victim?.gender ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), gender: v as Victim['gender'] } }))}
+                options={[
+                  { value: '', label: '—' },
+                  { value: 'Male', label: 'Male' },
+                  { value: 'Female', label: 'Female' },
+                  { value: 'Other', label: 'Other' },
+                  { value: 'Prefer not to say', label: 'Prefer not to say' },
+                ]} />
+              <TextField label="Phone" value={f.victim?.phone ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), phone: v } }))} placeholder="10-digit mobile" />
+              <TextField label="Email" type="email" value={f.victim?.email ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), email: v } }))} />
+              <TextAreaField label="Address" value={f.victim?.address ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), address: v } }))} rows={2} />
+              <NumField label="Amount Lost (₹) *" value={f.victim?.amount_lost ?? 0}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), amount_lost: v } }))} />
+              <TextField label="Bank Account No *" value={f.victim?.bank_account_no ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_account_no: v } }))} />
+              <TextField label="Bank Name *" value={f.victim?.bank_name ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_name: v } }))} />
+              <TextAreaField label="Bank Branch Address" value={f.victim?.bank_branch_address ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_branch_address: v } }))} rows={2} />
+            </Section>
+
+            <Section title="Facts">
+              <TextAreaField label="Facts" value={f.facts} onChange={(v) => setF(p => ({ ...p, facts: v }))} rows={4} />
+            </Section>
+          </div>
         )}
 
         {/* === TAB 2 -- Arrests === */}

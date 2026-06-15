@@ -69,7 +69,7 @@ sudo bash "$SOURCE/deploy/backup-db.sh"
 
 # ── 4. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 4. Run additive DB migrations 001 + 002 (idempotent) ==="
+echo "=== 4. Run additive DB migrations 001 + 002 + 003 (idempotent) ==="
 # Copy the migrations folder into runtime so the script can `import config`
 # / `import database` from the runtime venv path.
 sudo cp -r "$SOURCE/backend/migrations" "$RUNTIME/backend/"
@@ -79,6 +79,7 @@ sudo -u cyberfraud bash -c "
     cd $RUNTIME/backend
     venv/bin/python -m migrations.001_add_user_contact_columns
     venv/bin/python -m migrations.002_add_ps_id_to_cases
+    venv/bin/python -m migrations.003_add_victims_table
 "
 
 # ── 5. Build the frontend ────────────────────────────────────────────
@@ -159,6 +160,24 @@ if [ "$IDX" != "0" ] && [ "$IDX" != "ERROR" ]; then
     echo "    ✓ uq_case_unit_ps_fir unique index in place"
 else
     echo "    ✗ uq_case_unit_ps_fir unique index missing — migration 002 did not complete"
+    exit 1
+fi
+
+# Migration 003 schema sanity check — victims table present + UNIQUE (case_id).
+VICTIMS_TABLE=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='victims'" 2>/dev/null || echo "ERROR")
+if [ "$VICTIMS_TABLE" = "1" ]; then
+    echo "    ✓ victims table present"
+else
+    echo "    ✗ victims table missing — migration 003 did not complete"
+    exit 1
+fi
+VICTIMS_UQ=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='victims' AND INDEX_NAME='uq_victims_case_id'" 2>/dev/null || echo "ERROR")
+if [ "$VICTIMS_UQ" != "0" ] && [ "$VICTIMS_UQ" != "ERROR" ]; then
+    echo "    ✓ uq_victims_case_id unique index in place"
+else
+    echo "    ✗ uq_victims_case_id unique index missing — migration 003 incomplete"
     exit 1
 fi
 

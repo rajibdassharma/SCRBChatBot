@@ -137,6 +137,21 @@ export interface Refund {
   crime_no_or_petition_no: string;
 }
 
+export interface Victim {
+  id?: string;
+  first_name: string;
+  last_name: string;
+  age: number | null;
+  gender: 'Male' | 'Female' | 'Other' | 'Prefer not to say' | '';
+  phone: string;
+  email: string;
+  address: string;
+  amount_lost: number;
+  bank_account_no: string;
+  bank_name: string;
+  bank_branch_address: string;
+}
+
 export interface CaseEntry {
   id?: string;
   unit_id?: number;
@@ -152,6 +167,8 @@ export interface CaseEntry {
   lien_accounts: LienAccount[];
   unfreeze_details: UnfreezeDetail[];
   refunds: Refund[];
+  // 1:1 — null until the operator fills the Victim Details section.
+  victim?: Victim | null;
   submitted_by?: number;
   created_at?: string;
   updated_at?: string;
