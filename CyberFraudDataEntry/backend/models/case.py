@@ -8,6 +8,10 @@ class Case(Base):
     __tablename__ = "cases"
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     unit_id = Column(Integer, ForeignKey("units.id"), nullable=False)
+    # ps_id captures which PS within the district owns the case. FIRs are
+    # independently numbered per PS in police operations, so uniqueness
+    # must include this. Added by migration 002.
+    ps_id = Column(Integer, ForeignKey("police_stations.id"), nullable=False)
     fir_no = Column(String(50), nullable=True)
     petition_no = Column(String(50), nullable=True)
     registration_date = Column(Date, nullable=True)
@@ -26,5 +30,6 @@ class Case(Base):
     refunds = relationship("Refund", back_populates="case", cascade="all, delete-orphan")
 
     __table_args__ = (
-        UniqueConstraint("unit_id", "fir_no", name="uq_case_unit_fir"),
+        # Per-PS FIR namespace. Replaced uq_case_unit_fir in migration 002.
+        UniqueConstraint("unit_id", "ps_id", "fir_no", name="uq_case_unit_ps_fir"),
     )

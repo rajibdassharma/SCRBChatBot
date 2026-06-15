@@ -109,16 +109,28 @@ def check_record_access(record, current_user: CurrentUser) -> None:
     """Enforce per-record authorization (VAPT 7.7 + 7.8).
 
     Model:
-      - admin (PS admin): sees all records in their own unit_id; NEVER cross-PS
-      - unit_user        : sees only records they submitted, in their own unit_id
+      - admin (PS admin): sees all records in their own (unit_id, ps_id); NEVER cross-PS
+      - unit_user        : sees only records they submitted, in their own (unit_id, ps_id)
 
     There is no global admin role - every account is scoped to a single PS.
     Use on every detail/edit endpoint that takes a record id from the URL.
     Caller is responsible for handling 404 (record not found) before calling.
+
+    Cross-PS isolation now relies on ps_id (added by migration 002). Before
+    that migration, units that contained multiple PSes shared a unit_id, so
+    unit-level isolation accidentally let admins see cases from other PSes
+    in their district. Adding the ps_id check closes that gap.
     """
-    # Cross-PS access is denied for everyone, including admins.
+    # Cross-unit (cross-district) access is denied for everyone.
     if current_user.unit_id is None or getattr(record, "unit_id", None) != current_user.unit_id:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
+    # Cross-PS access (within the same district) is denied for everyone too.
+    # Records without ps_id (legacy data, or non-Case models that don't have
+    # the column yet) skip this check.
+    record_ps_id = getattr(record, "ps_id", None)
+    if record_ps_id is not None:
+        if current_user.ps_id is None or record_ps_id != current_user.ps_id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
     # Within the PS, unit_users can only touch records they personally
     # submitted. admin and super_admin see all records in their PS.
     if (

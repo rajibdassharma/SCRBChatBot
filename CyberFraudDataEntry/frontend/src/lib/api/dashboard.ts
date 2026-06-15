@@ -1,5 +1,11 @@
 import { apiFetch } from './client';
-import type { KpiSummary, UnitComparison, SubmissionStatus, TrendPoint } from '../../types';
+import type {
+  KpiSummary, UnitComparison, PsComparison, SubmissionStatus, TrendPoint,
+  QuietUnit, TimeToArrestRow, BankSlaRow,
+  RecurringAccount, BankConcentration, AtmHotspot, LayerBucket, LienAccountAtLayer,
+  AccountCaseDetail, CaseDetailFull,
+  DisposalSummary, TrialSummary, PendingByYearRow,
+} from '../../types';
 
 export async function getSummary(date: string): Promise<KpiSummary> {
   return apiFetch<KpiSummary>(`/api/v1/dashboard/summary?date=${date}`);
@@ -9,10 +15,70 @@ export async function getUnitComparison(date: string): Promise<UnitComparison[]>
   return apiFetch<UnitComparison[]>(`/api/v1/dashboard/unit-comparison?date=${date}`);
 }
 
+export async function getCasesByPs(date: string, unitId: number): Promise<PsComparison[]> {
+  return apiFetch<PsComparison[]>(`/api/v1/dashboard/cases-by-ps?date=${date}&unit_id=${unitId}`);
+}
+
 export async function getTrends(from: string, to: string): Promise<TrendPoint[]> {
   return apiFetch<TrendPoint[]>(`/api/v1/dashboard/trends?from=${from}&to=${to}`);
 }
 
 export async function getSubmissionStatus(date: string): Promise<SubmissionStatus[]> {
   return apiFetch<SubmissionStatus[]>(`/api/v1/dashboard/submission-status?date=${date}`);
+}
+
+export async function getQuietUnits(date: string, thresholdDays = 7): Promise<QuietUnit[]> {
+  return apiFetch<QuietUnit[]>(`/api/v1/dashboard/quiet-units?date=${date}&threshold_days=${thresholdDays}`);
+}
+
+export async function getTimeToArrest(date: string, lookbackDays = 90): Promise<TimeToArrestRow[]> {
+  return apiFetch<TimeToArrestRow[]>(`/api/v1/dashboard/time-to-arrest?date=${date}&lookback_days=${lookbackDays}`);
+}
+
+export async function getBankActionSla(date: string, lookbackDays = 180): Promise<BankSlaRow[]> {
+  return apiFetch<BankSlaRow[]>(`/api/v1/dashboard/bank-action-sla?date=${date}&lookback_days=${lookbackDays}`);
+}
+
+export async function getRecurringAccounts(date: string, minCases = 2, limit = 50): Promise<RecurringAccount[]> {
+  return apiFetch<RecurringAccount[]>(`/api/v1/dashboard/recurring-mule-accounts?date=${date}&min_cases=${minCases}&limit=${limit}`);
+}
+
+export async function getAccountCases(date: string, accountNo: string): Promise<AccountCaseDetail[]> {
+  return apiFetch<AccountCaseDetail[]>(`/api/v1/dashboard/account-cases?date=${date}&account_no=${encodeURIComponent(accountNo)}`);
+}
+
+export async function getCaseDetail(caseId: string): Promise<CaseDetailFull> {
+  return apiFetch<CaseDetailFull>(`/api/v1/dashboard/case-detail?case_id=${encodeURIComponent(caseId)}`);
+}
+
+export async function getBankConcentration(date: string, limit = 20): Promise<BankConcentration[]> {
+  return apiFetch<BankConcentration[]>(`/api/v1/dashboard/bank-concentration?date=${date}&limit=${limit}`);
+}
+
+export async function getDestinationBankConcentration(date: string, limit = 20): Promise<BankConcentration[]> {
+  return apiFetch<BankConcentration[]>(`/api/v1/dashboard/destination-bank-concentration?date=${date}&limit=${limit}`);
+}
+
+export async function getAtmHotspots(date: string, limit = 20): Promise<AtmHotspot[]> {
+  return apiFetch<AtmHotspot[]>(`/api/v1/dashboard/atm-hotspots?date=${date}&limit=${limit}`);
+}
+
+export async function getLayerDistribution(date: string): Promise<LayerBucket[]> {
+  return apiFetch<LayerBucket[]>(`/api/v1/dashboard/layer-distribution?date=${date}`);
+}
+
+export async function getAccountsAtLayer(date: string, layer: number, limit = 200): Promise<LienAccountAtLayer[]> {
+  return apiFetch<LienAccountAtLayer[]>(`/api/v1/dashboard/accounts-at-layer?date=${date}&layer=${layer}&limit=${limit}`);
+}
+
+export async function getDisposalSummary(date: string): Promise<DisposalSummary> {
+  return apiFetch<DisposalSummary>(`/api/v1/dashboard/disposal-summary?date=${date}`);
+}
+
+export async function getTrialSummary(date: string): Promise<TrialSummary> {
+  return apiFetch<TrialSummary>(`/api/v1/dashboard/trial-summary?date=${date}`);
+}
+
+export async function getPendingByYear(date: string): Promise<PendingByYearRow[]> {
+  return apiFetch<PendingByYearRow[]>(`/api/v1/dashboard/pending-by-year?date=${date}`);
 }

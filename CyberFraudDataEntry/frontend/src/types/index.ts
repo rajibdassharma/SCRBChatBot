@@ -292,6 +292,7 @@ export interface KpiSummary {
   total_arrests: number;
   total_amount_lien_marked: number;
   total_amount_refunded: number;
+  total_amount_defreezed: number;
   total_accounts_lien_marked: number;
   total_accounts_defreezed: number;
   units_submitted: number;
@@ -299,10 +300,18 @@ export interface KpiSummary {
 }
 
 export interface UnitComparison {
+  unit_id: number;
   unit_name: string;
   cases: number;
   arrests: number;
   amount_lien_marked: number;
+  /** Distinct PSes that have assigned users in this district. Drives whether drill-down is offered. */
+  ps_count: number;
+}
+
+export interface PsComparison {
+  ps_name: string;
+  cases: number;
 }
 
 export interface TrendPoint {
@@ -317,6 +326,159 @@ export interface SubmissionStatus {
   unit_name: string;
   /** Total entries (cases + mule reports) this district has made up to the selected date. */
   entry_count: number;
+  cases_count: number;
+  mule_count: number;
+  /** Cases + mule reports created on the selected date specifically. */
+  today_count: number;
+  /** ISO date of the most recent case or mule report, or null if never. */
+  last_entry_date: string | null;
+  /** Whether a DSR row exists for (unit_id, date). */
+  dsr_filed: boolean;
+}
+
+export interface QuietUnit {
+  unit_id: number;
+  unit_name: string;
+  /** null = the unit has never had any entry. */
+  days_silent: number | null;
+  last_entry_date: string | null;
+}
+
+export interface TimeToArrestRow {
+  unit_name: string;
+  avg_days: number;
+  sample_size: number;
+}
+
+export interface BankSlaRow {
+  bank: string;
+  avg_days: number;
+  count: number;
+}
+
+export interface RecurringAccount {
+  account_no: string;
+  bank: string | null;
+  case_count: number;
+  units_count: number;
+  total_amount: number;
+}
+
+export interface BankConcentration {
+  bank: string;
+  transaction_count: number;
+  total_amount: number;
+}
+
+export interface AtmHotspot {
+  location: string;
+  withdrawal_count: number;
+  total_amount: number;
+}
+
+export interface LayerBucket {
+  layer: number;
+  count: number;
+}
+
+export interface LienAccountAtLayer {
+  lien_id: string;
+  account_no: string;
+  bank_name: string | null;
+  amount_lien_marked: number;
+  layer: number;
+  case_id: string;
+  fir_no: string | null;
+  petition_no: string | null;
+  registration_date: string | null;
+  district: string;
+  ps_name: string | null;
+}
+
+export interface AccountCaseDetail {
+  case_id: string;
+  fir_no: string | null;
+  petition_no: string | null;
+  registration_date: string | null;
+  case_type: string | null;
+  crime_type: string | null;
+  status: string | null;
+  district: string;
+  ps_name: string | null;
+  bank_name: string | null;
+  amount: number;
+  layer: number | null;
+  lien_created_at: string | null;
+}
+
+export interface ArrestSummary {
+  name: string;
+  date_of_arrest: string | null;
+  aadhar: string | null;
+  pan: string | null;
+}
+
+export interface LienSummary {
+  account_no: string;
+  bank_name: string | null;
+  amount_lien_marked: number;
+  layer: number | null;
+}
+
+export interface PetitionSummary {
+  petition_no: string | null;
+  nature: string | null;
+  petition_type: string | null;
+  amount: number;
+}
+
+export interface RefundSummary {
+  victim_name: string | null;
+  amount: number;
+  refunded: string | null;
+}
+
+export interface CaseDetailFull {
+  case_id: string;
+  fir_no: string | null;
+  petition_no: string | null;
+  registration_date: string | null;
+  case_type: string | null;
+  crime_type: string | null;
+  status: string | null;
+  facts: string | null;
+  district: string;
+  ps_name: string | null;
+  arrests: ArrestSummary[];
+  lien_accounts: LienSummary[];
+  petitions: PetitionSummary[];
+  refunds: RefundSummary[];
+}
+
+export interface DisposalSummary {
+  detected: number;
+  transferred: number;
+  false_cases: number;
+  undetected: number;
+}
+
+export interface TrialSummary {
+  convicted: number;
+  discharged: number;
+  acquitted: number;
+  abated: number;
+  compounded: number;
+  under_trial: number;
+}
+
+export interface PendingByYearRow {
+  unit_name: string;
+  y2021: number;
+  y2022: number;
+  y2023: number;
+  y2024: number;
+  y2025: number;
+  y2026: number;
 }
 
 // -- DSR + Mule daily entries --

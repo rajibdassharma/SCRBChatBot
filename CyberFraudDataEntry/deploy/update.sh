@@ -9,12 +9,13 @@
 # What it does (idempotent end-to-end):
 #   1. git pull on /opt/scrb to fetch the latest source
 #   2. Install / upgrade pip deps from backend/requirements.txt
-#   3. Run additive DB migration 001 (adds user contact + audit columns
-#      if not already present — uses INFORMATION_SCHEMA checks)
-#   4. Build the frontend (npm install + npm run build)
-#   5. Sync backend/ + frontend/dist/ from source to runtime
-#   6. Restart the backend systemd service
-#   7. Self-verify: service active + /health endpoint responding
+#   3. Pre-migration safety backup (skipped if no schema changes apply)
+#   4. Run additive DB migrations 001 + 002 (idempotent — INFORMATION_SCHEMA
+#      checks mean each migration's a no-op when already applied)
+#   5. Build the frontend (npm install + npm run build)
+#   6. Sync backend/ + frontend/dist/ from source to runtime
+#   7. Restart the backend systemd service
+#   8. Self-verify: service active, /health responding, schema sane
 #
 # Usage on the server:
 #   cd /opt/scrb && git pull && \
@@ -56,43 +57,56 @@ sudo -u cyberfraud bash -c "
 "
 echo "    Done."
 
-# ── 3. Run additive DB migrations ────────────────────────────────────
+# ── 3. Pre-migration safety backup ───────────────────────────────────
+# Take an ad-hoc backup of cyber_fraud_dsr just before any schema
+# changes. Re-using deploy/backup-db.sh keeps the format identical to
+# nightly backups so restore is a one-liner if anything regresses.
+# Safe to run even when no migration changes apply — backup-db.sh
+# always writes a fresh timestamped file and prunes older than 14d.
 echo
-echo "=== 3. Run additive DB migration 001 (idempotent) ==="
+echo "=== 3. Pre-migration DB backup ==="
+sudo bash "$SOURCE/deploy/backup-db.sh"
+
+# ── 4. Run additive DB migrations ────────────────────────────────────
+echo
+echo "=== 4. Run additive DB migrations 001 + 002 (idempotent) ==="
 # Copy the migrations folder into runtime so the script can `import config`
 # / `import database` from the runtime venv path.
 sudo cp -r "$SOURCE/backend/migrations" "$RUNTIME/backend/"
 sudo chown -R cyberfraud:cyberfraud "$RUNTIME/backend/migrations"
 sudo -u cyberfraud bash -c "
-    cd $RUNTIME/backend && venv/bin/python -m migrations.001_add_user_contact_columns
+    set -e
+    cd $RUNTIME/backend
+    venv/bin/python -m migrations.001_add_user_contact_columns
+    venv/bin/python -m migrations.002_add_ps_id_to_cases
 "
 
-# ── 4. Build the frontend ────────────────────────────────────────────
+# ── 5. Build the frontend ────────────────────────────────────────────
 echo
-echo "=== 4. Build frontend (npm install + npm run build) ==="
+echo "=== 5. Build frontend (npm install + npm run build) ==="
 cd "$SOURCE/frontend"
 npm install --silent
 npm run build
 echo "    dist/ built:"
 ls -la "$SOURCE/frontend/dist/" | head -10
 
-# ── 5. Sync code from source to runtime ──────────────────────────────
+# ── 6. Sync code from source to runtime ──────────────────────────────
 echo
-echo "=== 5. Sync backend + frontend dist to $RUNTIME ==="
+echo "=== 6. Sync backend + frontend dist to $RUNTIME ==="
 sudo cp -r "$SOURCE/backend" "$RUNTIME/"
 sudo cp -r "$SOURCE/frontend" "$RUNTIME/"
 sudo chown -R cyberfraud:cyberfraud "$RUNTIME/backend" "$RUNTIME/frontend"
 
-# ── 6. Restart backend ───────────────────────────────────────────────
+# ── 7. Restart backend ───────────────────────────────────────────────
 echo
-echo "=== 6. Restart backend service ==="
+echo "=== 7. Restart backend service ==="
 sudo systemctl restart "$SVC"
 sleep 2
 sudo systemctl is-active "$SVC"
 
-# ── 7. Self-verify ───────────────────────────────────────────────────
+# ── 8. Self-verify ───────────────────────────────────────────────────
 echo
-echo "=== 7. Self-verify ==="
+echo "=== 8. Self-verify ==="
 # Health endpoint via nginx (proxied path)
 if curl -sk --max-time 5 https://localhost/health | grep -q '"ok"'; then
     echo "    ✓ /health responding via nginx"
@@ -114,6 +128,37 @@ if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "https://localhost/api/v
     echo "    ✓ /api/v1/reports/dsr.pdf mounted"
 else
     echo "    ✗ /api/v1/reports/dsr.pdf not responding correctly"
+    exit 1
+fi
+
+# Migration 002 schema sanity check — confirms ps_id column + new
+# unique index landed. Reuses CFDSR_DB_* credentials from .env via
+# MYSQL_PWD so we don't echo the password.
+ENV_FILE=/opt/cyberfraud/backend/.env
+DB_USER=$(grep -E '^CFDSR_DB_USER='     "$ENV_FILE" | tail -1 | cut -d'=' -f2-)
+DB_PASS=$(grep -E '^CFDSR_DB_PASSWORD=' "$ENV_FILE" | tail -1 | cut -d'=' -f2-)
+DB_NAME=$(grep -E '^CFDSR_DB_NAME='     "$ENV_FILE" | tail -1 | cut -d'=' -f2-)
+: "${DB_USER:=root}"; : "${DB_NAME:=cyber_fraud_dsr}"
+
+# Count of cases rows with NULL ps_id MUST be 0 (column is NOT NULL after
+# migration 002, but check belt-and-braces in case someone re-ran with a
+# partially-applied schema).
+NULL_PS=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM cases WHERE ps_id IS NULL" 2>/dev/null || echo "ERROR")
+if [ "$NULL_PS" = "0" ]; then
+    echo "    ✓ cases.ps_id present and fully populated"
+else
+    echo "    ✗ cases.ps_id check failed (got: $NULL_PS) — migration 002 may have only partially applied"
+    exit 1
+fi
+
+# New unique index in place?
+IDX=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='cases' AND INDEX_NAME='uq_case_unit_ps_fir'" 2>/dev/null || echo "ERROR")
+if [ "$IDX" != "0" ] && [ "$IDX" != "ERROR" ]; then
+    echo "    ✓ uq_case_unit_ps_fir unique index in place"
+else
+    echo "    ✗ uq_case_unit_ps_fir unique index missing — migration 002 did not complete"
     exit 1
 fi
 

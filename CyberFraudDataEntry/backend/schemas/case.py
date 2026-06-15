@@ -32,6 +32,28 @@ def _sanitize(cls, v):  # noqa: N805 — Pydantic validator signature
     return strip_html(v) if isinstance(v, str) else v
 
 
+# Money-field sanity bound. A single bank-hold / refund / petition above
+# ₹100 crore is almost certainly a mis-keyed account number or transaction
+# ID — the data-entry team has previously shifted those values into the
+# wrong column. If a legitimate larger figure ever shows up, raise the
+# constant after review rather than silently accepting outliers.
+_MAX_AMOUNT = Decimal("1000000000")  # ₹100 crore (10^9)
+
+
+def _validate_amount(cls, v):  # noqa: N805
+    if v is None:
+        return v
+    if v < 0:
+        raise ValueError("Amount cannot be negative.")
+    if v > _MAX_AMOUNT:
+        raise ValueError(
+            f"Amount {v:,.2f} exceeds the per-entry cap of {_MAX_AMOUNT:,.2f} "
+            f"(₹100 crore). Check whether an account number or transaction "
+            f"ID was typed into the amount field by mistake."
+        )
+    return v
+
+
 # ── Child Create schemas ──────────────────────────────────────────
 
 class AccompliceCreate(BaseModel):
@@ -74,6 +96,7 @@ class PetitionCreate(BaseModel):
     amount: Decimal = Decimal("0")
 
     _sanitize_text = field_validator("why_not", "nature")(_sanitize)
+    _check_amount = field_validator("amount")(_validate_amount)
 
 
 class LienAccountCreate(BaseModel):
@@ -85,6 +108,7 @@ class LienAccountCreate(BaseModel):
     bank_name: Optional[str] = None
 
     _sanitize_text = field_validator("account_no", "bank_name")(_sanitize)
+    _check_amounts = field_validator("amount_lien_marked", "total_amount_in_account")(_validate_amount)
 
 
 class UnfreezeDetailCreate(BaseModel):
@@ -95,6 +119,7 @@ class UnfreezeDetailCreate(BaseModel):
     amount: Decimal = Decimal("0")
 
     _sanitize_text = field_validator("crime_no", "bank_name", "account_no")(_sanitize)
+    _check_amount = field_validator("amount")(_validate_amount)
 
 
 class RefundCreate(BaseModel):
@@ -104,6 +129,7 @@ class RefundCreate(BaseModel):
     crime_no_or_petition_no: Optional[str] = None
 
     _sanitize_text = field_validator("victim_name", "crime_no_or_petition_no")(_sanitize)
+    _check_amount = field_validator("amount")(_validate_amount)
 
 
 # ── Case Create schema ────────────────────────────────────────────

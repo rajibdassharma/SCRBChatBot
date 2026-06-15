@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func
+from sqlalchemy import select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -17,8 +17,20 @@ from models.petition import Petition
 from models.dsr_entry import DsrEntry
 from models.mule_entry import MuleEntry
 from models.mule_report import MuleReport
+from models.money_transfer import MoneyTransfer
+from models.atm_withdrawal import AtmWithdrawal
 from models.unit import Unit
-from schemas.dashboard import KpiSummary, UnitComparison, TrendPoint, SubmissionStatus
+from models.user import User
+from models.police_station import PoliceStation
+from schemas.dashboard import (
+    KpiSummary, UnitComparison, PsComparison, TrendPoint, SubmissionStatus,
+    QuietUnit, TimeToArrestRow, BankSlaRow,
+    RecurringAccount, BankConcentration, AtmHotspot, LayerBucket,
+    LienAccountAtLayer,
+    AccountCaseDetail, CaseDetailFull,
+    ArrestSummary, LienSummary, PetitionSummary, RefundSummary,
+    DisposalSummary, TrialSummary, PendingByYearRow,
+)
 from api.deps import require_admin, CurrentUser
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
@@ -94,6 +106,14 @@ async def get_summary(
         ).where(func.date(UnfreezeDetail.created_at) <= target_date)
     )).scalar() or 0
 
+    total_amount_defreezed = float((await db.execute(
+        _scope_to_unit(
+            select(func.coalesce(func.sum(UnfreezeDetail.amount), 0))
+            .join(Case, UnfreezeDetail.case_id == Case.id),
+            admin,
+        ).where(func.date(UnfreezeDetail.created_at) <= target_date)
+    )).scalar() or 0)
+
     # Units submitted = how many distinct PSes have at least one case as of date
     if admin.role == "super_admin":
         units_submitted = (await db.execute(
@@ -112,6 +132,7 @@ async def get_summary(
         total_arrests=int(total_arrests),
         total_amount_lien_marked=total_amount_lien_marked,
         total_amount_refunded=total_amount_refunded,
+        total_amount_defreezed=total_amount_defreezed,
         total_accounts_lien_marked=int(total_accounts_lien_marked),
         total_accounts_defreezed=int(total_accounts_defreezed),
         units_submitted=int(units_submitted),
@@ -155,6 +176,15 @@ async def get_unit_comparison(
             .group_by(Unit.id, Unit.name)
         )).all()
 
+    # One round-trip to get PS count per district — used to gate the
+    # drill-into-PSes affordance on the frontend.
+    ps_count_map = dict((await db.execute(
+        select(User.unit_id, func.count(func.distinct(User.ps_id)))
+        .where(User.unit_id.is_not(None))
+        .where(User.ps_id.is_not(None))
+        .group_by(User.unit_id)
+    )).all())
+
     out: List[UnitComparison] = []
     for unit_id, unit_name, case_count in rows:
         arrest_count = (await db.execute(
@@ -170,12 +200,59 @@ async def get_unit_comparison(
             .where(func.date(LienAccount.created_at) <= target_date)
         )).scalar() or 0)
         out.append(UnitComparison(
+            unit_id=int(unit_id),
             unit_name=unit_name,
             cases=int(case_count or 0),
             arrests=int(arrest_count),
             amount_lien_marked=lien_amount,
+            ps_count=int(ps_count_map.get(unit_id, 0) or 0),
         ))
     return out
+
+
+@router.get("/cases-by-ps", response_model=List[PsComparison])
+async def get_cases_by_ps(
+    target_date: date = Query(..., alias="date", description="Cumulative cutoff date"),
+    unit_id: int = Query(..., description="District (unit) to drill down into"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cases-per-PS breakdown for one district.
+
+    Cases attribute to PSes via the submitting user's `ps_id`. Cases
+    submitted by users with no PS assignment are surfaced under
+    `(Unassigned)` so the totals reconcile with the district view.
+
+    Authorisation: super_admin may drill into any district. admin
+    (PS-level) may only drill into their own unit_id — any other
+    unit_id returns 403."""
+    if admin.role == "admin":
+        if not admin.unit_id:
+            raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+        if unit_id != admin.unit_id:
+            raise HTTPException(status_code=403, detail="You can only view your own district's PSes.")
+
+    rows = (await db.execute(
+        select(
+            PoliceStation.station_name,
+            func.count(Case.id).label("cases"),
+        )
+        .select_from(Case)
+        .join(User, User.id == Case.submitted_by, isouter=True)
+        .join(PoliceStation, PoliceStation.id == User.ps_id, isouter=True)
+        .where(Case.unit_id == unit_id)
+        .where(func.date(Case.created_at) <= target_date)
+        .group_by(PoliceStation.station_name)
+        .order_by(func.count(Case.id).desc())
+    )).all()
+
+    return [
+        PsComparison(
+            ps_name=name if name else "(Unassigned)",
+            cases=int(c or 0),
+        )
+        for name, c in rows
+    ]
 
 
 @router.get("/trends", response_model=List[TrendPoint])
@@ -273,31 +350,889 @@ async def get_submission_status(
             select(Unit.id, Unit.name).where(Unit.id == admin.unit_id)
         )).all()
 
-    # Per-district entry count = cases + mule_reports created on or before
-    # target_date. One total per district, no classification by record type
-    # (matches the simplified UI: just "how much have they entered").
+    # Five grouped queries up front — constant in PS count, not per-row.
     case_rows = (await db.execute(
-        select(Case.unit_id, func.count(Case.id))
+        select(Case.unit_id,
+               func.count(Case.id),
+               func.max(func.date(Case.created_at)))
         .where(func.date(Case.created_at) <= target_date)
         .group_by(Case.unit_id)
     )).all()
     mule_rows = (await db.execute(
-        select(MuleReport.unit_id, func.count(MuleReport.id))
+        select(MuleReport.unit_id,
+               func.count(MuleReport.id),
+               func.max(func.date(MuleReport.created_at)))
         .where(func.date(MuleReport.created_at) <= target_date)
         .group_by(MuleReport.unit_id)
     )).all()
+    today_case_rows = (await db.execute(
+        select(Case.unit_id, func.count(Case.id))
+        .where(func.date(Case.created_at) == target_date)
+        .group_by(Case.unit_id)
+    )).all()
+    today_mule_rows = (await db.execute(
+        select(MuleReport.unit_id, func.count(MuleReport.id))
+        .where(func.date(MuleReport.created_at) == target_date)
+        .group_by(MuleReport.unit_id)
+    )).all()
+    dsr_rows = (await db.execute(
+        select(DsrEntry.unit_id)
+        .where(DsrEntry.report_date == target_date)
+    )).all()
 
-    counts: dict[int, int] = {}
-    for uid, n in case_rows:
-        counts[uid] = counts.get(uid, 0) + int(n or 0)
-    for uid, n in mule_rows:
-        counts[uid] = counts.get(uid, 0) + int(n or 0)
+    # Build per-unit maps
+    case_counts: dict[int, int] = {uid: int(n or 0) for uid, n, _ in case_rows}
+    case_last: dict[int, date | None] = {uid: d for uid, _, d in case_rows}
+    mule_counts: dict[int, int] = {uid: int(n or 0) for uid, n, _ in mule_rows}
+    mule_last: dict[int, date | None] = {uid: d for uid, _, d in mule_rows}
+    today_counts: dict[int, int] = {}
+    for uid, n in today_case_rows:
+        today_counts[uid] = today_counts.get(uid, 0) + int(n or 0)
+    for uid, n in today_mule_rows:
+        today_counts[uid] = today_counts.get(uid, 0) + int(n or 0)
+    dsr_filed: set[int] = {row[0] for row in dsr_rows}
 
-    return [
-        SubmissionStatus(
+    out: List[SubmissionStatus] = []
+    for uid, uname in units:
+        c = case_counts.get(uid, 0)
+        m = mule_counts.get(uid, 0)
+        last_dates = [d for d in (case_last.get(uid), mule_last.get(uid)) if d is not None]
+        last = max(last_dates) if last_dates else None
+        out.append(SubmissionStatus(
             unit_id=int(uid),
             unit_name=uname,
-            entry_count=counts.get(uid, 0),
+            entry_count=c + m,
+            cases_count=c,
+            mule_count=m,
+            today_count=today_counts.get(uid, 0),
+            last_entry_date=last.isoformat() if last else None,
+            dsr_filed=uid in dsr_filed,
+        ))
+    return out
+
+
+# ── Operations tab ──────────────────────────────────────────────────────────
+
+
+@router.get("/quiet-units", response_model=List[QuietUnit])
+async def get_quiet_units(
+    target_date: date = Query(..., alias="date"),
+    threshold_days: int = Query(7, ge=1, le=365),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Units with no case OR mule-report entry in the last `threshold_days`
+    leading up to `date` (inclusive). Units that have NEVER entered anything
+    are surfaced with `days_silent = null` so the UI sorts them to the top."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    # In-scope units
+    if admin.role == "super_admin":
+        units = (await db.execute(
+            select(Unit.id, Unit.name).where(Unit.is_active == True)  # noqa: E712
+            .order_by(Unit.name)
+        )).all()
+    else:
+        units = (await db.execute(
+            select(Unit.id, Unit.name).where(Unit.id == admin.unit_id)
+        )).all()
+
+    # Last case / mule-report timestamp per unit (capped at target_date)
+    case_last = dict((await db.execute(
+        select(Case.unit_id, func.max(func.date(Case.created_at)))
+        .where(func.date(Case.created_at) <= target_date)
+        .group_by(Case.unit_id)
+    )).all())
+    mule_last = dict((await db.execute(
+        select(MuleReport.unit_id, func.max(func.date(MuleReport.created_at)))
+        .where(func.date(MuleReport.created_at) <= target_date)
+        .group_by(MuleReport.unit_id)
+    )).all())
+
+    out: List[QuietUnit] = []
+    for uid, uname in units:
+        c, m = case_last.get(uid), mule_last.get(uid)
+        last = max([d for d in (c, m) if d is not None], default=None)
+        if last is None:
+            # Never entered anything — always surfaced
+            out.append(QuietUnit(unit_id=int(uid), unit_name=uname, days_silent=None, last_entry_date=None))
+            continue
+        delta = (target_date - last).days
+        if delta >= threshold_days:
+            out.append(QuietUnit(
+                unit_id=int(uid), unit_name=uname,
+                days_silent=int(delta), last_entry_date=last.isoformat(),
+            ))
+
+    # None first, then descending days_silent
+    out.sort(key=lambda r: (0 if r.days_silent is None else 1, -(r.days_silent or 0)))
+    return out
+
+
+@router.get("/time-to-arrest", response_model=List[TimeToArrestRow])
+async def get_time_to_arrest(
+    target_date: date = Query(..., alias="date"),
+    lookback_days: int = Query(90, ge=7, le=365),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-unit average days from `cases.registration_date` to first
+    `arrests.date_of_arrest`. Sample is cases whose `registration_date`
+    falls in the trailing `lookback_days` window ending at `date`."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    window_start = target_date - timedelta(days=lookback_days)
+
+    # First arrest per case in the window
+    inner = (
+        select(
+            Case.unit_id.label("unit_id"),
+            Case.id.label("case_id"),
+            Case.registration_date.label("reg_date"),
+            func.min(Arrest.date_of_arrest).label("first_arrest"),
         )
-        for uid, uname in units
+        .join(Arrest, Arrest.case_id == Case.id)
+        .where(Case.registration_date.between(window_start, target_date))
+        .where(Arrest.date_of_arrest.is_not(None))
+        .where(Case.registration_date.is_not(None))
+        .group_by(Case.unit_id, Case.id, Case.registration_date)
+    )
+    inner = _scope_to_unit(inner, admin)
+    rows = (await db.execute(inner)).all()
+
+    # Aggregate per unit, drop negative deltas (data-entry mistakes)
+    bucket: dict[int, list[int]] = {}
+    for unit_id, _case_id, reg_date, first_arrest in rows:
+        if reg_date is None or first_arrest is None:
+            continue
+        d = (first_arrest - reg_date).days
+        if d < 0:
+            continue
+        bucket.setdefault(unit_id, []).append(d)
+
+    if not bucket:
+        return []
+
+    # Pull unit names for the units we have data for
+    unit_names = dict((await db.execute(
+        select(Unit.id, Unit.name).where(Unit.id.in_(list(bucket.keys())))
+    )).all())
+
+    out = [
+        TimeToArrestRow(
+            unit_name=unit_names.get(uid, f"Unit {uid}"),
+            avg_days=round(sum(days) / len(days), 1),
+            sample_size=len(days),
+        )
+        for uid, days in bucket.items()
     ]
+    out.sort(key=lambda r: r.avg_days)
+    return out
+
+
+# Multiple date formats seen in bank-supplied Excel uploads — try each in
+# order. Anything that doesn't match is dropped from the SLA sample.
+_BANK_DATE_FORMATS = ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d-%b-%Y", "%d/%b/%Y", "%Y/%m/%d")
+
+
+def _parse_bank_date(s):
+    from datetime import datetime
+    if not s:
+        return None
+    s = str(s).strip()
+    if not s:
+        return None
+    for fmt in _BANK_DATE_FORMATS:
+        try:
+            return datetime.strptime(s, fmt).date()
+        except ValueError:
+            continue
+    return None
+
+
+@router.get("/bank-action-sla", response_model=List[BankSlaRow])
+async def get_bank_action_sla(
+    target_date: date = Query(..., alias="date"),
+    lookback_days: int = Query(180, ge=30, le=365),
+    min_sample: int = Query(5, ge=1, le=100),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-bank average days from a money-transfer's `transaction_date` to
+    the bank's `date_of_action`. Date columns are stored as strings (bank
+    Excel feeds vary), so dates are parsed defensively in Python; rows that
+    don't match a known format are dropped. Banks with fewer than
+    `min_sample` parseable rows are excluded — small N is misleading."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    q = (
+        select(
+            MoneyTransfer.bank,
+            MoneyTransfer.transaction_date,
+            MoneyTransfer.date_of_action,
+        )
+        .join(MuleReport, MoneyTransfer.report_id == MuleReport.id)
+        .where(MoneyTransfer.bank.is_not(None))
+        .where(MoneyTransfer.transaction_date.is_not(None))
+        .where(MoneyTransfer.date_of_action.is_not(None))
+        .where(func.date(MoneyTransfer.created_at) <= target_date)
+    )
+    if admin.role != "super_admin":
+        q = q.where(MuleReport.unit_id == admin.unit_id)
+    rows = (await db.execute(q)).all()
+
+    window_start = target_date - timedelta(days=lookback_days)
+    bucket: dict[str, list[int]] = {}
+    for bank, t_str, a_str in rows:
+        t = _parse_bank_date(t_str)
+        a = _parse_bank_date(a_str)
+        if t is None or a is None:
+            continue
+        if not (window_start <= t <= target_date):
+            continue
+        d = (a - t).days
+        if d < 0:
+            continue
+        b = (bank or "").strip()
+        if not b:
+            continue
+        bucket.setdefault(b, []).append(d)
+
+    out = [
+        BankSlaRow(
+            bank=b,
+            avg_days=round(sum(days) / len(days), 1),
+            count=len(days),
+        )
+        for b, days in bucket.items()
+        if len(days) >= min_sample
+    ]
+    out.sort(key=lambda r: r.avg_days, reverse=True)  # slowest first — names-and-shames
+    return out[:20]
+
+
+# ── Investigation tab ──────────────────────────────────────────────────────
+
+
+@router.get("/recurring-mule-accounts", response_model=List[RecurringAccount])
+async def get_recurring_mule_accounts(
+    target_date: date = Query(..., alias="date"),
+    min_cases: int = Query(2, ge=2, le=50),
+    limit: int = Query(50, ge=1, le=200),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Account numbers appearing across `min_cases` or more distinct cases
+    in lien_accounts. The strongest signal for a recurring mule.
+    Recommended index: `CREATE INDEX idx_lien_account_no ON lien_accounts(account_no)`."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    q = (
+        select(
+            LienAccount.account_no,
+            func.count(func.distinct(LienAccount.case_id)).label("case_count"),
+            func.count(func.distinct(Case.unit_id)).label("units_count"),
+            func.coalesce(func.sum(LienAccount.amount_lien_marked), 0).label("total"),
+            func.max(LienAccount.bank_name).label("bank"),
+        )
+        .join(Case, LienAccount.case_id == Case.id)
+        .where(func.date(LienAccount.created_at) <= target_date)
+        .where(LienAccount.account_no.is_not(None))
+        # Filter out rows where someone saved an empty lien_accounts entry
+        # — they show up as a blank-account_no "lead" otherwise.
+        .where(func.length(func.trim(LienAccount.account_no)) > 0)
+        .group_by(LienAccount.account_no)
+        .having(func.count(func.distinct(LienAccount.case_id)) >= min_cases)
+        .order_by(func.count(func.distinct(LienAccount.case_id)).desc(),
+                  func.sum(LienAccount.amount_lien_marked).desc())
+        .limit(limit)
+    )
+    if admin.role != "super_admin":
+        q = q.where(Case.unit_id == admin.unit_id)
+
+    rows = (await db.execute(q)).all()
+    return [
+        RecurringAccount(
+            account_no=acc,
+            bank=bank,
+            case_count=int(cc),
+            units_count=int(uc),
+            total_amount=float(total or 0),
+        )
+        for acc, cc, uc, total, bank in rows
+    ]
+
+
+@router.get("/account-cases", response_model=List[AccountCaseDetail])
+async def get_account_cases(
+    account_no: str = Query(..., min_length=1),
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """All cases that have a lien_accounts row for `account_no`.
+
+    Authorisation follows the same rule as the parent leaderboard:
+    super_admin sees every case across districts; admin (PS-level)
+    sees only cases in their own unit, even if the account appears
+    elsewhere. Cross-district visibility for an admin would be useful
+    investigatively but is intentionally gated to super_admin per the
+    existing scoping pattern."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    q = (
+        select(
+            Case.id,
+            Case.fir_no,
+            Case.petition_no,
+            Case.registration_date,
+            Case.case_type,
+            Case.crime_type,
+            Case.status,
+            Unit.name.label("district"),
+            PoliceStation.station_name.label("ps_name"),
+            LienAccount.bank_name,
+            LienAccount.amount_lien_marked,
+            LienAccount.layer,
+            LienAccount.created_at.label("lien_created_at"),
+        )
+        .select_from(LienAccount)
+        .join(Case, LienAccount.case_id == Case.id)
+        .join(Unit, Unit.id == Case.unit_id)
+        .join(User, User.id == Case.submitted_by, isouter=True)
+        .join(PoliceStation, PoliceStation.id == User.ps_id, isouter=True)
+        .where(LienAccount.account_no == account_no)
+        .where(func.date(LienAccount.created_at) <= target_date)
+        .order_by(LienAccount.created_at.desc())
+    )
+    if admin.role != "super_admin":
+        q = q.where(Case.unit_id == admin.unit_id)
+
+    rows = (await db.execute(q)).all()
+    return [
+        AccountCaseDetail(
+            case_id=str(case_id),
+            fir_no=fir,
+            petition_no=pet,
+            registration_date=reg.isoformat() if reg else None,
+            case_type=ctype,
+            crime_type=crime,
+            status=status,
+            district=district or "",
+            ps_name=ps,
+            bank_name=bank,
+            amount=float(amt or 0),
+            layer=int(layer) if layer is not None else None,
+            lien_created_at=lien_at.isoformat() if lien_at else None,
+        )
+        for case_id, fir, pet, reg, ctype, crime, status, district, ps, bank, amt, layer, lien_at in rows
+    ]
+
+
+@router.get("/case-detail", response_model=CaseDetailFull)
+async def get_case_detail(
+    case_id: str = Query(..., min_length=1),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Key fields for one case — header + summaries of arrests, lien accounts,
+    petitions and refunds. Designed for the dashboard's third drill-down
+    level, not the Case edit page (which loads the full nested object)."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    # Case header — also returns district + PS via the same join chain we use
+    # in /account-cases so the response shape stays consistent.
+    row = (await db.execute(
+        select(
+            Case.id, Case.fir_no, Case.petition_no, Case.registration_date,
+            Case.case_type, Case.crime_type, Case.status, Case.facts,
+            Unit.name.label("district"),
+            PoliceStation.station_name.label("ps_name"),
+            Case.unit_id,
+        )
+        .select_from(Case)
+        .join(Unit, Unit.id == Case.unit_id)
+        .join(User, User.id == Case.submitted_by, isouter=True)
+        .join(PoliceStation, PoliceStation.id == User.ps_id, isouter=True)
+        .where(Case.id == case_id)
+    )).one_or_none()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Case not found.")
+
+    (cid, fir, pet, reg, ctype, crime, status, facts, district, ps, unit_id) = row
+    if admin.role != "super_admin" and unit_id != admin.unit_id:
+        raise HTTPException(status_code=403, detail="You can only view cases in your own district.")
+
+    arrest_rows = (await db.execute(
+        select(Arrest.name, Arrest.date_of_arrest, Arrest.aadhar, Arrest.pan)
+        .where(Arrest.case_id == case_id)
+        .order_by(Arrest.created_at)
+    )).all()
+    lien_rows = (await db.execute(
+        select(LienAccount.account_no, LienAccount.bank_name,
+               LienAccount.amount_lien_marked, LienAccount.layer)
+        .where(LienAccount.case_id == case_id)
+        .order_by(LienAccount.created_at)
+    )).all()
+    pet_rows = (await db.execute(
+        select(Petition.petition_no, Petition.nature, Petition.petition_type, Petition.amount)
+        .where(Petition.case_id == case_id)
+        .order_by(Petition.created_at)
+    )).all()
+    ref_rows = (await db.execute(
+        select(Refund.victim_name, Refund.amount, Refund.refunded)
+        .where(Refund.case_id == case_id)
+        .order_by(Refund.created_at)
+    )).all()
+
+    return CaseDetailFull(
+        case_id=str(cid),
+        fir_no=fir,
+        petition_no=pet,
+        registration_date=reg.isoformat() if reg else None,
+        case_type=ctype,
+        crime_type=crime,
+        status=status,
+        facts=facts,
+        district=district or "",
+        ps_name=ps,
+        arrests=[
+            ArrestSummary(
+                name=n or "",
+                date_of_arrest=d.isoformat() if d else None,
+                aadhar=ad, pan=pn,
+            ) for n, d, ad, pn in arrest_rows
+        ],
+        lien_accounts=[
+            LienSummary(
+                account_no=acc or "",
+                bank_name=bn,
+                amount_lien_marked=float(amt or 0),
+                layer=int(layer) if layer is not None else None,
+            ) for acc, bn, amt, layer in lien_rows
+        ],
+        petitions=[
+            PetitionSummary(
+                petition_no=pn, nature=nat, petition_type=pt,
+                amount=float(amt or 0),
+            ) for pn, nat, pt, amt in pet_rows
+        ],
+        refunds=[
+            RefundSummary(
+                victim_name=vn, amount=float(amt or 0), refunded=rf,
+            ) for vn, amt, rf in ref_rows
+        ],
+    )
+
+
+# IFSC prefix → human-readable bank name. First 4 characters of an IFSC
+# encode the bank; the rest is the branch. List covers the public-sector,
+# major private, and select small-finance / payments banks that show up
+# in cyber-fraud cases. Unknown prefixes are shown as-is so they still
+# get counted — investigators can extend the list as new banks appear.
+_IFSC_TO_BANK = {
+    "SBIN": "State Bank of India",
+    "HDFC": "HDFC Bank",
+    "ICIC": "ICICI Bank",
+    "AXIS": "Axis Bank",
+    "KKBK": "Kotak Mahindra Bank",
+    "YESB": "Yes Bank",
+    "PUNB": "Punjab National Bank",
+    "BARB": "Bank of Baroda",
+    "CNRB": "Canara Bank",
+    "UBIN": "Union Bank of India",
+    "BKID": "Bank of India",
+    "CBIN": "Central Bank of India",
+    "IOBA": "Indian Overseas Bank",
+    "IDIB": "Indian Bank",
+    "MAHB": "Bank of Maharashtra",
+    "PSIB": "Punjab and Sind Bank",
+    "UCBA": "UCO Bank",
+    "IBKL": "IDBI Bank",
+    "INDB": "IndusInd Bank",
+    "FDRL": "Federal Bank",
+    "RATN": "RBL Bank",
+    "IDFB": "IDFC First Bank",
+    "BDBL": "Bandhan Bank",
+    "SIBL": "South Indian Bank",
+    "DCBL": "DCB Bank",
+    "KARB": "Karnataka Bank",
+    "KVBL": "Karur Vysya Bank",
+    "TMBL": "Tamilnad Mercantile Bank",
+    "CSBK": "CSB Bank",
+    "ESFB": "Equitas Small Finance Bank",
+    "AUBL": "AU Small Finance Bank",
+    "UTKS": "Utkarsh Small Finance Bank",
+    "USFB": "Ujjivan Small Finance Bank",
+    "JSFB": "Jana Small Finance Bank",
+    "SUYB": "Suryoday Small Finance Bank",
+    "FINO": "Fino Payments Bank",
+    "AIRP": "Airtel Payments Bank",
+    "IPOS": "India Post Payments Bank",
+    "PYTM": "Paytm Payments Bank",
+}
+
+
+@router.get("/bank-concentration", response_model=List[BankConcentration])
+async def get_bank_concentration(
+    target_date: date = Query(..., alias="date"),
+    limit: int = Query(20, ge=1, le=100),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Top banks holding mule accounts — sourced from `lien_accounts.bank_name`.
+    This is the table every case populates when an account is frozen, so it
+    reflects real coverage. (We previously read from money_transfers.bank
+    but that table is only populated when a bank Excel is uploaded, which
+    is rare — the chart looked empty even when real data existed.)
+
+    Companion to /destination-bank-concentration, which derives the
+    DESTINATION bank from money_transfers.ifsc_code prefix. The two charts
+    answer different questions: this one ranks freeze-coordination
+    priorities; the other ranks follow-on-freeze priorities.
+
+    The `transaction_count` response field is overloaded here to mean
+    'number of frozen accounts at this bank' — schema is unchanged so the
+    frontend keeps using the existing card."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    q = (
+        select(
+            LienAccount.bank_name,
+            func.count(LienAccount.id).label("cnt"),
+            func.coalesce(func.sum(LienAccount.amount_lien_marked), 0).label("total"),
+        )
+        .join(Case, LienAccount.case_id == Case.id)
+        .where(LienAccount.bank_name.is_not(None))
+        .where(func.length(func.trim(LienAccount.bank_name)) > 0)
+        .where(func.date(LienAccount.created_at) <= target_date)
+        .group_by(LienAccount.bank_name)
+        .order_by(func.count(LienAccount.id).desc())
+        .limit(limit)
+    )
+    if admin.role != "super_admin":
+        q = q.where(Case.unit_id == admin.unit_id)
+    rows = (await db.execute(q)).all()
+    return [
+        BankConcentration(bank=(b or "").strip() or "(unknown)",
+                          transaction_count=int(c),
+                          total_amount=float(t or 0))
+        for b, c, t in rows
+    ]
+
+
+@router.get("/destination-bank-concentration", response_model=List[BankConcentration])
+async def get_destination_bank_concentration(
+    target_date: date = Query(..., alias="date"),
+    limit: int = Query(20, ge=1, le=100),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Banks holding 'downstream' frozen accounts — `lien_accounts` rows
+    with layer > 1. These are accounts the money was moved INTO after the
+    initial victim transfer, so the banks hosting them are the destinations
+    in the laundering chain.
+
+    We previously derived destination from money_transfers.ifsc_code, but
+    that table is only populated when a bank shares an Excel — rare in
+    practice. Switching the source to lien_accounts.layer > 1 reuses the
+    data investigators already capture for every case.
+
+    The `_IFSC_TO_BANK` lookup is kept in this module for the day we
+    revive IFSC-based destination derivation as a secondary signal."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    q = (
+        select(
+            LienAccount.bank_name,
+            func.count(LienAccount.id),
+            func.coalesce(func.sum(LienAccount.amount_lien_marked), 0),
+        )
+        .join(Case, LienAccount.case_id == Case.id)
+        .where(LienAccount.bank_name.is_not(None))
+        .where(func.length(func.trim(LienAccount.bank_name)) > 0)
+        .where(LienAccount.layer.is_not(None))
+        .where(LienAccount.layer > 1)
+        .where(func.date(LienAccount.created_at) <= target_date)
+        .group_by(LienAccount.bank_name)
+        .order_by(func.count(LienAccount.id).desc())
+        .limit(limit)
+    )
+    if admin.role != "super_admin":
+        q = q.where(Case.unit_id == admin.unit_id)
+    rows = (await db.execute(q)).all()
+
+    return [
+        BankConcentration(
+            bank=(b or "").strip() or "(unknown)",
+            transaction_count=int(c),
+            total_amount=float(t or 0),
+        )
+        for b, c, t in rows
+    ]
+
+
+@router.get("/atm-hotspots", response_model=List[AtmHotspot])
+async def get_atm_hotspots(
+    target_date: date = Query(..., alias="date"),
+    limit: int = Query(20, ge=1, le=100),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """ATM locations that appear most often in cash-out (atm_withdrawals).
+    Each row is a candidate hotspot for ground-level surveillance."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    q = (
+        select(
+            AtmWithdrawal.atm_location,
+            func.count(AtmWithdrawal.id).label("cnt"),
+            func.coalesce(func.sum(AtmWithdrawal.withdrawal_amount), 0).label("total"),
+        )
+        .join(MuleReport, AtmWithdrawal.report_id == MuleReport.id)
+        .where(AtmWithdrawal.atm_location.is_not(None))
+        .where(func.date(AtmWithdrawal.created_at) <= target_date)
+        .group_by(AtmWithdrawal.atm_location)
+        .order_by(func.count(AtmWithdrawal.id).desc())
+        .limit(limit)
+    )
+    if admin.role != "super_admin":
+        q = q.where(MuleReport.unit_id == admin.unit_id)
+    rows = (await db.execute(q)).all()
+    return [
+        AtmHotspot(location=(loc or "").strip() or "(unknown)",
+                   withdrawal_count=int(c),
+                   total_amount=float(t or 0))
+        for loc, c, t in rows
+    ]
+
+
+@router.get("/layer-distribution", response_model=List[LayerBucket])
+async def get_layer_distribution(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Distribution of lien_accounts.layer — how deep the money trail goes.
+    A heavy right tail = more sophisticated laundering chains."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    q = (
+        select(LienAccount.layer, func.count(LienAccount.id).label("cnt"))
+        .join(Case, LienAccount.case_id == Case.id)
+        .where(func.date(LienAccount.created_at) <= target_date)
+        .where(LienAccount.layer.is_not(None))
+        .group_by(LienAccount.layer)
+        .order_by(LienAccount.layer)
+    )
+    if admin.role != "super_admin":
+        q = q.where(Case.unit_id == admin.unit_id)
+    rows = (await db.execute(q)).all()
+    return [LayerBucket(layer=int(layer or 0), count=int(c)) for layer, c in rows]
+
+
+@router.get("/accounts-at-layer", response_model=List[LienAccountAtLayer])
+async def get_accounts_at_layer(
+    target_date: date = Query(..., alias="date"),
+    layer: int = Query(..., ge=1, le=50),
+    limit: int = Query(200, ge=1, le=500),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Lien-account rows at a specific layer — drives the layer-distribution
+    drill-down. Ordered by amount_lien_marked DESC so the largest entries
+    surface first. Admin scoping mirrors the rest of the dashboard."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    q = (
+        select(
+            LienAccount.id,
+            LienAccount.account_no,
+            LienAccount.bank_name,
+            LienAccount.amount_lien_marked,
+            LienAccount.layer,
+            Case.id,
+            Case.fir_no,
+            Case.petition_no,
+            Case.registration_date,
+            Unit.name.label("district"),
+            PoliceStation.station_name.label("ps_name"),
+        )
+        .select_from(LienAccount)
+        .join(Case, LienAccount.case_id == Case.id)
+        .join(Unit, Unit.id == Case.unit_id)
+        .join(User, User.id == Case.submitted_by, isouter=True)
+        .join(PoliceStation, PoliceStation.id == User.ps_id, isouter=True)
+        .where(LienAccount.layer == layer)
+        .where(func.date(LienAccount.created_at) <= target_date)
+        .order_by(LienAccount.amount_lien_marked.desc())
+        .limit(limit)
+    )
+    if admin.role != "super_admin":
+        q = q.where(Case.unit_id == admin.unit_id)
+    rows = (await db.execute(q)).all()
+    return [
+        LienAccountAtLayer(
+            lien_id=str(lid),
+            account_no=acc or "",
+            bank_name=bank,
+            amount_lien_marked=float(amt or 0),
+            layer=int(lyr) if lyr is not None else 0,
+            case_id=str(cid),
+            fir_no=fir,
+            petition_no=pet,
+            registration_date=reg.isoformat() if reg else None,
+            district=district or "",
+            ps_name=ps,
+        )
+        for lid, acc, bank, amt, lyr, cid, fir, pet, reg, district, ps in rows
+    ]
+
+
+# ── Disposal & Trial tab ────────────────────────────────────────────────────
+
+
+def _latest_dsr_subquery(target_date: date):
+    """Latest DSR per unit on or before `target_date`. Used as a join target
+    so we read only the most recent snapshot per unit, not the whole history."""
+    return (
+        select(DsrEntry.unit_id, func.max(DsrEntry.report_date).label("max_date"))
+        .where(DsrEntry.report_date <= target_date)
+        .group_by(DsrEntry.unit_id)
+        .subquery()
+    )
+
+
+@router.get("/disposal-summary", response_model=DisposalSummary)
+async def get_disposal_summary(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sum of disposal columns across the latest DSR per unit (since 1 Jan 2026
+    per the DSR form's semantics)."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    sub = _latest_dsr_subquery(target_date)
+    q = (
+        select(
+            func.coalesce(func.sum(DsrEntry.disposed_detected_chargesheeted), 0),
+            func.coalesce(func.sum(DsrEntry.disposed_transferred), 0),
+            func.coalesce(func.sum(DsrEntry.disposed_false), 0),
+            func.coalesce(func.sum(DsrEntry.disposed_undetected), 0),
+        )
+        .join(sub, and_(
+            DsrEntry.unit_id == sub.c.unit_id,
+            DsrEntry.report_date == sub.c.max_date,
+        ))
+    )
+    if admin.role != "super_admin":
+        q = q.where(DsrEntry.unit_id == admin.unit_id)
+    row = (await db.execute(q)).one_or_none()
+    if not row:
+        return DisposalSummary()
+    detected, transferred, false_cases, undetected = row
+    return DisposalSummary(
+        detected=int(detected or 0),
+        transferred=int(transferred or 0),
+        false_cases=int(false_cases or 0),
+        undetected=int(undetected or 0),
+    )
+
+
+@router.get("/trial-summary", response_model=TrialSummary)
+async def get_trial_summary(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Sum of trial-outcome columns across the latest DSR per unit (from 1 Jan 2026)."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    sub = _latest_dsr_subquery(target_date)
+    q = (
+        select(
+            func.coalesce(func.sum(DsrEntry.trial_convicted), 0),
+            func.coalesce(func.sum(DsrEntry.trial_discharged), 0),
+            func.coalesce(func.sum(DsrEntry.trial_acquitted), 0),
+            func.coalesce(func.sum(DsrEntry.trial_abated), 0),
+            func.coalesce(func.sum(DsrEntry.trial_compounded), 0),
+            func.coalesce(func.sum(DsrEntry.trial_ut), 0),
+        )
+        .join(sub, and_(
+            DsrEntry.unit_id == sub.c.unit_id,
+            DsrEntry.report_date == sub.c.max_date,
+        ))
+    )
+    if admin.role != "super_admin":
+        q = q.where(DsrEntry.unit_id == admin.unit_id)
+    row = (await db.execute(q)).one_or_none()
+    if not row:
+        return TrialSummary()
+    conv, disc, acq, ab, comp, ut = row
+    return TrialSummary(
+        convicted=int(conv or 0),
+        discharged=int(disc or 0),
+        acquitted=int(acq or 0),
+        abated=int(ab or 0),
+        compounded=int(comp or 0),
+        under_trial=int(ut or 0),
+    )
+
+
+@router.get("/pending-by-year", response_model=List[PendingByYearRow])
+async def get_pending_by_year(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-unit UI-cases-pending breakdown by year, from each unit's latest DSR."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+
+    sub = _latest_dsr_subquery(target_date)
+    q = (
+        select(
+            Unit.name,
+            DsrEntry.ui_cases_pending_2021,
+            DsrEntry.ui_cases_pending_2022,
+            DsrEntry.ui_cases_pending_2023,
+            DsrEntry.ui_cases_pending_2024,
+            DsrEntry.ui_cases_pending_2025,
+            DsrEntry.ui_cases_pending_2026,
+        )
+        .join(sub, and_(
+            DsrEntry.unit_id == sub.c.unit_id,
+            DsrEntry.report_date == sub.c.max_date,
+        ))
+        .join(Unit, Unit.id == DsrEntry.unit_id)
+    )
+    if admin.role != "super_admin":
+        q = q.where(DsrEntry.unit_id == admin.unit_id)
+    rows = (await db.execute(q)).all()
+
+    out = [
+        PendingByYearRow(
+            unit_name=name,
+            y2021=int(y21 or 0), y2022=int(y22 or 0), y2023=int(y23 or 0),
+            y2024=int(y24 or 0), y2025=int(y25 or 0), y2026=int(y26 or 0),
+        )
+        for name, y21, y22, y23, y24, y25, y26 in rows
+    ]
+    # Heaviest backlog first
+    out.sort(key=lambda r: -(r.y2021 + r.y2022 + r.y2023 + r.y2024 + r.y2025 + r.y2026))
+    return out

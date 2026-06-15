@@ -265,17 +265,25 @@ async def create_case(
     db: AsyncSession = Depends(get_db),
 ):
     unit_id = current_user.unit_id
+    ps_id = current_user.ps_id
     if not unit_id:
         raise HTTPException(status_code=403, detail="No unit assigned to this account.")
+    if not ps_id:
+        raise HTTPException(status_code=403, detail="No police station assigned to this account.")
 
     _validate_submitted_case(body)
 
-    # Pre-check the (unit_id, fir_no) UNIQUE constraint and return a clean 409
-    # instead of letting the DB IntegrityError surface as 500 (Innspark VAPT
-    # exec summary, 2026-05-05).
+    # Pre-check the (unit_id, ps_id, fir_no) UNIQUE constraint and return a
+    # clean 409 instead of letting the DB IntegrityError surface as 500
+    # (Innspark VAPT exec summary, 2026-05-05). Scope is per-PS — FIRs are
+    # independently numbered per PS in police operations (see migration 002).
     if body.fir_no:
         existing = (await db.execute(
-            select(Case).where(Case.unit_id == unit_id, Case.fir_no == body.fir_no)
+            select(Case).where(
+                Case.unit_id == unit_id,
+                Case.ps_id == ps_id,
+                Case.fir_no == body.fir_no,
+            )
         )).scalar_one_or_none()
         if existing:
             raise HTTPException(
@@ -285,6 +293,7 @@ async def create_case(
 
     case = Case(
         unit_id=unit_id,
+        ps_id=ps_id,
         fir_no=body.fir_no,
         petition_no=body.petition_no,
         registration_date=body.registration_date,
@@ -350,14 +359,20 @@ async def list_cases(
 ):
     """List cases scoped to the caller (VAPT 7.7 + 7.8).
 
+    Scope is (unit_id, ps_id) since migration 002. Before that change, a
+    single unit_id could represent multiple PSes within Bangalore City etc.
+
     - admin     : all cases in their PS
     - unit_user : only cases they personally submitted, in their PS
     """
     unit_id = current_user.unit_id
+    ps_id = current_user.ps_id
     if not unit_id:
         raise HTTPException(status_code=403, detail="No unit assigned to this account.")
+    if not ps_id:
+        raise HTTPException(status_code=403, detail="No police station assigned to this account.")
 
-    q = select(Case).where(Case.unit_id == unit_id)
+    q = select(Case).where(Case.unit_id == unit_id, Case.ps_id == ps_id)
     if current_user.role != "admin":
         q = q.where(Case.submitted_by == current_user.user_id)
 
@@ -380,14 +395,25 @@ async def search_case_by_fir(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Search for a case by FIR number within the caller's scope (VAPT 7.7+7.8)."""
+    """Search for a case by FIR number within the caller's scope (VAPT 7.7+7.8).
+
+    Scope is (unit_id, ps_id) — required for correctness now that the same
+    FIR can legitimately exist for multiple PSes within one district
+    (Bangalore City etc). See migration 002."""
     unit_id = current_user.unit_id
+    ps_id = current_user.ps_id
     if not unit_id:
         raise HTTPException(status_code=403, detail="No unit assigned to this account.")
+    if not ps_id:
+        raise HTTPException(status_code=403, detail="No police station assigned to this account.")
 
     q = (
         select(Case)
-        .where(Case.fir_no == fir_no, Case.unit_id == unit_id)
+        .where(
+            Case.fir_no == fir_no,
+            Case.unit_id == unit_id,
+            Case.ps_id == ps_id,
+        )
         .options(*_eager_options())
     )
     if current_user.role != "admin":
@@ -406,14 +432,23 @@ async def search_case_by_petition(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Search for a case by petition number within the caller's scope (VAPT 7.7+7.8)."""
+    """Search for a case by petition number within the caller's scope (VAPT 7.7+7.8).
+
+    Scope is (unit_id, ps_id) — see migration 002."""
     unit_id = current_user.unit_id
+    ps_id = current_user.ps_id
     if not unit_id:
         raise HTTPException(status_code=403, detail="No unit assigned to this account.")
+    if not ps_id:
+        raise HTTPException(status_code=403, detail="No police station assigned to this account.")
 
     q = (
         select(Case)
-        .where(Case.petition_no == petition_no, Case.unit_id == unit_id)
+        .where(
+            Case.petition_no == petition_no,
+            Case.unit_id == unit_id,
+            Case.ps_id == ps_id,
+        )
         .options(*_eager_options())
     )
     if current_user.role != "admin":
