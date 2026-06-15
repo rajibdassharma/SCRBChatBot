@@ -204,7 +204,7 @@ function OverviewTab({ date }: { date: string }) {
                 <XAxis type="number" domain={[0, 'dataMax']} tick={{ fontSize: 11 }} tickFormatter={(v) => formatINR(Number(v))} />
                 <YAxis type="category" dataKey="name" width={110} tick={{ fontSize: 12 }} />
                 <Tooltip formatter={(val) => formatINR(Number(val) || 0)} />
-                <Bar dataKey="value" name="Amount" label={{ position: 'right', formatter: (v: string | number | undefined) => (v == null ? '' : formatINR(Number(v))), fontSize: 10, fill: '#0b2c4a' }}>
+                <Bar dataKey="value" name="Amount" label={{ position: 'right', formatter: (v: string | number | boolean | null | undefined) => (v == null || typeof v === 'boolean' ? '' : formatINR(Number(v))), fontSize: 10, fill: '#0b2c4a' }}>
                   {funnelData.map((d, i) => <Cell key={i} fill={d.fill} />)}
                 </Bar>
               </BarChart>
