@@ -7,6 +7,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from utils.sanitize import strip_html
+from utils.validators import validate_amount as _validate_amount
 
 
 def _sanitize(cls, v):  # noqa: N805 - Pydantic validator signature
@@ -73,6 +74,7 @@ class MoneyTransferCreate(BaseModel):
         "transaction_date", "dest_transaction_id", "reference_no", "remarks",
         "action_taken_by_bank", "date_of_action",
     )(_sanitize)
+    _check_amounts = field_validator("transaction_amount", "disputed_amount")(_validate_amount)
 
 
 class OtherTransactionCreate(BaseModel):
@@ -89,6 +91,7 @@ class OtherTransactionCreate(BaseModel):
         "account_no", "transaction_id", "transaction_date",
         "reference_no", "remarks", "action_taken_by_bank", "date_of_action",
     )(_sanitize)
+    _check_amount = field_validator("transaction_amount")(_validate_amount)
 
 
 class TransactionOnHoldCreate(BaseModel):
@@ -104,6 +107,7 @@ class TransactionOnHoldCreate(BaseModel):
         "account_no", "transaction_id", "hold_date",
         "action_taken_by_bank", "date_of_action",
     )(_sanitize)
+    _check_amount = field_validator("hold_amount")(_validate_amount)
 
 
 class OtherLessThan500Create(BaseModel):
@@ -135,6 +139,7 @@ class AepsTransactionCreate(BaseModel):
         "account_no", "transaction_id", "withdrawal_date",
         "reference_no", "remarks", "action_taken_by_bank", "date_of_action",
     )(_sanitize)
+    _check_amount = field_validator("withdrawal_amount")(_validate_amount)
 
 
 class AtmWithdrawalCreate(BaseModel):
@@ -155,6 +160,7 @@ class AtmWithdrawalCreate(BaseModel):
         "atm_id", "atm_location", "reference_no", "remarks",
         "action_taken_by_bank", "date_of_action",
     )(_sanitize)
+    _check_amounts = field_validator("withdrawal_amount", "disputed_amount")(_validate_amount)
 
 
 # -- Mule Report Create / Response ------------------------------------

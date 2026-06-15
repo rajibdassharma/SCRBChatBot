@@ -7,6 +7,7 @@ from typing import List, Optional
 from pydantic import BaseModel, Field, field_validator
 
 from utils.sanitize import strip_html
+from utils.validators import validate_amount as _validate_amount
 
 
 # Free-text fields that must never contain HTML/script — stripped server-side
@@ -32,26 +33,9 @@ def _sanitize(cls, v):  # noqa: N805 — Pydantic validator signature
     return strip_html(v) if isinstance(v, str) else v
 
 
-# Money-field sanity bound. A single bank-hold / refund / petition above
-# ₹100 crore is almost certainly a mis-keyed account number or transaction
-# ID — the data-entry team has previously shifted those values into the
-# wrong column. If a legitimate larger figure ever shows up, raise the
-# constant after review rather than silently accepting outliers.
-_MAX_AMOUNT = Decimal("1000000000")  # ₹100 crore (10^9)
-
-
-def _validate_amount(cls, v):  # noqa: N805
-    if v is None:
-        return v
-    if v < 0:
-        raise ValueError("Amount cannot be negative.")
-    if v > _MAX_AMOUNT:
-        raise ValueError(
-            f"Amount {v:,.2f} exceeds the per-entry cap of {_MAX_AMOUNT:,.2f} "
-            f"(₹100 crore). Check whether an account number or transaction "
-            f"ID was typed into the amount field by mistake."
-        )
-    return v
+# `_validate_amount` lives in utils/validators.py — same ₹100 crore cap is
+# shared with mule.py so both schemas re-tune together if the threshold
+# ever needs to change.
 
 
 # ── Child Create schemas ──────────────────────────────────────────
