@@ -281,28 +281,82 @@ function relativeDate(iso: string | null, refDate: string): { label: string; col
   return { label: `${days}d ago`, color: 'var(--ksp-red)' };
 }
 
+type SubmissionSortKey = 'district' | 'cases' | 'total' | 'last_entry';
+type SortDir = 'asc' | 'desc';
+
 function SubmissionStatusTable({ statuses, refDate }: { statuses: SubmissionStatus[]; refDate: string }) {
-  const sorted = [...statuses].sort((a, b) =>
-    b.entry_count - a.entry_count
-    || a.unit_name.localeCompare(b.unit_name)
-    || a.ps_name.localeCompare(b.ps_name)
-  );
+  const [sortBy, setSortBy] = useState<SubmissionSortKey>('total');
+  const [sortDir, setSortDir] = useState<SortDir>('desc');
+
+  const onSort = (key: SubmissionSortKey, defaultDir: SortDir) => {
+    if (sortBy === key) {
+      setSortDir(d => d === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortBy(key);
+      setSortDir(defaultDir);
+    }
+  };
+
+  const compare = (a: SubmissionStatus, b: SubmissionStatus): number => {
+    let r = 0;
+    if (sortBy === 'district') {
+      r = a.unit_name.localeCompare(b.unit_name);
+    } else if (sortBy === 'cases') {
+      r = a.cases_count - b.cases_count;
+    } else if (sortBy === 'last_entry') {
+      // Nulls (never entered) always sink to the bottom regardless of direction.
+      if (a.last_entry_date == null && b.last_entry_date == null) r = 0;
+      else if (a.last_entry_date == null) return 1;
+      else if (b.last_entry_date == null) return -1;
+      else r = a.last_entry_date.localeCompare(b.last_entry_date);
+    } else { // total
+      r = a.entry_count - b.entry_count;
+    }
+    if (sortDir === 'desc') r = -r;
+    // Tiebreaker so the order is stable across renders.
+    return r || a.unit_name.localeCompare(b.unit_name) || a.ps_name.localeCompare(b.ps_name);
+  };
+
+  const sorted = [...statuses].sort(compare);
+  const arrow = (key: SubmissionSortKey) =>
+    sortBy === key ? <span className="ml-1 opacity-80">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
+
   return (
     <div className="rounded-2xl overflow-x-auto" style={cardStyle}>
       <div className="px-5 py-4" style={{ borderBottom: '3px solid var(--ksp-yellow)' }}>
         <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>Submission Status for {refDate}</h3>
-        <p className="text-xs mt-1 opacity-60">One row per Police Station. Sorted by cumulative total, then by district. Last-entry colour: green = today/yesterday, navy ≤ 7d, amber ≤ 30d, red &gt; 30d or never. DSR is district-level so all PSes in the same district show the same flag.</p>
+        <p className="text-xs mt-1 opacity-60">One row per Police Station. Click District / Cases / Total / Last Entry to sort — click again to reverse direction. Last-entry colour: green = today/yesterday, navy ≤ 7d, amber ≤ 30d, red &gt; 30d or never. DSR is district-level so all PSes in the same district show the same flag.</p>
       </div>
       <table className="w-full text-sm text-left">
         <thead style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)' }}>
           <tr>
             <th className="px-4 py-3 text-xs uppercase font-bold">#</th>
-            <th className="px-4 py-3 text-xs uppercase font-bold">District</th>
+            <th className="px-4 py-3 text-xs uppercase font-bold"
+                style={{ cursor: 'pointer', userSelect: 'none' }}
+                onClick={() => onSort('district', 'asc')}
+                title="Sort by District">
+              District{arrow('district')}
+            </th>
             <th className="px-4 py-3 text-xs uppercase font-bold">Police Station</th>
-            <th className="px-4 py-3 text-xs uppercase font-bold text-right">Cases</th>
+            <th className="px-4 py-3 text-xs uppercase font-bold text-right"
+                style={{ cursor: 'pointer', userSelect: 'none' }}
+                onClick={() => onSort('cases', 'desc')}
+                title="Sort by Cases">
+              Cases{arrow('cases')}
+            </th>
             <th className="px-4 py-3 text-xs uppercase font-bold text-right">Mule</th>
-            <th className="px-4 py-3 text-xs uppercase font-bold text-right">Total</th>
-            <th className="px-4 py-3 text-xs uppercase font-bold">Last Entry</th>
+            <th className="px-4 py-3 text-xs uppercase font-bold text-right"
+                style={{ cursor: 'pointer', userSelect: 'none' }}
+                onClick={() => onSort('total', 'desc')}
+                title="Sort by Total">
+              Total{arrow('total')}
+            </th>
+            <th className="px-4 py-3 text-xs uppercase font-bold"
+                style={{ cursor: 'pointer', userSelect: 'none' }}
+                onClick={() => onSort('last_entry', 'desc')}
+                title="Sort by Last Entry">
+              Last Entry{arrow('last_entry')}
+            </th>
             <th className="px-4 py-3 text-xs uppercase font-bold text-center">DSR</th>
           </tr>
         </thead>
