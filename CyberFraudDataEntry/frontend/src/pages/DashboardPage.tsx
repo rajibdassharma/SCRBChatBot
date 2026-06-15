@@ -283,22 +283,22 @@ function relativeDate(iso: string | null, refDate: string): { label: string; col
 
 function SubmissionStatusTable({ statuses, refDate }: { statuses: SubmissionStatus[]; refDate: string }) {
   const sorted = [...statuses].sort((a, b) =>
-    b.today_count - a.today_count
-    || b.entry_count - a.entry_count
+    b.entry_count - a.entry_count
     || a.unit_name.localeCompare(b.unit_name)
+    || a.ps_name.localeCompare(b.ps_name)
   );
   return (
     <div className="rounded-2xl overflow-x-auto" style={cardStyle}>
       <div className="px-5 py-4" style={{ borderBottom: '3px solid var(--ksp-yellow)' }}>
         <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>Submission Status for {refDate}</h3>
-        <p className="text-xs mt-1 opacity-60">Sorted by today's activity, then by cumulative total. Last-entry colour: green = today/yesterday, navy ≤ 7d, amber ≤ 30d, red &gt; 30d or never.</p>
+        <p className="text-xs mt-1 opacity-60">One row per Police Station. Sorted by cumulative total, then by district. Last-entry colour: green = today/yesterday, navy ≤ 7d, amber ≤ 30d, red &gt; 30d or never. DSR is district-level so all PSes in the same district show the same flag.</p>
       </div>
       <table className="w-full text-sm text-left">
         <thead style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)' }}>
           <tr>
             <th className="px-4 py-3 text-xs uppercase font-bold">#</th>
             <th className="px-4 py-3 text-xs uppercase font-bold">District</th>
-            <th className="px-4 py-3 text-xs uppercase font-bold text-right">Today</th>
+            <th className="px-4 py-3 text-xs uppercase font-bold">Police Station</th>
             <th className="px-4 py-3 text-xs uppercase font-bold text-right">Cases</th>
             <th className="px-4 py-3 text-xs uppercase font-bold text-right">Mule</th>
             <th className="px-4 py-3 text-xs uppercase font-bold text-right">Total</th>
@@ -310,13 +310,10 @@ function SubmissionStatusTable({ statuses, refDate }: { statuses: SubmissionStat
           {sorted.map((s, i) => {
             const last = relativeDate(s.last_entry_date, refDate);
             return (
-              <tr key={s.unit_id} className="border-t hover:bg-[#fff3b0]/30" style={{ borderColor: 'rgba(0,0,0,0.06)' }}>
+              <tr key={`${s.unit_id}-${s.ps_id}`} className="border-t hover:bg-[#fff3b0]/30" style={{ borderColor: 'rgba(0,0,0,0.06)' }}>
                 <td className="px-4 py-2 opacity-50">{i + 1}</td>
                 <td className="px-4 py-2 font-semibold" style={{ color: 'var(--ksp-navy)' }}>{s.unit_name}</td>
-                <td className="px-4 py-2 text-right font-bold"
-                    style={{ color: s.today_count === 0 ? 'rgba(0,0,0,0.4)' : '#0a5c2a' }}>
-                  {formatNumber(s.today_count)}
-                </td>
+                <td className="px-4 py-2" style={{ color: 'var(--ksp-navy)' }}>{s.ps_name || '—'}</td>
                 <td className="px-4 py-2 text-right" style={{ color: 'var(--ksp-navy)' }}>
                   {formatNumber(s.cases_count)}
                 </td>

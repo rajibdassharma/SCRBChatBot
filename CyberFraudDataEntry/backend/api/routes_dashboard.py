@@ -320,93 +320,100 @@ async def get_submission_status(
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """For each district in scope, has the team entered any real data
-    on or before `target_date`?
+    """Submission rollup at PS level (one row per active PS).
 
-    The boolean field names (`dsr_submitted` / `mule_submitted`) are
-    kept for API/UI compatibility, but the semantic now reflects the
-    team's actual workflow ("Case is part of DSR"):
+    Most districts have a single CEN PS, but Bangalore City has multiple
+    and each needs its own row. Cases attribute via cases.ps_id directly;
+    mule reports attribute via the submitter's users.ps_id (mule_reports
+    has no ps_id column of its own). DSR is a district-level concept —
+    every PS row in the same district shares the same dsr_filed flag.
 
-      dsr_submitted  ←  at least one CASE entered for this unit
-      mule_submitted ←  at least one MULE_REPORT entered for this unit
-
-    The original dsr_entries / mule_entries tables aren't used in
-    practice (their dedicated daily-summary forms were never wired
-    into the UI), so checking them would show all-red even on units
-    that are actively working.
-
-    admin: own PS only. super_admin: all active districts.
+    admin: own (unit_id, ps_id) only. super_admin: every active (unit, PS).
     """
     if admin.role == "admin" and not admin.unit_id:
         raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
 
-    if admin.role == "super_admin":
-        units = (await db.execute(
-            select(Unit.id, Unit.name).where(Unit.is_active == True)  # noqa: E712
-            .order_by(Unit.name)
-        )).all()
-    else:
-        units = (await db.execute(
-            select(Unit.id, Unit.name).where(Unit.id == admin.unit_id)
-        )).all()
+    # Enumerate the (unit, PS) pairs that actually have users assigned —
+    # PSes with no users can't submit data, so showing an empty row would
+    # be noise. Same source we use for `unit-comparison`'s ps_count.
+    ps_q = (
+        select(
+            Unit.id.label("unit_id"),
+            Unit.name.label("unit_name"),
+            PoliceStation.id.label("ps_id"),
+            PoliceStation.station_name.label("ps_name"),
+        )
+        .select_from(User)
+        .join(Unit, Unit.id == User.unit_id)
+        .join(PoliceStation, PoliceStation.id == User.ps_id)
+        .where(Unit.is_active == True)  # noqa: E712
+        .where(User.is_active == True)  # noqa: E712
+        .where(User.unit_id.is_not(None))
+        .where(User.ps_id.is_not(None))
+        .distinct()
+    )
+    if admin.role != "super_admin":
+        ps_q = ps_q.where(Unit.id == admin.unit_id).where(PoliceStation.id == admin.ps_id)
+    ps_rows = (await db.execute(ps_q)).all()
 
-    # Five grouped queries up front — constant in PS count, not per-row.
+    # Cases per (unit_id, ps_id) — cases.ps_id is canonical post migration 002.
     case_rows = (await db.execute(
-        select(Case.unit_id,
+        select(Case.unit_id, Case.ps_id,
                func.count(Case.id),
                func.max(func.date(Case.created_at)))
         .where(func.date(Case.created_at) <= target_date)
-        .group_by(Case.unit_id)
+        .group_by(Case.unit_id, Case.ps_id)
     )).all()
+
+    # Mule reports — derive ps_id from submitter (mule_reports lacks the column).
+    # Drops mule reports whose submitter has no ps_id (only legacy / system rows).
     mule_rows = (await db.execute(
-        select(MuleReport.unit_id,
+        select(MuleReport.unit_id, User.ps_id,
                func.count(MuleReport.id),
                func.max(func.date(MuleReport.created_at)))
+        .join(User, User.id == MuleReport.submitted_by, isouter=True)
         .where(func.date(MuleReport.created_at) <= target_date)
-        .group_by(MuleReport.unit_id)
+        .where(User.ps_id.is_not(None))
+        .group_by(MuleReport.unit_id, User.ps_id)
     )).all()
-    today_case_rows = (await db.execute(
-        select(Case.unit_id, func.count(Case.id))
-        .where(func.date(Case.created_at) == target_date)
-        .group_by(Case.unit_id)
-    )).all()
-    today_mule_rows = (await db.execute(
-        select(MuleReport.unit_id, func.count(MuleReport.id))
-        .where(func.date(MuleReport.created_at) == target_date)
-        .group_by(MuleReport.unit_id)
-    )).all()
+
     dsr_rows = (await db.execute(
         select(DsrEntry.unit_id)
         .where(DsrEntry.report_date == target_date)
     )).all()
 
-    # Build per-unit maps
-    case_counts: dict[int, int] = {uid: int(n or 0) for uid, n, _ in case_rows}
-    case_last: dict[int, date | None] = {uid: d for uid, _, d in case_rows}
-    mule_counts: dict[int, int] = {uid: int(n or 0) for uid, n, _ in mule_rows}
-    mule_last: dict[int, date | None] = {uid: d for uid, _, d in mule_rows}
-    today_counts: dict[int, int] = {}
-    for uid, n in today_case_rows:
-        today_counts[uid] = today_counts.get(uid, 0) + int(n or 0)
-    for uid, n in today_mule_rows:
-        today_counts[uid] = today_counts.get(uid, 0) + int(n or 0)
+    # Build (unit_id, ps_id) → metric maps
+    case_counts: dict[tuple[int, int], int] = {
+        (int(uid), int(pid)): int(n or 0) for uid, pid, n, _ in case_rows if pid is not None
+    }
+    case_last: dict[tuple[int, int], date | None] = {
+        (int(uid), int(pid)): d for uid, pid, _, d in case_rows if pid is not None
+    }
+    mule_counts: dict[tuple[int, int], int] = {
+        (int(uid), int(pid)): int(n or 0) for uid, pid, n, _ in mule_rows if pid is not None
+    }
+    mule_last: dict[tuple[int, int], date | None] = {
+        (int(uid), int(pid)): d for uid, pid, _, d in mule_rows if pid is not None
+    }
     dsr_filed: set[int] = {row[0] for row in dsr_rows}
 
     out: List[SubmissionStatus] = []
-    for uid, uname in units:
-        c = case_counts.get(uid, 0)
-        m = mule_counts.get(uid, 0)
-        last_dates = [d for d in (case_last.get(uid), mule_last.get(uid)) if d is not None]
+    for uid, uname, pid, pname in ps_rows:
+        key = (int(uid), int(pid))
+        c = case_counts.get(key, 0)
+        m = mule_counts.get(key, 0)
+        last_dates = [d for d in (case_last.get(key), mule_last.get(key)) if d is not None]
         last = max(last_dates) if last_dates else None
         out.append(SubmissionStatus(
             unit_id=int(uid),
             unit_name=uname,
+            ps_id=int(pid),
+            ps_name=pname or "",
             entry_count=c + m,
             cases_count=c,
             mule_count=m,
-            today_count=today_counts.get(uid, 0),
             last_entry_date=last.isoformat() if last else None,
-            dsr_filed=uid in dsr_filed,
+            dsr_filed=int(uid) in dsr_filed,
         ))
     return out
 

@@ -40,19 +40,22 @@ class TrendPoint(BaseModel):
 class SubmissionStatus(BaseModel):
     unit_id: int
     unit_name: str
-    # Cumulative cases + mule_reports made by this district up to `date`.
+    # Rolled up at PS level — most districts have one CEN PS, but Bangalore
+    # City has multiple and each needs its own row.
+    ps_id: int = 0
+    ps_name: str = ""
+    # Cumulative cases + mule_reports made by this PS up to `date`.
     entry_count: int = 0
     # Cumulative split — useful to see whether a PS is leaning more on case
     # work or mule-report work.
     cases_count: int = 0
     mule_count: int = 0
-    # Activity on the selected date specifically — answers "are they
-    # working today?" independent of the cumulative leaderboard.
-    today_count: int = 0
-    # Most recent date (cases OR mule_reports) the unit has entered
-    # anything at all. None = never. ISO format (YYYY-MM-DD).
+    # Most recent date (cases OR mule_reports) the PS has entered anything
+    # at all. None = never. ISO format (YYYY-MM-DD).
     last_entry_date: str | None = None
-    # Whether the statutory daily report was filed for `date`.
+    # Whether the statutory daily report was filed for `date` for this PS's
+    # district. DSR is a district-level concept, so all PS rows in the same
+    # district share the same flag.
     dsr_filed: bool = False
 
 

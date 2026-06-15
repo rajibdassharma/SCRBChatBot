@@ -324,15 +324,16 @@ export interface TrendPoint {
 export interface SubmissionStatus {
   unit_id: number;
   unit_name: string;
-  /** Total entries (cases + mule reports) this district has made up to the selected date. */
+  ps_id: number;
+  ps_name: string;
+  /** Total entries (cases + mule reports) this PS has made up to the selected date. */
   entry_count: number;
   cases_count: number;
   mule_count: number;
-  /** Cases + mule reports created on the selected date specifically. */
-  today_count: number;
-  /** ISO date of the most recent case or mule report, or null if never. */
+  /** ISO date of the most recent case or mule report for this PS, or null if never. */
   last_entry_date: string | null;
-  /** Whether a DSR row exists for (unit_id, date). */
+  /** Whether a DSR row exists for this PS's district on the selected date.
+   *  DSR is a district-level concept, so all PS rows in the same district share this flag. */
   dsr_filed: boolean;
 }
 
