@@ -20,7 +20,16 @@ class Victim(Base):
     gender = Column(String(30), nullable=True)
     phone = Column(String(20), nullable=True)
     email = Column(String(200), nullable=True)
-    address = Column(Text, nullable=True)
+    # Address — broken down into structured fields by migration 004.
+    # The legacy single `address` TEXT column is intentionally NOT mapped
+    # here; it persists in the DB for backwards compat until a future
+    # migration drops it (no app code reads or writes it any more).
+    house_no = Column(String(50), nullable=True)
+    street_name = Column(String(200), nullable=True)
+    city = Column(String(100), nullable=True)
+    state = Column(String(100), nullable=True)
+    country = Column(String(100), nullable=True, default="India")
+    pincode = Column(String(10), nullable=True)
     amount_lost = Column(Numeric(18, 2), default=0, nullable=False)
     bank_account_no = Column(String(50), nullable=False)
     bank_name = Column(String(200), nullable=False)

@@ -145,7 +145,14 @@ export interface Victim {
   gender: 'Male' | 'Female' | 'Other' | 'Prefer not to say' | '';
   phone: string;
   email: string;
-  address: string;
+  // Address — structured fields (migration 004). Legacy `address` column
+  // still exists in DB but isn't part of the API contract any more.
+  house_no: string;
+  street_name: string;
+  city: string;
+  state: string;
+  country: string;
+  pincode: string;
   amount_lost: number;
   bank_account_no: string;
   bank_name: string;

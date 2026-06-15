@@ -130,14 +130,22 @@ class VictimCreate(BaseModel):
     gender: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
-    address: Optional[str] = None
+    # Address — structured by migration 004; the legacy single-string
+    # `address` field was dropped from the API in the same migration.
+    house_no: Optional[str] = Field(default=None, max_length=50)
+    street_name: Optional[str] = Field(default=None, max_length=200)
+    city: Optional[str] = Field(default=None, max_length=100)
+    state: Optional[str] = Field(default=None, max_length=100)
+    country: Optional[str] = Field(default="India", max_length=100)
+    pincode: Optional[str] = Field(default=None, max_length=10)
     amount_lost: Decimal = Decimal("0")
     bank_account_no: str = Field(default="", max_length=50)
     bank_name: str = Field(default="", max_length=200)
     bank_branch_address: Optional[str] = None
 
     _sanitize_text = field_validator(
-        "first_name", "last_name", "gender", "phone", "email", "address",
+        "first_name", "last_name", "gender", "phone", "email",
+        "house_no", "street_name", "city", "state", "country", "pincode",
         "bank_account_no", "bank_name", "bank_branch_address",
     )(_sanitize)
     _check_amount = field_validator("amount_lost")(_validate_amount)
@@ -276,7 +284,12 @@ class VictimResponse(BaseModel):
     gender: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
-    address: Optional[str] = None
+    house_no: Optional[str] = None
+    street_name: Optional[str] = None
+    city: Optional[str] = None
+    state: Optional[str] = None
+    country: Optional[str] = None
+    pincode: Optional[str] = None
     amount_lost: float = 0
     bank_account_no: str
     bank_name: str

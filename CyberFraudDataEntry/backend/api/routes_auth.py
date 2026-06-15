@@ -6,6 +6,7 @@ from collections import defaultdict
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -129,14 +130,21 @@ async def logout(
     db: AsyncSession = Depends(get_db),
 ):
     """Invalidate the current bearer token by adding its jti to the revocation list.
-    Subsequent requests with the same token will be rejected by the auth dependency."""
+    Subsequent requests with the same token will be rejected by the auth dependency.
+
+    Idempotent: the previous SELECT-then-INSERT pattern had a TOCTOU race
+    when the same JWT logged out twice in parallel (double-clicked button,
+    React strict-mode double-fire in dev, etc.). Both branches saw "not
+    revoked yet" and both queued an INSERT; the second one crashed on the
+    UNIQUE jti index. Now we just attempt the INSERT; if the UNIQUE
+    constraint fires, the token is already revoked, which is the desired
+    state — no-op the error and return success."""
     if current_user.jti:
-        existing = (await db.execute(
-            select(RevokedToken).where(RevokedToken.jti == current_user.jti)
-        )).scalar_one_or_none()
-        if not existing:
+        try:
             db.add(RevokedToken(jti=current_user.jti, user_id=current_user.user_id))
             await db.commit()
+        except IntegrityError:
+            await db.rollback()
     return {"ok": True, "message": "Logged out successfully"}
 
 

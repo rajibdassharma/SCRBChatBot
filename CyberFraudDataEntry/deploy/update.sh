@@ -69,7 +69,7 @@ sudo bash "$SOURCE/deploy/backup-db.sh"
 
 # ── 4. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 4. Run additive DB migrations 001 + 002 + 003 (idempotent) ==="
+echo "=== 4. Run additive DB migrations 001 + 002 + 003 + 004 (idempotent) ==="
 # Copy the migrations folder into runtime so the script can `import config`
 # / `import database` from the runtime venv path.
 sudo cp -r "$SOURCE/backend/migrations" "$RUNTIME/backend/"
@@ -80,6 +80,7 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.001_add_user_contact_columns
     venv/bin/python -m migrations.002_add_ps_id_to_cases
     venv/bin/python -m migrations.003_add_victims_table
+    venv/bin/python -m migrations.004_break_victim_address
 "
 
 # ── 5. Build the frontend ────────────────────────────────────────────

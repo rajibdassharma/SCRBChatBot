@@ -37,9 +37,28 @@ const emptyRefund = (): Refund => ({
 
 const emptyVictim = (): Victim => ({
   first_name: '', last_name: '', age: null, gender: '',
-  phone: '', email: '', address: '',
+  phone: '', email: '',
+  house_no: '', street_name: '', city: '', state: '', country: 'India', pincode: '',
   amount_lost: 0, bank_account_no: '', bank_name: '', bank_branch_address: '',
 });
+
+// 28 Indian states + 8 union territories, alphabetical, plus "Other" for
+// non-India addresses. Stored as the literal label; backend accepts any
+// string (VARCHAR(100)) so we don't need a separate code.
+const INDIAN_STATES: string[] = [
+  'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh',
+  'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jharkhand',
+  'Karnataka', 'Kerala', 'Madhya Pradesh', 'Maharashtra', 'Manipur',
+  'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Punjab',
+  'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura',
+  'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
+  // Union Territories
+  'Andaman and Nicobar Islands', 'Chandigarh',
+  'Dadra and Nagar Haveli and Daman and Diu', 'Delhi',
+  'Jammu and Kashmir', 'Ladakh', 'Lakshadweep', 'Puducherry',
+  // Fallback for non-India addresses
+  'Other',
+].sort((a, b) => a === 'Other' ? 1 : b === 'Other' ? -1 : a.localeCompare(b));
 
 const initialForm = (): CaseEntry => ({
   fir_no: '', registration_date: '', case_type: 'NCRP', crime_type: 'Internet', facts: '',
@@ -50,11 +69,11 @@ const initialForm = (): CaseEntry => ({
 
 /* --- Reusable field components --- */
 
-function TextField({ label, value, onChange, placeholder, type = 'text', readOnly = false, hint }: {
-  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; readOnly?: boolean; hint?: string;
+function TextField({ label, value, onChange, placeholder, type = 'text', readOnly = false, hint, wrapperClassName }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; readOnly?: boolean; hint?: string; wrapperClassName?: string;
 }) {
   return (
-    <div>
+    <div className={wrapperClassName}>
       <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>
         {label}
         {readOnly && hint && (
@@ -79,9 +98,9 @@ function TextField({ label, value, onChange, placeholder, type = 'text', readOnl
   );
 }
 
-function NumField({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+function NumField({ label, value, onChange, wrapperClassName }: { label: string; value: number; onChange: (v: number) => void; wrapperClassName?: string }) {
   return (
-    <div>
+    <div className={wrapperClassName}>
       <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>{label}</label>
       <input
         type="number"
@@ -96,11 +115,11 @@ function NumField({ label, value, onChange }: { label: string; value: number; on
   );
 }
 
-function SelectField({ label, value, onChange, options }: {
-  label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[];
+function SelectField({ label, value, onChange, options, wrapperClassName }: {
+  label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; wrapperClassName?: string;
 }) {
   return (
-    <div>
+    <div className={wrapperClassName}>
       <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>{label}</label>
       <select
         value={value}
@@ -131,11 +150,16 @@ function TextAreaField({ label, value, onChange, rows = 3 }: {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, cols = 3 }: { title: string; children: React.ReactNode; cols?: 3 | 6 }) {
+  // cols=6 lets fields use lg:col-span-1 .. 6 via wrapperClassName for
+  // a denser layout (e.g. Age + Gender at 1/6 width each).
+  const gridClass = cols === 6
+    ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4"
+    : "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4";
   return (
     <div className="rounded-2xl p-5" style={{ background: '#fff', border: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 6px 16px rgba(0,0,0,0.08)' }}>
       <h3 className="text-sm font-bold mb-4 uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>{title}</h3>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">{children}</div>
+      <div className={gridClass}>{children}</div>
     </div>
   );
 }
@@ -251,10 +275,13 @@ export function CaseEntryPage() {
    * with non-empty mandatory fields when status === 'submitted'. */
   const buildPayload = (status: 'draft' | 'submitted'): CaseEntry => {
     const v = f.victim;
+    // Country defaults to "India" so we exclude it from the "all blank?"
+    // check — otherwise every untouched form would falsely look filled.
     const hasVictimData = !!v && (
       !!v.first_name || !!v.last_name || !!v.age || !!v.gender ||
-      !!v.phone || !!v.email || !!v.address || !!v.amount_lost ||
-      !!v.bank_account_no || !!v.bank_name || !!v.bank_branch_address
+      !!v.phone || !!v.email ||
+      !!v.house_no || !!v.street_name || !!v.city || !!v.state || !!v.pincode ||
+      !!v.amount_lost || !!v.bank_account_no || !!v.bank_name || !!v.bank_branch_address
     );
     return {
       ...f,
@@ -380,14 +407,15 @@ export function CaseEntryPage() {
                 options={[{ value: 'Internet', label: 'Internet' }, { value: 'Digital', label: 'Digital' }, { value: 'Crypto', label: 'Crypto' }]} />
             </Section>
 
-            <Section title="Victim Details">
-              <TextField label="First Name *" value={f.victim?.first_name ?? ''}
+            <Section title="Victim Details" cols={6}>
+              {/* Row 1: Name + small Age/Gender */}
+              <TextField label="First Name *" wrapperClassName="lg:col-span-2" value={f.victim?.first_name ?? ''}
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), first_name: v } }))} />
-              <TextField label="Last Name *" value={f.victim?.last_name ?? ''}
+              <TextField label="Last Name *" wrapperClassName="lg:col-span-2" value={f.victim?.last_name ?? ''}
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), last_name: v } }))} />
-              <NumField label="Age" value={f.victim?.age ?? 0}
+              <NumField label="Age" wrapperClassName="lg:col-span-1" value={f.victim?.age ?? 0}
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), age: v || null } }))} />
-              <SelectField label="Gender" value={f.victim?.gender ?? ''}
+              <SelectField label="Gender" wrapperClassName="lg:col-span-1" value={f.victim?.gender ?? ''}
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), gender: v as Victim['gender'] } }))}
                 options={[
                   { value: '', label: '—' },
@@ -396,20 +424,42 @@ export function CaseEntryPage() {
                   { value: 'Other', label: 'Other' },
                   { value: 'Prefer not to say', label: 'Prefer not to say' },
                 ]} />
-              <TextField label="Phone" value={f.victim?.phone ?? ''}
+
+              {/* Row 2: Contact + Country (all compact identifiers) */}
+              <TextField label="Phone" wrapperClassName="lg:col-span-2" value={f.victim?.phone ?? ''}
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), phone: v } }))} placeholder="10-digit mobile" />
-              <TextField label="Email" type="email" value={f.victim?.email ?? ''}
+              <TextField label="Email" type="email" wrapperClassName="lg:col-span-2" value={f.victim?.email ?? ''}
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), email: v } }))} />
-              <TextAreaField label="Address" value={f.victim?.address ?? ''}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), address: v } }))} rows={2} />
-              <NumField label="Amount Lost (₹) *" value={f.victim?.amount_lost ?? 0}
+              <TextField label="Country" wrapperClassName="lg:col-span-2" value={f.victim?.country ?? 'India'}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), country: v } }))} />
+
+              {/* Row 3: Address — fits the entire breakdown on one row */}
+              <TextField label="House No" wrapperClassName="lg:col-span-1" value={f.victim?.house_no ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), house_no: v } }))} />
+              <TextField label="Street Name" wrapperClassName="lg:col-span-2" value={f.victim?.street_name ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), street_name: v } }))} />
+              <TextField label="City" wrapperClassName="lg:col-span-1" value={f.victim?.city ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), city: v } }))} />
+              <SelectField label="State" wrapperClassName="lg:col-span-1" value={f.victim?.state ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), state: v } }))}
+                options={[
+                  { value: '', label: '—' },
+                  ...INDIAN_STATES.map(s => ({ value: s, label: s })),
+                ]} />
+              <TextField label="Pincode" wrapperClassName="lg:col-span-1" value={f.victim?.pincode ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), pincode: v } }))} placeholder="6-digit" />
+
+              {/* Row 5: Financial */}
+              <NumField label="Amount Lost (₹) *" wrapperClassName="lg:col-span-2" value={f.victim?.amount_lost ?? 0}
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), amount_lost: v } }))} />
-              <TextField label="Bank Account No *" value={f.victim?.bank_account_no ?? ''}
+              <TextField label="Bank Account No *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_account_no ?? ''}
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_account_no: v } }))} />
-              <TextField label="Bank Name *" value={f.victim?.bank_name ?? ''}
+              <TextField label="Bank Name *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_name ?? ''}
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_name: v } }))} />
-              <TextAreaField label="Bank Branch Address" value={f.victim?.bank_branch_address ?? ''}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_branch_address: v } }))} rows={2} />
+
+              {/* Row 6: Bank branch — single-line, full width (textarea was too tall) */}
+              <TextField label="Bank Branch Address" wrapperClassName="col-span-full" value={f.victim?.bank_branch_address ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_branch_address: v } }))} />
             </Section>
 
             <Section title="Facts">
