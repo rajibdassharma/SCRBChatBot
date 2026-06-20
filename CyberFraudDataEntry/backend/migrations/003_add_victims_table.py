@@ -61,6 +61,10 @@ async def run() -> None:
             print("  = victims table already exists, skipping CREATE")
         else:
             print("  + CREATE TABLE victims")
+            # CHARSET + COLLATE must match cases.id exactly or the FK
+            # constraint fails with MySQL error 3780 "Referencing column
+            # and referenced column are incompatible". Production uses
+            # utf8mb4 / utf8mb4_unicode_ci (verified 2026-06-20).
             await conn.execute(text("""
                 CREATE TABLE victims (
                     id                   VARCHAR(36) NOT NULL,
@@ -80,7 +84,7 @@ async def run() -> None:
                     PRIMARY KEY (id),
                     CONSTRAINT fk_victims_case_id
                         FOREIGN KEY (case_id) REFERENCES cases(id) ON DELETE CASCADE
-                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+                ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
             """))
 
         # 1:1 enforcement — at most one victim row per case_id.
