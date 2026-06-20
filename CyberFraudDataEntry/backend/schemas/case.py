@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date, datetime
 from decimal import Decimal
 from typing import List, Optional
@@ -8,6 +9,55 @@ from pydantic import BaseModel, Field, field_validator
 
 from utils.sanitize import strip_html
 from utils.validators import validate_amount as _validate_amount
+
+
+# Indian-format pattern checks for victim fields. Each accepts None / empty
+# string unchanged (the field is still optional); a non-empty value must
+# match the format exactly.
+_PHONE_RE = re.compile(r"\d{10}")
+_PINCODE_RE = re.compile(r"\d{6}")
+_BANK_ACCOUNT_RE = re.compile(r"\d{9,18}")  # SBI(11), HDFC(14), ICICI(12),
+                                            # Axis(15-18), etc.
+_EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")  # cheap RFC-ish check;
+                                                       # heavy validation can
+                                                       # use email-validator
+                                                       # if we ever need it.
+
+
+def _validate_phone(cls, v):  # noqa: N805
+    if not v:
+        return v
+    s = str(v).strip()
+    if not _PHONE_RE.fullmatch(s):
+        raise ValueError("Phone must be exactly 10 digits.")
+    return s
+
+
+def _validate_email(cls, v):  # noqa: N805
+    if not v:
+        return v
+    s = str(v).strip()
+    if not _EMAIL_RE.match(s):
+        raise ValueError("Email format looks invalid (expected name@domain.tld).")
+    return s
+
+
+def _validate_pincode(cls, v):  # noqa: N805
+    if not v:
+        return v
+    s = str(v).strip()
+    if not _PINCODE_RE.fullmatch(s):
+        raise ValueError("Pincode must be exactly 6 digits.")
+    return s
+
+
+def _validate_bank_account(cls, v):  # noqa: N805
+    if not v:
+        return v
+    s = str(v).strip()
+    if not _BANK_ACCOUNT_RE.fullmatch(s):
+        raise ValueError("Bank account number must be 9–18 digits (numeric only).")
+    return s
 
 
 # Free-text fields that must never contain HTML/script — stripped server-side
@@ -149,6 +199,11 @@ class VictimCreate(BaseModel):
         "bank_account_no", "bank_name", "bank_branch_address",
     )(_sanitize)
     _check_amount = field_validator("amount_lost")(_validate_amount)
+    # Format validators — each skips empty values; non-empty must match.
+    _check_phone = field_validator("phone")(_validate_phone)
+    _check_email = field_validator("email")(_validate_email)
+    _check_pincode = field_validator("pincode")(_validate_pincode)
+    _check_bank_account_no = field_validator("bank_account_no")(_validate_bank_account)
 
 
 # ── Case Create schema ────────────────────────────────────────────

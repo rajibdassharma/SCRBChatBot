@@ -69,8 +69,8 @@ const initialForm = (): CaseEntry => ({
 
 /* --- Reusable field components --- */
 
-function TextField({ label, value, onChange, placeholder, type = 'text', readOnly = false, hint, wrapperClassName }: {
-  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; readOnly?: boolean; hint?: string; wrapperClassName?: string;
+function TextField({ label, value, onChange, placeholder, type = 'text', readOnly = false, hint, wrapperClassName, maxLength, inputMode }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; readOnly?: boolean; hint?: string; wrapperClassName?: string; maxLength?: number; inputMode?: 'text' | 'numeric' | 'email' | 'tel';
 }) {
   return (
     <div className={wrapperClassName}>
@@ -85,6 +85,8 @@ function TextField({ label, value, onChange, placeholder, type = 'text', readOnl
         value={value}
         onChange={(e) => !readOnly && onChange(e.target.value)}
         readOnly={readOnly}
+        maxLength={maxLength}
+        inputMode={inputMode}
         className="w-full px-3 py-2 rounded-xl text-sm outline-none"
         style={{
           border: readOnly ? '1px solid rgba(11,44,74,0.15)' : '2px solid var(--ksp-navy)',
@@ -427,9 +429,11 @@ export function CaseEntryPage() {
 
               {/* Row 2: Contact + Country (all compact identifiers) */}
               <TextField label="Phone" wrapperClassName="lg:col-span-2" value={f.victim?.phone ?? ''}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), phone: v } }))} placeholder="10-digit mobile" />
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), phone: v.replace(/\D/g, '') } }))}
+                placeholder="10-digit mobile" maxLength={10} inputMode="numeric" />
               <TextField label="Email" type="email" wrapperClassName="lg:col-span-2" value={f.victim?.email ?? ''}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), email: v } }))} />
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), email: v } }))}
+                placeholder="name@domain.com" inputMode="email" />
               <TextField label="Country" wrapperClassName="lg:col-span-2" value={f.victim?.country ?? 'India'}
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), country: v } }))} />
 
@@ -447,13 +451,15 @@ export function CaseEntryPage() {
                   ...INDIAN_STATES.map(s => ({ value: s, label: s })),
                 ]} />
               <TextField label="Pincode" wrapperClassName="lg:col-span-1" value={f.victim?.pincode ?? ''}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), pincode: v } }))} placeholder="6-digit" />
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), pincode: v.replace(/\D/g, '') } }))}
+                placeholder="6-digit" maxLength={6} inputMode="numeric" />
 
               {/* Row 5: Financial */}
               <NumField label="Amount Lost (₹) *" wrapperClassName="lg:col-span-2" value={f.victim?.amount_lost ?? 0}
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), amount_lost: v } }))} />
               <TextField label="Bank Account No *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_account_no ?? ''}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_account_no: v } }))} />
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_account_no: v.replace(/\D/g, '') } }))}
+                placeholder="9–18 digits" maxLength={18} inputMode="numeric" />
               <TextField label="Bank Name *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_name ?? ''}
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_name: v } }))} />
 

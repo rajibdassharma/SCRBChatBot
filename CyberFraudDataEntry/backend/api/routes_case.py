@@ -42,6 +42,38 @@ def _ts(val) -> str | None:
     return str(val) if val else None
 
 
+def _check_arrest_duplicates(body: CaseCreate) -> None:
+    """Reject duplicate arrests within the same case.
+
+    Two arrests are considered the same person if either signal matches:
+      - Name        : whitespace-collapsed + lowercased
+      - Aadhar      : exact match (only when BOTH rows have a value)
+
+    Runs on both draft saves and submits — operators shouldn't be able
+    to enter the same arrest twice regardless of workflow state. Cross-
+    case dedup is not enforced (different cases can legitimately share
+    accused — repeat offenders)."""
+    seen_names: set[str] = set()
+    seen_aadhar: set[str] = set()
+    for i, arr in enumerate(body.arrests, start=1):
+        key_name = " ".join((arr.name or "").split()).lower()
+        key_aadhar = (arr.aadhar or "").strip()
+        if key_name and key_name in seen_names:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Arrest #{i}: '{arr.name}' is already on this case.",
+            )
+        if key_aadhar and key_aadhar in seen_aadhar:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Arrest #{i}: an arrest with Aadhar {key_aadhar} is already on this case.",
+            )
+        if key_name:
+            seen_names.add(key_name)
+        if key_aadhar:
+            seen_aadhar.add(key_aadhar)
+
+
 def _validate_submitted_case(body: CaseCreate):
     """Raise 422 if a submitted case is missing required fields."""
     if body.status == "submitted":
@@ -335,6 +367,7 @@ async def create_case(
         raise HTTPException(status_code=403, detail="No police station assigned to this account.")
 
     _validate_submitted_case(body)
+    _check_arrest_duplicates(body)
 
     # Pre-check the (unit_id, ps_id, fir_no) UNIQUE constraint and return a
     # clean 409 instead of letting the DB IntegrityError surface as 500
@@ -563,6 +596,7 @@ async def update_case(
     check_record_access(case, current_user)
 
     _validate_submitted_case(body)
+    _check_arrest_duplicates(body)
 
     # Update case fields.
     # NOTE: fir_no is intentionally NOT updated - per product decision,
