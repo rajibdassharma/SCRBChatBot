@@ -305,72 +305,7 @@ export function PetitionEntryPage() {
       </p>
 
       <form onSubmit={handleSubmit} className="space-y-5 max-w-5xl">
-        {/* Financial / Non-Financial radio drives which tabs + victim fields show */}
-        <FinancialRadio value={f.is_financial} onChange={(v) => setF(p => ({ ...p, is_financial: v }))} />
-
-        {/* Petition No — always visible above tabs */}
-        <Section title="Petition Information">
-          <TextField label="Petition No" value={f.petition_no || ''} onChange={(v) => setF(p => ({ ...p, petition_no: v }))} placeholder="e.g. PET-2026-001" />
-          <TextField label="Date" value={f.registration_date} onChange={(v) => setF(p => ({ ...p, registration_date: v }))} type="date" />
-        </Section>
-
-        {/* Victim Details — same compact layout as New Case. Financial
-            fields (amount, bank) hidden when Petition is Non-Financial. */}
-        <Section title="Victim Details" cols={6}>
-          <TextField label="First Name *" wrapperClassName="lg:col-span-2" value={f.victim?.first_name ?? ''}
-            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), first_name: v } }))} />
-          <TextField label="Last Name *" wrapperClassName="lg:col-span-2" value={f.victim?.last_name ?? ''}
-            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), last_name: v } }))} />
-          <NumField label="Age" wrapperClassName="lg:col-span-1" value={f.victim?.age ?? 0}
-            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), age: v || null } }))} />
-          <SelectField label="Gender" wrapperClassName="lg:col-span-1" value={f.victim?.gender ?? ''}
-            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), gender: v as Victim['gender'] } }))}
-            options={[
-              { value: '', label: '—' },
-              { value: 'Male', label: 'Male' },
-              { value: 'Female', label: 'Female' },
-              { value: 'Other', label: 'Other' },
-              { value: 'Prefer not to say', label: 'Prefer not to say' },
-            ]} />
-          <TextField label="Phone" wrapperClassName="lg:col-span-2" value={f.victim?.phone ?? ''}
-            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), phone: v.replace(/\D/g, '') } }))}
-            placeholder="10-digit mobile" maxLength={10} inputMode="numeric" />
-          <TextField label="Email" type="email" wrapperClassName="lg:col-span-2" value={f.victim?.email ?? ''}
-            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), email: v } }))}
-            placeholder="name@domain.com" inputMode="email" />
-          <TextField label="Country" wrapperClassName="lg:col-span-2" value={f.victim?.country ?? 'India'}
-            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), country: v } }))} />
-          <TextField label="House No" wrapperClassName="lg:col-span-1" value={f.victim?.house_no ?? ''}
-            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), house_no: v } }))} />
-          <TextField label="Street Name" wrapperClassName="lg:col-span-2" value={f.victim?.street_name ?? ''}
-            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), street_name: v } }))} />
-          <TextField label="City" wrapperClassName="lg:col-span-1" value={f.victim?.city ?? ''}
-            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), city: v } }))} />
-          <SelectField label="State" wrapperClassName="lg:col-span-1" value={f.victim?.state ?? ''}
-            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), state: v } }))}
-            options={[
-              { value: '', label: '—' },
-              ...INDIAN_STATES.map(s => ({ value: s, label: s })),
-            ]} />
-          <TextField label="Pincode" wrapperClassName="lg:col-span-1" value={f.victim?.pincode ?? ''}
-            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), pincode: v.replace(/\D/g, '') } }))}
-            placeholder="6-digit" maxLength={6} inputMode="numeric" />
-          {f.is_financial && (
-            <>
-              <NumField label="Amount Lost (₹) *" wrapperClassName="lg:col-span-2" value={f.victim?.amount_lost ?? 0}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), amount_lost: v } }))} />
-              <TextField label="Bank Account No *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_account_no ?? ''}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_account_no: v.replace(/\D/g, '') } }))}
-                placeholder="9–18 digits" maxLength={18} inputMode="numeric" />
-              <TextField label="Bank Name *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_name ?? ''}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_name: v } }))} />
-              <TextField label="Bank Branch Address" wrapperClassName="col-span-full" value={f.victim?.bank_branch_address ?? ''}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_branch_address: v } }))} />
-            </>
-          )}
-        </Section>
-
-        {/* Tab bar */}
+        {/* Tab bar — sits above the form, matching New Case layout */}
         <div className="flex flex-wrap gap-2">
           {TABS.map((label, i) => (
             <button key={label} type="button" onClick={() => setTab(i)}
@@ -394,6 +329,70 @@ export function PetitionEntryPage() {
         {/* === TAB 1 -- Petitions === */}
         {tab === 0 && (
           <div className="space-y-5">
+            {/* Financial / Non-Financial radio drives which tabs + victim fields show */}
+            <FinancialRadio value={f.is_financial} onChange={(v) => setF(p => ({ ...p, is_financial: v }))} />
+
+            <Section title="Petition Information">
+              <TextField label="Petition No" value={f.petition_no || ''} onChange={(v) => setF(p => ({ ...p, petition_no: v }))} placeholder="e.g. PET-2026-001" />
+              <TextField label="Date" value={f.registration_date} onChange={(v) => setF(p => ({ ...p, registration_date: v }))} type="date" />
+            </Section>
+
+            {/* Victim Details — same compact layout as New Case. Financial
+                fields (amount, bank) hidden when Petition is Non-Financial. */}
+            <Section title="Victim Details" cols={6}>
+              <TextField label="First Name *" wrapperClassName="lg:col-span-2" value={f.victim?.first_name ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), first_name: v } }))} />
+              <TextField label="Last Name *" wrapperClassName="lg:col-span-2" value={f.victim?.last_name ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), last_name: v } }))} />
+              <NumField label="Age" wrapperClassName="lg:col-span-1" value={f.victim?.age ?? 0}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), age: v || null } }))} />
+              <SelectField label="Gender" wrapperClassName="lg:col-span-1" value={f.victim?.gender ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), gender: v as Victim['gender'] } }))}
+                options={[
+                  { value: '', label: '—' },
+                  { value: 'Male', label: 'Male' },
+                  { value: 'Female', label: 'Female' },
+                  { value: 'Other', label: 'Other' },
+                  { value: 'Prefer not to say', label: 'Prefer not to say' },
+                ]} />
+              <TextField label="Phone" wrapperClassName="lg:col-span-2" value={f.victim?.phone ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), phone: v.replace(/\D/g, '') } }))}
+                placeholder="10-digit mobile" maxLength={10} inputMode="numeric" />
+              <TextField label="Email" type="email" wrapperClassName="lg:col-span-2" value={f.victim?.email ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), email: v } }))}
+                placeholder="name@domain.com" inputMode="email" />
+              <TextField label="Country" wrapperClassName="lg:col-span-2" value={f.victim?.country ?? 'India'}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), country: v } }))} />
+              <TextField label="House No" wrapperClassName="lg:col-span-1" value={f.victim?.house_no ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), house_no: v } }))} />
+              <TextField label="Street Name" wrapperClassName="lg:col-span-2" value={f.victim?.street_name ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), street_name: v } }))} />
+              <TextField label="City" wrapperClassName="lg:col-span-1" value={f.victim?.city ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), city: v } }))} />
+              <SelectField label="State" wrapperClassName="lg:col-span-1" value={f.victim?.state ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), state: v } }))}
+                options={[
+                  { value: '', label: '—' },
+                  ...INDIAN_STATES.map(s => ({ value: s, label: s })),
+                ]} />
+              <TextField label="Pincode" wrapperClassName="lg:col-span-1" value={f.victim?.pincode ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), pincode: v.replace(/\D/g, '') } }))}
+                placeholder="6-digit" maxLength={6} inputMode="numeric" />
+              {f.is_financial && (
+                <>
+                  <NumField label="Amount Lost (₹) *" wrapperClassName="lg:col-span-2" value={f.victim?.amount_lost ?? 0}
+                    onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), amount_lost: v } }))} />
+                  <TextField label="Bank Account No *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_account_no ?? ''}
+                    onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_account_no: v.replace(/\D/g, '') } }))}
+                    placeholder="9–18 digits" maxLength={18} inputMode="numeric" />
+                  <TextField label="Bank Name *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_name ?? ''}
+                    onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_name: v } }))} />
+                  <TextField label="Bank Branch Address" wrapperClassName="col-span-full" value={f.victim?.bank_branch_address ?? ''}
+                    onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_branch_address: v } }))} />
+                </>
+              )}
+            </Section>
+
             {f.petitions.map((p, pi) => (
               <div key={pi} className="rounded-2xl p-5" style={{ background: '#fff', border: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 6px 16px rgba(0,0,0,0.08)' }}>
                 <div className="flex items-center justify-between mb-4">
