@@ -4,6 +4,7 @@ import { useState, useEffect } from 'react';
 import { FilePlus, Search, BarChart3, LogOut, FileText, Upload, Users, FileDown, MessageSquare, CalendarOff } from 'lucide-react';
 import { toast } from 'sonner';
 import { declareNil, getNilToday } from '../../lib/api/nil';
+import { getFeatures } from '../../lib/api/features';
 import type { NilDeclaration } from '../../types';
 import kspLogo from '../../assets/ksp_logo.png';
 
@@ -21,6 +22,19 @@ export function Sidebar() {
   // User Management — per-PS administrator (admin or super_admin who is
   // anchored to a specific PS). Same-PS isolation is enforced server-side.
   const isPsAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+
+  // Chat ("Ask the Data") is gated server-side until the GPU box is
+  // provisioned. Hide the link in environments where the backend reports
+  // chat_enabled=false (or where the features endpoint is unreachable —
+  // fail closed so a broken deploy doesn't dangle a dead link).
+  const [chatEnabled, setChatEnabled] = useState(false);
+  useEffect(() => {
+    let cancelled = false;
+    getFeatures()
+      .then((f) => { if (!cancelled) setChatEnabled(f.chat_enabled); })
+      .catch(() => { /* fail closed — keep link hidden */ });
+    return () => { cancelled = true; };
+  }, []);
 
   return (
     <aside className="w-[280px] flex flex-col min-h-screen p-4 gap-3" style={{ background: 'var(--ksp-yellow-soft)', borderRight: '2px solid var(--ksp-yellow-border)' }}>
@@ -83,9 +97,11 @@ export function Sidebar() {
           </NavLink>
         )}
 
-        <NavLink to="/chat" className={linkClass}>
-          <MessageSquare className="w-4 h-4" /> Ask the Data
-        </NavLink>
+        {chatEnabled && (
+          <NavLink to="/chat" className={linkClass}>
+            <MessageSquare className="w-4 h-4" /> Ask the Data
+          </NavLink>
+        )}
 
         <NilDayButton />
 

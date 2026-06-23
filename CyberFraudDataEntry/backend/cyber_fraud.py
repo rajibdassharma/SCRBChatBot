@@ -87,13 +87,22 @@ app.include_router(mule_router)
 app.include_router(mule_report_router)
 app.include_router(users_router)
 app.include_router(reports_router)
-app.include_router(chat_router)
+if settings.CHAT_ENABLED:
+    app.include_router(chat_router)
 app.include_router(nil_router)
 
 
 @app.get("/health")
 async def health():
     return {"ok": True, "service": "CyberFraud Data Entry"}
+
+
+@app.get("/api/v1/features")
+async def features():
+    """Public feature flags consumed by the frontend on app load.
+    Lets the sidebar hide entry points for features that aren't
+    provisioned in this environment (e.g. chat without a GPU box)."""
+    return {"chat_enabled": settings.CHAT_ENABLED}
 
 
 @app.get("/api/v1/units")

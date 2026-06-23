@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     DISABLE_DOCS: bool = False
 
     # Chat / LLM (Phase 1 — see /backend/chat/*)
+    # CHAT_ENABLED gates the entire feature: when false the /api/v1/chat
+    # router is not mounted and the sidebar link is hidden via the
+    # /api/v1/features endpoint. Default false so prod stays inert until
+    # the GPU box is provisioned and migration 005 is applied.
+    CHAT_ENABLED: bool = False
     # Point at the Ollama instance reachable from the backend. Local dev =
     # localhost; production = the IP of the GPU box on KSWAN.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
