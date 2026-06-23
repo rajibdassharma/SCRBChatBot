@@ -16,6 +16,7 @@ import { PetitionUpdatePage } from './pages/PetitionUpdatePage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
 import { UserManagementPage } from './pages/UserManagementPage';
 import { ReportsPage } from './pages/ReportsPage';
+import { ChatPage } from './pages/ChatPage';
 
 function App() {
   const { logout } = useAuthStore();
@@ -60,6 +61,8 @@ function App() {
             </ProtectedRoute>
           }
         />
+
+        <Route path="/chat" element={<ChatPage />} />
 
         <Route
           path="/users"

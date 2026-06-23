@@ -168,6 +168,10 @@ export interface CaseEntry {
   registration_date: string;
   case_type: 'NCRP' | 'Walk-In' | 'Petition';
   crime_type: 'Internet' | 'Digital' | 'Crypto';
+  /** Financial cases include Lien / Unfreeze / Refund tabs and the
+   *  victim's bank section. Non-financial cases hide those.
+   *  Default true for backwards compatibility with legacy rows. */
+  is_financial: boolean;
   facts: string;
   arrests: Arrest[];
   petitions: Petition[];
@@ -359,6 +363,9 @@ export interface SubmissionStatus {
   /** Whether a DSR row exists for this PS's district on the selected date.
    *  DSR is a district-level concept, so all PS rows in the same district share this flag. */
   dsr_filed: boolean;
+  /** Whether this PS explicitly declared "no activity" for the selected date. */
+  nil_declared: boolean;
+  nil_declared_by_name: string | null;
 }
 
 export interface QuietUnit {
@@ -561,4 +568,38 @@ export interface MuleEntry {
   submitted_by?: number | null;
   created_at?: string | null;
   updated_at?: string | null;
+}
+
+
+// -- Chat (natural-language Q&A over the case DB) --
+
+export interface ChatRequestBody {
+  question: string;
+}
+
+export interface ChatResponse {
+  answer: string;
+  sql?: string | null;
+  rows: Record<string, unknown>[];
+  row_count: number;
+  latency_ms: number;
+}
+
+
+// -- NIL Declarations (mark a PS's day as "no activity") --
+
+export interface NilDeclaration {
+  id: string;
+  unit_id: number;
+  ps_id: number;
+  declared_by: number;
+  declared_by_name: string | null;
+  nil_date: string;             // ISO YYYY-MM-DD
+  reason: string | null;
+  created_at: string | null;
+}
+
+export interface NilDeclarationCreatePayload {
+  nil_date?: string;            // defaults to today server-side if omitted
+  reason?: string;
 }

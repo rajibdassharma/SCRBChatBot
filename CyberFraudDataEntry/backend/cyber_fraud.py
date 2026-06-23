@@ -24,6 +24,8 @@ from api.routes_mule import router as mule_router
 from api.routes_mule_report import router as mule_report_router
 from api.routes_users import router as users_router
 from api.routes_reports import router as reports_router
+from api.routes_chat import router as chat_router
+from api.routes_nil import router as nil_router
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +87,8 @@ app.include_router(mule_router)
 app.include_router(mule_report_router)
 app.include_router(users_router)
 app.include_router(reports_router)
+app.include_router(chat_router)
+app.include_router(nil_router)
 
 
 @app.get("/health")

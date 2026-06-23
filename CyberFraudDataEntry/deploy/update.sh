@@ -69,7 +69,10 @@ sudo bash "$SOURCE/deploy/backup-db.sh"
 
 # ── 4. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 4. Run additive DB migrations 001 + 002 + 003 + 004 (idempotent) ==="
+echo "=== 4. Run additive DB migrations 001 → 004, 006, 007 (idempotent) ==="
+# Migration 005 (chat_messages) is deliberately skipped until the GPU box
+# is in place for the chat feature — there's no point provisioning an
+# empty audit table for an endpoint the prod app does not yet expose.
 # Copy the migrations folder into runtime so the script can `import config`
 # / `import database` from the runtime venv path.
 sudo cp -r "$SOURCE/backend/migrations" "$RUNTIME/backend/"
@@ -81,6 +84,8 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.002_add_ps_id_to_cases
     venv/bin/python -m migrations.003_add_victims_table
     venv/bin/python -m migrations.004_break_victim_address
+    venv/bin/python -m migrations.006_add_is_financial_to_cases
+    venv/bin/python -m migrations.007_add_daily_nil_declarations
 "
 
 # ── 5. Build the frontend ────────────────────────────────────────────
@@ -179,6 +184,52 @@ if [ "$VICTIMS_UQ" != "0" ] && [ "$VICTIMS_UQ" != "ERROR" ]; then
     echo "    ✓ uq_victims_case_id unique index in place"
 else
     echo "    ✗ uq_victims_case_id unique index missing — migration 003 incomplete"
+    exit 1
+fi
+
+# Migration 006 schema sanity check — cases.is_financial column present and
+# defaulted to 1 (Financial) for all existing rows.
+IS_FIN_COL=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='cases' AND COLUMN_NAME='is_financial'" 2>/dev/null || echo "ERROR")
+if [ "$IS_FIN_COL" = "1" ]; then
+    echo "    ✓ cases.is_financial column present"
+else
+    echo "    ✗ cases.is_financial column missing — migration 006 did not complete"
+    exit 1
+fi
+NULL_IS_FIN=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM cases WHERE is_financial IS NULL" 2>/dev/null || echo "ERROR")
+if [ "$NULL_IS_FIN" = "0" ]; then
+    echo "    ✓ cases.is_financial fully populated (no NULLs)"
+else
+    echo "    ✗ cases.is_financial has $NULL_IS_FIN NULL rows — backfill incomplete"
+    exit 1
+fi
+
+# Migration 007 schema sanity check — daily_nil_declarations table present
+# with the (unit_id, ps_id, nil_date) uniqueness in place.
+NIL_TABLE=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='daily_nil_declarations'" 2>/dev/null || echo "ERROR")
+if [ "$NIL_TABLE" = "1" ]; then
+    echo "    ✓ daily_nil_declarations table present"
+else
+    echo "    ✗ daily_nil_declarations table missing — migration 007 did not complete"
+    exit 1
+fi
+NIL_UQ=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='daily_nil_declarations' AND INDEX_NAME='uq_nil_unit_ps_date'" 2>/dev/null || echo "ERROR")
+if [ "$NIL_UQ" != "0" ] && [ "$NIL_UQ" != "ERROR" ]; then
+    echo "    ✓ uq_nil_unit_ps_date unique index in place"
+else
+    echo "    ✗ uq_nil_unit_ps_date unique index missing — migration 007 incomplete"
+    exit 1
+fi
+
+# /api/v1/nil/today must be mounted (we don't have a session, so 401/403 is fine)
+if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" https://localhost/api/v1/nil/today | grep -qE '^(401|403)$'; then
+    echo "    ✓ /api/v1/nil/today mounted"
+else
+    echo "    ✗ /api/v1/nil/today not responding correctly"
     exit 1
 fi
 

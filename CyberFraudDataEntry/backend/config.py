@@ -19,6 +19,12 @@ class Settings(BaseSettings):
     CORS_ORIGINS: str = "http://localhost:5173"
     DISABLE_DOCS: bool = False
 
+    # Chat / LLM (Phase 1 — see /backend/chat/*)
+    # Point at the Ollama instance reachable from the backend. Local dev =
+    # localhost; production = the IP of the GPU box on KSWAN.
+    OLLAMA_BASE_URL: str = "http://localhost:11434"
+    OLLAMA_MODEL: str = "qwen2.5-coder:14b-instruct"
+
     class Config:
         env_prefix = "CFDSR_"
         env_file = ".env"

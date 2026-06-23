@@ -1,6 +1,10 @@
 import { NavLink } from 'react-router';
 import { useAuthStore } from '../../lib/stores/auth-store';
-import { FilePlus, Search, BarChart3, LogOut, FileText, Upload, Users, FileDown } from 'lucide-react';
+import { useState, useEffect } from 'react';
+import { FilePlus, Search, BarChart3, LogOut, FileText, Upload, Users, FileDown, MessageSquare, CalendarOff } from 'lucide-react';
+import { toast } from 'sonner';
+import { declareNil, getNilToday } from '../../lib/api/nil';
+import type { NilDeclaration } from '../../types';
 import kspLogo from '../../assets/ksp_logo.png';
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
@@ -79,6 +83,12 @@ export function Sidebar() {
           </NavLink>
         )}
 
+        <NavLink to="/chat" className={linkClass}>
+          <MessageSquare className="w-4 h-4" /> Ask the Data
+        </NavLink>
+
+        <NilDayButton />
+
         {isPsAdmin && (
           <>
             <div className="h-[1px] mx-4 my-2" style={{ background: 'rgba(11,44,74,0.15)' }} />
@@ -109,5 +119,136 @@ export function Sidebar() {
         <LogOut className="w-4 h-4" /> Sign Out
       </button>
     </aside>
+  );
+}
+
+
+/** Sidebar nav row that lets the operator declare today as NIL for their
+ *  PS. Renders the button + the modal that opens on click. The button
+ *  becomes a green "✓ NIL declared today" pill once the API returns a
+ *  row for today, so re-clicks are obviously redundant. */
+function NilDayButton() {
+  const [open, setOpen] = useState(false);
+  const [existing, setExisting] = useState<NilDeclaration | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    getNilToday()
+      .then((row) => { if (!cancelled) setExisting(row); })
+      .catch(() => { /* silent — not worth toasting on every page mount */ })
+      .finally(() => { if (!cancelled) setLoading(false); });
+    return () => { cancelled = true; };
+  }, []);
+
+  const alreadyDeclared = !!existing;
+  return (
+    <>
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        disabled={loading}
+        className="flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-semibold transition w-full text-left disabled:opacity-50"
+        style={{
+          background: alreadyDeclared ? 'rgba(10,92,42,0.12)' : 'rgba(11,44,74,0.06)',
+          color: alreadyDeclared ? '#0a5c2a' : 'var(--ksp-navy)',
+          border: alreadyDeclared ? '1px solid rgba(10,92,42,0.30)' : '1px solid rgba(11,44,74,0.18)',
+        }}
+        title={alreadyDeclared ? `Declared NIL today by ${existing?.declared_by_name ?? 'someone in this PS'}` : 'Mark today as no-activity for this PS'}
+      >
+        <CalendarOff className="w-4 h-4" />
+        {alreadyDeclared ? '✓ NIL declared today' : 'Mark NIL Today'}
+      </button>
+
+      {open && (
+        <NilModal
+          existing={existing}
+          onClose={() => setOpen(false)}
+          onDeclared={(row) => { setExisting(row); setOpen(false); }}
+        />
+      )}
+    </>
+  );
+}
+
+/** Modal body — gathers an optional reason and calls the API. Re-declaring
+ *  is idempotent server-side so even a duplicate click on "Confirm" is
+ *  safe. */
+function NilModal({ existing, onClose, onDeclared }: {
+  existing: NilDeclaration | null;
+  onClose: () => void;
+  onDeclared: (row: NilDeclaration) => void;
+}) {
+  const [reason, setReason] = useState(existing?.reason ?? '');
+  const [busy, setBusy] = useState(false);
+
+  const handleConfirm = async () => {
+    setBusy(true);
+    try {
+      const row = await declareNil({ reason: reason.trim() || undefined });
+      toast.success('NIL declared for today.');
+      onDeclared(row);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Could not declare NIL');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: 'rgba(0,0,0,0.5)' }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="rounded-2xl p-5 w-full max-w-md space-y-4"
+        style={{ background: '#fff', boxShadow: '0 20px 40px rgba(0,0,0,0.30)' }}
+      >
+        <h2 className="text-lg font-bold" style={{ color: 'var(--ksp-navy)' }}>
+          {existing ? 'NIL already declared today' : 'Declare today as NIL?'}
+        </h2>
+        <p className="text-sm opacity-70">
+          {existing
+            ? `Declared by ${existing.declared_by_name ?? 'someone in this PS'}. You can update the reason if you like — re-declaring is harmless.`
+            : 'Use this when your PS has no cyber-fraud cases to record today. It tells the dashboard that the silence is intentional (not a missed entry).'}
+        </p>
+        <div>
+          <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>
+            Reason (optional)
+          </label>
+          <input
+            type="text"
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            placeholder="e.g. public holiday, network down"
+            maxLength={255}
+            className="w-full px-3 py-2 rounded-xl text-sm outline-none"
+            style={{ border: '2px solid var(--ksp-navy)', background: '#fff' }}
+          />
+        </div>
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={busy}
+            className="px-4 py-2 rounded-xl text-sm font-semibold"
+            style={{ background: 'rgba(11,44,74,0.06)', color: 'var(--ksp-navy)' }}
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={handleConfirm}
+            disabled={busy}
+            className="px-4 py-2 rounded-xl text-sm font-bold disabled:opacity-50"
+            style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)' }}
+          >
+            {busy ? 'Saving…' : (existing ? 'Update Reason' : 'Confirm NIL for Today')}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }

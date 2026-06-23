@@ -18,6 +18,8 @@ from models.aeps_transaction import AepsTransaction
 from models.atm_withdrawal import AtmWithdrawal
 from models.police_station import PoliceStation
 from models.revoked_token import RevokedToken
+from models.chat_message import ChatMessage
+from models.nil_declaration import NilDeclaration
 from models.dsr_entry import DsrEntry
 from models.mule_entry import MuleEntry
 
@@ -26,6 +28,6 @@ __all__ = [
     "Petition", "LienAccount", "UnfreezeDetail", "Refund", "Victim",
     "MuleReport", "MoneyTransfer", "OtherTransaction", "TransactionOnHold",
     "OtherLessThan500", "AepsTransaction", "AtmWithdrawal",
-    "PoliceStation", "RevokedToken",
+    "PoliceStation", "RevokedToken", "ChatMessage", "NilDeclaration",
     "DsrEntry", "MuleEntry",
 ]

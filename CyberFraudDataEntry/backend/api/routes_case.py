@@ -93,10 +93,15 @@ def _validate_submitted_case(body: CaseCreate):
                 errors.append("victim first_name is required when submitting")
             if not (v.last_name or "").strip():
                 errors.append("victim last_name is required when submitting")
-            if not (v.bank_account_no or "").strip():
-                errors.append("victim bank_account_no is required when submitting")
-            if not (v.bank_name or "").strip():
-                errors.append("victim bank_name is required when submitting")
+            # Bank fields are only required for Financial cases. For
+            # Non-Financial cases the victim is still required (name +
+            # contact info matters for follow-up) but no money was
+            # involved so the bank section is irrelevant.
+            if body.is_financial:
+                if not (v.bank_account_no or "").strip():
+                    errors.append("victim bank_account_no is required when submitting")
+                if not (v.bank_name or "").strip():
+                    errors.append("victim bank_name is required when submitting")
         if errors:
             raise HTTPException(status_code=422, detail="; ".join(errors))
 
@@ -111,6 +116,7 @@ def _case_to_response(c: Case) -> dict:
         "petition_no": c.petition_no,
         "case_type": c.case_type,
         "crime_type": c.crime_type,
+        "is_financial": bool(c.is_financial) if c.is_financial is not None else True,
         "facts": c.facts,
         "status": c.status,
         "submitted_by": c.submitted_by,
@@ -395,6 +401,7 @@ async def create_case(
         registration_date=body.registration_date,
         case_type=body.case_type,
         crime_type=body.crime_type,
+        is_financial=1 if body.is_financial else 0,
         facts=body.facts,
         status=body.status,
         submitted_by=current_user.user_id,
@@ -606,6 +613,7 @@ async def update_case(
     case.registration_date = body.registration_date
     case.case_type = body.case_type
     case.crime_type = body.crime_type
+    case.is_financial = 1 if body.is_financial else 0
     case.facts = body.facts
     case.status = body.status
     # NOTE: submitted_by is intentionally NOT changed on update. The

@@ -57,6 +57,11 @@ class SubmissionStatus(BaseModel):
     # district. DSR is a district-level concept, so all PS rows in the same
     # district share the same flag.
     dsr_filed: bool = False
+    # Whether the PS explicitly declared "no activity" for `date`. Used to
+    # show a green "NIL declared" pill when entry_count is 0 — distinguishes
+    # "we genuinely had nothing" from "we forgot to enter data".
+    nil_declared: bool = False
+    nil_declared_by_name: str | None = None
 
 
 class QuietUnit(BaseModel):

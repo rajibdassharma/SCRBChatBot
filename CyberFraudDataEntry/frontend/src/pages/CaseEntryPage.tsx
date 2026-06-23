@@ -61,11 +61,18 @@ const INDIAN_STATES: string[] = [
 ].sort((a, b) => a === 'Other' ? 1 : b === 'Other' ? -1 : a.localeCompare(b));
 
 const initialForm = (): CaseEntry => ({
-  fir_no: '', registration_date: '', case_type: 'NCRP', crime_type: 'Internet', facts: '',
+  fir_no: '', registration_date: '', case_type: 'NCRP', crime_type: 'Internet',
+  is_financial: true,
+  facts: '',
   arrests: [], petitions: [], lien_accounts: [], unfreeze_details: [], refunds: [],
   victim: emptyVictim(),
   status: 'draft',
 });
+
+// Tabs visible on a Financial case (everything). Non-Financial cases hide
+// the last three (Lien Marked, Unfreeze, Refunds) since they don't apply.
+const FINANCIAL_TABS = ['Case Details', 'Arrests', 'IR Details', 'Petitions', 'Lien Marked', 'Unfreeze', 'Refunds'];
+const NON_FINANCIAL_TABS = ['Case Details', 'Arrests', 'IR Details', 'Petitions'];
 
 /* --- Reusable field components --- */
 
@@ -152,6 +159,35 @@ function TextAreaField({ label, value, onChange, rows = 3 }: {
   );
 }
 
+/** Radio group for Financial vs Non-Financial case nature. Drives which
+ *  tabs and victim fields are visible. Lives at the top of Tab 1. */
+function FinancialRadio({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  const pillStyle = (active: boolean) => ({
+    background: active ? 'var(--ksp-navy)' : '#fff',
+    color: active ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+    border: active ? '2px solid var(--ksp-navy)' : '2px solid rgba(11,44,74,0.18)',
+    cursor: 'pointer' as const,
+  });
+  return (
+    <div className="rounded-2xl p-4 flex items-center gap-4" style={{ background: '#fff', border: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 6px 16px rgba(0,0,0,0.08)' }}>
+      <span className="text-xs font-bold uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>Case Nature</span>
+      <label className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition" style={pillStyle(value === true)}>
+        <input type="radio" className="sr-only" name="financial_nature" checked={value === true} onChange={() => onChange(true)} />
+        Financial
+      </label>
+      <label className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition" style={pillStyle(value === false)}>
+        <input type="radio" className="sr-only" name="financial_nature" checked={value === false} onChange={() => onChange(false)} />
+        Non-Financial
+      </label>
+      <p className="text-xs opacity-60 ml-2">
+        {value
+          ? 'Lien Marked / Unfreeze / Refunds tabs and victim banking fields are shown.'
+          : 'Lien / Unfreeze / Refunds tabs hidden; victim banking fields hidden.'}
+      </p>
+    </div>
+  );
+}
+
 function Section({ title, children, cols = 3 }: { title: string; children: React.ReactNode; cols?: 3 | 6 }) {
   // cols=6 lets fields use lg:col-span-1 .. 6 via wrapperClassName for
   // a denser layout (e.g. Age + Gender at 1/6 width each).
@@ -188,7 +224,6 @@ function RemBtn({ onClick }: { onClick: () => void }) {
 
 /* --- Tab definitions --- */
 
-const TABS = ['Case Details', 'Arrests', 'IR Details', 'Petitions', 'Lien Marked', 'Unfreeze', 'Refunds'];
 
 const NATURE_OPTIONS = [
   { value: '', label: '-- Select --' },
@@ -218,6 +253,16 @@ export function CaseEntryPage() {
   const [f, setF] = useState<CaseEntry>(initialForm());
   const [caseId, setCaseId] = useState<string | undefined>(id);
   const [uploadingIdx, setUploadingIdx] = useState<number | null>(null);
+
+  // Tab list depends on financial nature — non-financial hides the three
+  // financial-only tabs (Lien Marked, Unfreeze, Refunds).
+  const TABS = f.is_financial ? FINANCIAL_TABS : NON_FINANCIAL_TABS;
+
+  // If user flips to Non-Financial while sitting on a tab that gets
+  // hidden, snap back to tab 0 so they don't see a blank screen.
+  useEffect(() => {
+    if (tab >= TABS.length) setTab(0);
+  }, [TABS.length, tab]);
 
   useEffect(() => {
     if (!id) return;
@@ -398,6 +443,7 @@ export function CaseEntryPage() {
         {/* === TAB 1 -- Case Details === */}
         {tab === 0 && (
           <div className="space-y-5">
+            <FinancialRadio value={f.is_financial} onChange={(v) => setF(p => ({ ...p, is_financial: v }))} />
             <Section title="Case Information">
               <TextField label="FIR No" value={f.fir_no} onChange={(v) => setF(p => ({ ...p, fir_no: v }))} placeholder="e.g. 123/2026" readOnly={isEdit} hint={isEdit ? "FIR number cannot be changed after creation" : undefined} />
               <TextField label="Registration Date" value={f.registration_date} onChange={(v) => setF(p => ({ ...p, registration_date: v }))} type="date" />
@@ -454,18 +500,20 @@ export function CaseEntryPage() {
                 onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), pincode: v.replace(/\D/g, '') } }))}
                 placeholder="6-digit" maxLength={6} inputMode="numeric" />
 
-              {/* Row 5: Financial */}
-              <NumField label="Amount Lost (₹) *" wrapperClassName="lg:col-span-2" value={f.victim?.amount_lost ?? 0}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), amount_lost: v } }))} />
-              <TextField label="Bank Account No *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_account_no ?? ''}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_account_no: v.replace(/\D/g, '') } }))}
-                placeholder="9–18 digits" maxLength={18} inputMode="numeric" />
-              <TextField label="Bank Name *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_name ?? ''}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_name: v } }))} />
-
-              {/* Row 6: Bank branch — single-line, full width (textarea was too tall) */}
-              <TextField label="Bank Branch Address" wrapperClassName="col-span-full" value={f.victim?.bank_branch_address ?? ''}
-                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_branch_address: v } }))} />
+              {/* Rows 5+6 — Financial fields only, hidden when Non-Financial */}
+              {f.is_financial && (
+                <>
+                  <NumField label="Amount Lost (₹) *" wrapperClassName="lg:col-span-2" value={f.victim?.amount_lost ?? 0}
+                    onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), amount_lost: v } }))} />
+                  <TextField label="Bank Account No *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_account_no ?? ''}
+                    onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_account_no: v.replace(/\D/g, '') } }))}
+                    placeholder="9–18 digits" maxLength={18} inputMode="numeric" />
+                  <TextField label="Bank Name *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_name ?? ''}
+                    onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_name: v } }))} />
+                  <TextField label="Bank Branch Address" wrapperClassName="col-span-full" value={f.victim?.bank_branch_address ?? ''}
+                    onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_branch_address: v } }))} />
+                </>
+              )}
             </Section>
 
             <Section title="Facts">

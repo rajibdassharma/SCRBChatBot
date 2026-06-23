@@ -225,6 +225,9 @@ class CaseCreate(BaseModel):
     # Optional so legacy cases without a victim record can still be updated.
     # New cases enforce this at the frontend layer.
     victim: Optional[VictimCreate] = None
+    # Financial nature of the case. Default True for backwards compat
+    # with the 645 existing cases (all assumed Financial pre-2026-06-22).
+    is_financial: bool = True
 
     _sanitize_text = field_validator("fir_no", "petition_no", "facts")(_sanitize)
 
@@ -378,6 +381,7 @@ class CaseResponse(BaseModel):
     refunds: List[RefundResponse] = []
     # Optional — legacy cases pre-migration-003 have no victim row.
     victim: Optional[VictimResponse] = None
+    is_financial: bool = True
 
     class Config:
         from_attributes = True

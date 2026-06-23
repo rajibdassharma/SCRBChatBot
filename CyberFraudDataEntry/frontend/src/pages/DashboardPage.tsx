@@ -374,9 +374,20 @@ function SubmissionStatusTable({ statuses, refDate }: { statuses: SubmissionStat
                 <td className="px-4 py-2 text-right" style={{ color: 'var(--ksp-navy)' }}>
                   {formatNumber(s.mule_count)}
                 </td>
-                <td className="px-4 py-2 text-right font-bold"
-                    style={{ color: s.entry_count === 0 ? 'var(--ksp-red)' : 'var(--ksp-navy)' }}>
-                  {formatNumber(s.entry_count)}
+                <td className="px-4 py-2 text-right font-bold">
+                  {s.entry_count === 0 && s.nil_declared ? (
+                    <span
+                      className="text-xs font-bold px-2 py-0.5 rounded"
+                      title={s.nil_declared_by_name ? `NIL declared by ${s.nil_declared_by_name}` : 'NIL declared for this date'}
+                      style={{ background: 'rgba(10,92,42,0.12)', color: '#0a5c2a', border: '1px solid rgba(10,92,42,0.30)' }}
+                    >
+                      NIL ✓
+                    </span>
+                  ) : (
+                    <span style={{ color: s.entry_count === 0 ? 'var(--ksp-red)' : 'var(--ksp-navy)' }}>
+                      {formatNumber(s.entry_count)}
+                    </span>
+                  )}
                 </td>
                 <td className="px-4 py-2">
                   <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ color: last.color, background: 'rgba(0,0,0,0.04)' }}>

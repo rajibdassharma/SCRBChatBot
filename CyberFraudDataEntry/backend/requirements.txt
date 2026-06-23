@@ -20,3 +20,7 @@ openpyxl>=3.1.0
 reportlab>=4.2.0
 # HTTP client used by bulk indexing + tests
 requests>=2.31.0
+# Async HTTP client — Ollama wrapper for the chat endpoint
+httpx>=0.27.0
+# SQL parser — safety net for the chat-generated SELECT statements
+sqlparse>=0.5.0

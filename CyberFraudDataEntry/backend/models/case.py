@@ -17,6 +17,10 @@ class Case(Base):
     registration_date = Column(Date, nullable=True)
     case_type = Column(String(20), nullable=False)  # NCRP, Walk-In
     crime_type = Column(String(30), nullable=False)  # Internet, Digital, Crypto
+    # Financial vs Non-Financial. Non-financial cases skip the Lien /
+    # Unfreeze / Refund flows and the victim's banking section.
+    # Added by migration 006.
+    is_financial = Column(Integer, nullable=False, default=1)
     facts = Column(Text, nullable=True)
     status = Column(String(20), nullable=False, default="draft")  # draft, submitted
     submitted_by = Column(Integer, ForeignKey("users.id"), nullable=True)

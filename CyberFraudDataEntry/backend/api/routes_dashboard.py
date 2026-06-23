@@ -15,6 +15,7 @@ from models.unfreeze_detail import UnfreezeDetail
 from models.refund import Refund
 from models.petition import Petition
 from models.dsr_entry import DsrEntry
+from models.nil_declaration import NilDeclaration
 from models.mule_entry import MuleEntry
 from models.mule_report import MuleReport
 from models.money_transfer import MoneyTransfer
@@ -397,6 +398,18 @@ async def get_submission_status(
     }
     dsr_filed: set[int] = {row[0] for row in dsr_rows}
 
+    # NIL declarations for target_date — one row per (unit_id, ps_id)
+    # because the PS explicitly said "no activity today". We also pick up
+    # the declarer's name so the table can surface it on hover.
+    nil_rows = (await db.execute(
+        select(NilDeclaration.unit_id, NilDeclaration.ps_id, User.full_name, User.username)
+        .join(User, User.id == NilDeclaration.declared_by, isouter=True)
+        .where(NilDeclaration.nil_date == target_date)
+    )).all()
+    nil_map: dict[tuple[int, int], str | None] = {
+        (int(u), int(p)): (full or uname) for u, p, full, uname in nil_rows
+    }
+
     out: List[SubmissionStatus] = []
     for uid, uname, pid, pname in ps_rows:
         key = (int(uid), int(pid))
@@ -414,6 +427,8 @@ async def get_submission_status(
             mule_count=m,
             last_entry_date=last.isoformat() if last else None,
             dsr_filed=int(uid) in dsr_filed,
+            nil_declared=key in nil_map,
+            nil_declared_by_name=nil_map.get(key),
         ))
     return out
 

@@ -4,7 +4,7 @@ import { toast } from 'sonner';
 import { Save, ChevronRight, ChevronLeft, Plus, Trash2, X } from 'lucide-react';
 import { createCase, updateCase, getCase, deleteCase } from '../lib/api/cases';
 import { useAuthStore } from '../lib/stores/auth-store';
-import type { CaseEntry, Petition, LienAccount, UnfreezeDetail, Refund } from '../types';
+import type { CaseEntry, Petition, LienAccount, UnfreezeDetail, Refund, Victim } from '../types';
 
 /* --- Empty factories --- */
 
@@ -24,24 +24,50 @@ const emptyRefund = (): Refund => ({
   refunded: 'yes', victim_name: '', amount: 0, crime_no_or_petition_no: '',
 });
 
+const emptyVictim = (): Victim => ({
+  first_name: '', last_name: '', age: null, gender: '',
+  phone: '', email: '',
+  house_no: '', street_name: '', city: '', state: '', country: 'India', pincode: '',
+  amount_lost: 0, bank_account_no: '', bank_name: '', bank_branch_address: '',
+});
+
 const initialForm = (): CaseEntry => ({
-  fir_no: '', petition_no: '', registration_date: '', case_type: 'Petition', crime_type: 'Internet', facts: '',
+  fir_no: '', petition_no: '', registration_date: '', case_type: 'Petition', crime_type: 'Internet',
+  is_financial: true,
+  facts: '',
   arrests: [], petitions: [], lien_accounts: [], unfreeze_details: [], refunds: [],
+  victim: emptyVictim(),
   status: 'draft',
 });
 
+// Indian states + UTs alphabetical, plus "Other" pinned to the end.
+const INDIAN_STATES: string[] = [
+  'Andhra Pradesh', 'Arunachal Pradesh', 'Assam', 'Bihar', 'Chhattisgarh',
+  'Goa', 'Gujarat', 'Haryana', 'Himachal Pradesh', 'Jharkhand',
+  'Karnataka', 'Kerala', 'Madhya Pradesh', 'Maharashtra', 'Manipur',
+  'Meghalaya', 'Mizoram', 'Nagaland', 'Odisha', 'Punjab',
+  'Rajasthan', 'Sikkim', 'Tamil Nadu', 'Telangana', 'Tripura',
+  'Uttar Pradesh', 'Uttarakhand', 'West Bengal',
+  'Andaman and Nicobar Islands', 'Chandigarh',
+  'Dadra and Nagar Haveli and Daman and Diu', 'Delhi',
+  'Jammu and Kashmir', 'Ladakh', 'Lakshadweep', 'Puducherry',
+  'Other',
+].sort((a, b) => a === 'Other' ? 1 : b === 'Other' ? -1 : a.localeCompare(b));
+
 /* --- Reusable field components --- */
 
-function TextField({ label, value, onChange, placeholder, type = 'text' }: {
-  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string;
+function TextField({ label, value, onChange, placeholder, type = 'text', wrapperClassName, maxLength, inputMode }: {
+  label: string; value: string; onChange: (v: string) => void; placeholder?: string; type?: string; wrapperClassName?: string; maxLength?: number; inputMode?: 'text' | 'numeric' | 'email' | 'tel';
 }) {
   return (
-    <div>
+    <div className={wrapperClassName}>
       <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>{label}</label>
       <input
         type={type}
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        maxLength={maxLength}
+        inputMode={inputMode}
         className="w-full px-3 py-2 rounded-xl text-sm outline-none"
         style={{ border: '2px solid var(--ksp-navy)', background: '#fff' }}
         placeholder={placeholder ?? ''}
@@ -50,9 +76,9 @@ function TextField({ label, value, onChange, placeholder, type = 'text' }: {
   );
 }
 
-function NumField({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+function NumField({ label, value, onChange, wrapperClassName }: { label: string; value: number; onChange: (v: number) => void; wrapperClassName?: string }) {
   return (
-    <div>
+    <div className={wrapperClassName}>
       <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>{label}</label>
       <input
         type="number"
@@ -67,11 +93,28 @@ function NumField({ label, value, onChange }: { label: string; value: number; on
   );
 }
 
-function SelectField({ label, value, onChange, options }: {
-  label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[];
+function TextAreaField({ label, value, onChange, rows = 3 }: {
+  label: string; value: string; onChange: (v: string) => void; rows?: number;
 }) {
   return (
-    <div>
+    <div className="col-span-full">
+      <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>{label}</label>
+      <textarea
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={rows}
+        className="w-full px-3 py-2 rounded-xl text-sm outline-none resize-y"
+        style={{ border: '2px solid var(--ksp-navy)', background: '#fff' }}
+      />
+    </div>
+  );
+}
+
+function SelectField({ label, value, onChange, options, wrapperClassName }: {
+  label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; wrapperClassName?: string;
+}) {
+  return (
+    <div className={wrapperClassName}>
       <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>{label}</label>
       <select
         value={value}
@@ -85,11 +128,43 @@ function SelectField({ label, value, onChange, options }: {
   );
 }
 
-function Section({ title, children }: { title: string; children: React.ReactNode }) {
+function Section({ title, children, cols = 3 }: { title: string; children: React.ReactNode; cols?: 3 | 6 }) {
+  const gridClass = cols === 6
+    ? "grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4"
+    : "grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4";
   return (
     <div className="rounded-2xl p-5" style={{ background: '#fff', border: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 6px 16px rgba(0,0,0,0.08)' }}>
       <h3 className="text-sm font-bold mb-4 uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>{title}</h3>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">{children}</div>
+      <div className={gridClass}>{children}</div>
+    </div>
+  );
+}
+
+/** Radio group for Financial vs Non-Financial petition nature. Mirror of
+ *  the one in CaseEntryPage. */
+function FinancialRadio({ value, onChange }: { value: boolean; onChange: (v: boolean) => void }) {
+  const pillStyle = (active: boolean) => ({
+    background: active ? 'var(--ksp-navy)' : '#fff',
+    color: active ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+    border: active ? '2px solid var(--ksp-navy)' : '2px solid rgba(11,44,74,0.18)',
+    cursor: 'pointer' as const,
+  });
+  return (
+    <div className="rounded-2xl p-4 flex items-center gap-4" style={{ background: '#fff', border: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 6px 16px rgba(0,0,0,0.08)' }}>
+      <span className="text-xs font-bold uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>Petition Nature</span>
+      <label className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition" style={pillStyle(value === true)}>
+        <input type="radio" className="sr-only" name="financial_nature" checked={value === true} onChange={() => onChange(true)} />
+        Financial
+      </label>
+      <label className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition" style={pillStyle(value === false)}>
+        <input type="radio" className="sr-only" name="financial_nature" checked={value === false} onChange={() => onChange(false)} />
+        Non-Financial
+      </label>
+      <p className="text-xs opacity-60 ml-2">
+        {value
+          ? 'Lien Marked / Unfreeze / Refunds tabs and victim banking fields are shown.'
+          : 'Lien / Unfreeze / Refunds tabs hidden; victim banking fields hidden.'}
+      </p>
     </div>
   );
 }
@@ -116,7 +191,10 @@ function RemBtn({ onClick }: { onClick: () => void }) {
 
 /* --- Tab definitions --- */
 
-const TABS = ['Petitions', 'Lien Marked', 'Unfreeze', 'Refunds'];
+// Tabs visible on a Financial petition (everything). Non-Financial petitions
+// hide the financial-only tabs (Lien Marked, Unfreeze, Refunds).
+const FINANCIAL_TABS = ['Petitions', 'Lien Marked', 'Unfreeze', 'Refunds'];
+const NON_FINANCIAL_TABS = ['Petitions'];
 
 const NATURE_OPTIONS = [
   { value: '', label: '-- Select --' },
@@ -145,6 +223,15 @@ export function PetitionEntryPage() {
   const [loading, setLoading] = useState(false);
   const [f, setF] = useState<CaseEntry>(initialForm());
   const [caseId, setCaseId] = useState<string | undefined>(id);
+
+  // Tab list depends on financial nature.
+  const TABS = f.is_financial ? FINANCIAL_TABS : NON_FINANCIAL_TABS;
+
+  // Snap back to tab 0 if user flips to Non-Financial while sitting on a
+  // hidden tab.
+  useEffect(() => {
+    if (tab >= TABS.length) setTab(0);
+  }, [TABS.length, tab]);
 
   useEffect(() => {
     if (!id) return;
@@ -235,10 +322,69 @@ export function PetitionEntryPage() {
       </p>
 
       <form onSubmit={handleSubmit} className="space-y-5 max-w-5xl">
+        {/* Financial / Non-Financial radio drives which tabs + victim fields show */}
+        <FinancialRadio value={f.is_financial} onChange={(v) => setF(p => ({ ...p, is_financial: v }))} />
+
         {/* Petition No — always visible above tabs */}
         <Section title="Petition Information">
           <TextField label="Petition No" value={f.petition_no || ''} onChange={(v) => setF(p => ({ ...p, petition_no: v }))} placeholder="e.g. PET-2026-001" />
           <TextField label="Date" value={f.registration_date} onChange={(v) => setF(p => ({ ...p, registration_date: v }))} type="date" />
+        </Section>
+
+        {/* Victim Details — same compact layout as New Case. Financial
+            fields (amount, bank) hidden when Petition is Non-Financial. */}
+        <Section title="Victim Details" cols={6}>
+          <TextField label="First Name *" wrapperClassName="lg:col-span-2" value={f.victim?.first_name ?? ''}
+            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), first_name: v } }))} />
+          <TextField label="Last Name *" wrapperClassName="lg:col-span-2" value={f.victim?.last_name ?? ''}
+            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), last_name: v } }))} />
+          <NumField label="Age" wrapperClassName="lg:col-span-1" value={f.victim?.age ?? 0}
+            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), age: v || null } }))} />
+          <SelectField label="Gender" wrapperClassName="lg:col-span-1" value={f.victim?.gender ?? ''}
+            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), gender: v as Victim['gender'] } }))}
+            options={[
+              { value: '', label: '—' },
+              { value: 'Male', label: 'Male' },
+              { value: 'Female', label: 'Female' },
+              { value: 'Other', label: 'Other' },
+              { value: 'Prefer not to say', label: 'Prefer not to say' },
+            ]} />
+          <TextField label="Phone" wrapperClassName="lg:col-span-2" value={f.victim?.phone ?? ''}
+            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), phone: v.replace(/\D/g, '') } }))}
+            placeholder="10-digit mobile" maxLength={10} inputMode="numeric" />
+          <TextField label="Email" type="email" wrapperClassName="lg:col-span-2" value={f.victim?.email ?? ''}
+            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), email: v } }))}
+            placeholder="name@domain.com" inputMode="email" />
+          <TextField label="Country" wrapperClassName="lg:col-span-2" value={f.victim?.country ?? 'India'}
+            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), country: v } }))} />
+          <TextField label="House No" wrapperClassName="lg:col-span-1" value={f.victim?.house_no ?? ''}
+            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), house_no: v } }))} />
+          <TextField label="Street Name" wrapperClassName="lg:col-span-2" value={f.victim?.street_name ?? ''}
+            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), street_name: v } }))} />
+          <TextField label="City" wrapperClassName="lg:col-span-1" value={f.victim?.city ?? ''}
+            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), city: v } }))} />
+          <SelectField label="State" wrapperClassName="lg:col-span-1" value={f.victim?.state ?? ''}
+            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), state: v } }))}
+            options={[
+              { value: '', label: '—' },
+              ...INDIAN_STATES.map(s => ({ value: s, label: s })),
+            ]} />
+          <TextField label="Pincode" wrapperClassName="lg:col-span-1" value={f.victim?.pincode ?? ''}
+            onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), pincode: v.replace(/\D/g, '') } }))}
+            placeholder="6-digit" maxLength={6} inputMode="numeric" />
+          {f.is_financial && (
+            <>
+              <NumField label="Amount Lost (₹) *" wrapperClassName="lg:col-span-2" value={f.victim?.amount_lost ?? 0}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), amount_lost: v } }))} />
+              <TextField label="Bank Account No *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_account_no ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_account_no: v.replace(/\D/g, '') } }))}
+                placeholder="9–18 digits" maxLength={18} inputMode="numeric" />
+              <TextField label="Bank Name *" wrapperClassName="lg:col-span-2" value={f.victim?.bank_name ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_name: v } }))} />
+              <TextField label="Bank Branch Address" wrapperClassName="col-span-full" value={f.victim?.bank_branch_address ?? ''}
+                onChange={(v) => setF(p => ({ ...p, victim: { ...(p.victim ?? emptyVictim()), bank_branch_address: v } }))} />
+            </>
+          )}
         </Section>
 
         {/* Tab bar */}
