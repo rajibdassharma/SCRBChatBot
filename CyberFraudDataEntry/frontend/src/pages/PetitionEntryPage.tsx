@@ -93,23 +93,6 @@ function NumField({ label, value, onChange, wrapperClassName }: { label: string;
   );
 }
 
-function TextAreaField({ label, value, onChange, rows = 3 }: {
-  label: string; value: string; onChange: (v: string) => void; rows?: number;
-}) {
-  return (
-    <div className="col-span-full">
-      <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>{label}</label>
-      <textarea
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        rows={rows}
-        className="w-full px-3 py-2 rounded-xl text-sm outline-none resize-y"
-        style={{ border: '2px solid var(--ksp-navy)', background: '#fff' }}
-      />
-    </div>
-  );
-}
-
 function SelectField({ label, value, onChange, options, wrapperClassName }: {
   label: string; value: string; onChange: (v: string) => void; options: { value: string; label: string }[]; wrapperClassName?: string;
 }) {
