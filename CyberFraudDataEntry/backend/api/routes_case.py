@@ -78,8 +78,15 @@ def _validate_submitted_case(body: CaseCreate):
     """Raise 422 if a submitted case is missing required fields."""
     if body.status == "submitted":
         errors = []
-        if not body.fir_no:
-            errors.append("fir_no is required when submitting")
+        # Petitions are filed before any FIR exists (and many never get
+        # converted), so the petition_no carries the identity. All other
+        # case types (FIR / NCRP / Walk-In) must have an FIR number.
+        if body.case_type == "Petition":
+            if not body.petition_no:
+                errors.append("petition_no is required when submitting a Petition")
+        else:
+            if not body.fir_no:
+                errors.append("fir_no is required when submitting")
         if not body.registration_date:
             errors.append("registration_date is required when submitting")
         # Victim required fields — first_name, last_name, bank_account_no,
