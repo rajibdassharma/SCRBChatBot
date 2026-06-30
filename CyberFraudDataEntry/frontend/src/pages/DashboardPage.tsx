@@ -20,7 +20,9 @@ import {
   BarChart, Bar, LineChart, Line, PieChart, Pie, Cell,
   XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
-import { BarChart3, Search, Activity, Gavel, AlertTriangle, Clock, Landmark, Repeat, MapPin, Layers } from 'lucide-react';
+import { BarChart3, Search, Activity, Gavel, AlertTriangle, Clock, Landmark, Repeat, MapPin, Layers, FileDown } from 'lucide-react';
+import { toast } from 'sonner';
+import { downloadSubmissionStatusPdf } from '../lib/api/reports';
 
 type TabKey = 'overview' | 'investigation' | 'operations' | 'disposal';
 
@@ -321,11 +323,36 @@ function SubmissionStatusTable({ statuses, refDate }: { statuses: SubmissionStat
   const arrow = (key: SubmissionSortKey) =>
     sortBy === key ? <span className="ml-1 opacity-80">{sortDir === 'asc' ? '▲' : '▼'}</span> : null;
 
+  const [pdfBusy, setPdfBusy] = useState(false);
+  const onDownloadPdf = async () => {
+    setPdfBusy(true);
+    try {
+      await downloadSubmissionStatusPdf(refDate);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Failed to download PDF');
+    } finally {
+      setPdfBusy(false);
+    }
+  };
+
   return (
     <div className="rounded-2xl overflow-x-auto" style={cardStyle}>
-      <div className="px-5 py-4" style={{ borderBottom: '3px solid var(--ksp-yellow)' }}>
-        <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>Submission Status for {refDate}</h3>
-        <p className="text-xs mt-1 opacity-60">One row per Police Station. Click District / Cases / Total / Last Entry to sort — click again to reverse direction. Last-entry colour: green = today/yesterday, navy ≤ 7d, amber ≤ 30d, red &gt; 30d or never. DSR is district-level so all PSes in the same district show the same flag.</p>
+      <div className="px-5 py-4 flex items-start justify-between gap-4" style={{ borderBottom: '3px solid var(--ksp-yellow)' }}>
+        <div className="min-w-0">
+          <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>Submission Status for {refDate}</h3>
+          <p className="text-xs mt-1 opacity-60">One row per Police Station. Click District / Cases / Total / Last Entry to sort — click again to reverse direction. Last-entry colour: green = today/yesterday, navy ≤ 7d, amber ≤ 30d, red &gt; 30d or never. DSR is district-level so all PSes in the same district show the same flag.</p>
+        </div>
+        <button
+          type="button"
+          onClick={onDownloadPdf}
+          disabled={pdfBusy || statuses.length === 0}
+          className="flex items-center gap-2 px-3 py-2 rounded-xl text-xs font-bold transition disabled:opacity-50 shrink-0"
+          style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)' }}
+          title="Download this table as a PDF report"
+        >
+          <FileDown className="w-3.5 h-3.5" />
+          {pdfBusy ? 'Generating…' : 'Download PDF'}
+        </button>
       </div>
       <table className="w-full text-sm text-left">
         <thead style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)' }}>

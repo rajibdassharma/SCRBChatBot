@@ -104,3 +104,15 @@ export function downloadDsrPdf(
     `DSR_${dateFrom}_${dateTo}.pdf`,
   );
 }
+
+/**
+ * PDF version of the Dashboard → Overview → Submission Status table
+ * for a given date. Mirrors the on-screen rows; auth follows the same
+ * admin / super_admin scoping as the JSON route.
+ */
+export function downloadSubmissionStatusPdf(date: string): Promise<void> {
+  return downloadPdf(
+    `/api/v1/reports/submission-status.pdf?date=${encodeURIComponent(date)}`,
+    `SubmissionStatus_${date}.pdf`,
+  );
+}

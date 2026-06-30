@@ -315,25 +315,20 @@ async def get_trends(
     return out
 
 
-@router.get("/submission-status", response_model=List[SubmissionStatus])
-async def get_submission_status(
-    target_date: date = Query(..., alias="date"),
-    admin: CurrentUser = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    """Submission rollup at PS level (one row per active PS).
+async def compute_submission_status(
+    db: AsyncSession,
+    target_date: date,
+    *,
+    unit_id_filter: int | None = None,
+    ps_id_filter: int | None = None,
+) -> List[SubmissionStatus]:
+    """Compute the per-PS submission rollup for `target_date`.
 
-    Most districts have a single CEN PS, but Bangalore City has multiple
-    and each needs its own row. Cases attribute via cases.ps_id directly;
-    mule reports attribute via the submitter's users.ps_id (mule_reports
-    has no ps_id column of its own). DSR is a district-level concept —
-    every PS row in the same district shares the same dsr_filed flag.
-
-    admin: own (unit_id, ps_id) only. super_admin: every active (unit, PS).
+    Shared by the JSON `/submission-status` route and the PDF
+    `/reports/submission-status.pdf` route so both reflect identical
+    numbers. When `unit_id_filter` + `ps_id_filter` are set, narrows to
+    that single (unit, PS) pair; otherwise sweeps everything.
     """
-    if admin.role == "admin" and not admin.unit_id:
-        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
-
     # Enumerate the (unit, PS) pairs that actually have users assigned —
     # PSes with no users can't submit data, so showing an empty row would
     # be noise. Same source we use for `unit-comparison`'s ps_count.
@@ -353,8 +348,8 @@ async def get_submission_status(
         .where(User.ps_id.is_not(None))
         .distinct()
     )
-    if admin.role != "super_admin":
-        ps_q = ps_q.where(Unit.id == admin.unit_id).where(PoliceStation.id == admin.ps_id)
+    if unit_id_filter is not None and ps_id_filter is not None:
+        ps_q = ps_q.where(Unit.id == unit_id_filter).where(PoliceStation.id == ps_id_filter)
     ps_rows = (await db.execute(ps_q)).all()
 
     # Cases per (unit_id, ps_id) — cases.ps_id is canonical post migration 002.
@@ -431,6 +426,32 @@ async def get_submission_status(
             nil_declared_by_name=nil_map.get(key),
         ))
     return out
+
+
+@router.get("/submission-status", response_model=List[SubmissionStatus])
+async def get_submission_status(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Submission rollup at PS level (one row per active PS).
+
+    Most districts have a single CEN PS, but Bangalore City has multiple
+    and each needs its own row. Cases attribute via cases.ps_id directly;
+    mule reports attribute via the submitter's users.ps_id (mule_reports
+    has no ps_id column of its own). DSR is a district-level concept —
+    every PS row in the same district shares the same dsr_filed flag.
+
+    admin: own (unit_id, ps_id) only. super_admin: every active (unit, PS).
+    """
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+    return await compute_submission_status(
+        db,
+        target_date,
+        unit_id_filter=admin.unit_id if admin.role != "super_admin" else None,
+        ps_id_filter=admin.ps_id if admin.role != "super_admin" else None,
+    )
 
 
 # ── Operations tab ──────────────────────────────────────────────────────────

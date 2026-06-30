@@ -24,6 +24,9 @@ from reports.dsr_aggregator import aggregate_dsr
 from reports.dsr_pdf import render_dsr_pdf
 from reports.mule_pdf import render_mule_pdf
 from reports.case_pdf import render_case_pdf
+from reports.submission_status_pdf import render_submission_status_pdf
+from api.routes_dashboard import compute_submission_status
+from api.deps import require_admin
 from models.mule_report import MuleReport
 from models.case import Case
 from models.arrest import Arrest
@@ -295,4 +298,29 @@ async def get_case_pdf(
 
     safe_id = (case.fir_no or case.petition_no or case.id).replace("/", "-").replace(" ", "_")
     filename = f"CaseFile_{safe_id}.pdf"
+    return _pdf_response(pdf_bytes, filename)
+
+
+@router.get("/submission-status.pdf")
+async def get_submission_status_pdf(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """PDF version of the Dashboard → Overview → Submission Status table.
+
+    Same data the on-screen table renders for `target_date`. Auth is
+    aligned with the JSON route: admin sees their own PS only,
+    super_admin sees every (unit, PS) pair.
+    """
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+    rows = await compute_submission_status(
+        db,
+        target_date,
+        unit_id_filter=admin.unit_id if admin.role != "super_admin" else None,
+        ps_id_filter=admin.ps_id if admin.role != "super_admin" else None,
+    )
+    pdf_bytes = render_submission_status_pdf(rows, target_date=target_date)
+    filename = f"SubmissionStatus_{target_date.isoformat()}.pdf"
     return _pdf_response(pdf_bytes, filename)
