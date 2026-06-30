@@ -8,8 +8,13 @@ email-validator>=2.0.0
 pydantic-settings>=2.7.0
 python-jose[cryptography]>=3.3.0
 passlib[bcrypt]>=1.7.4
-# bcrypt MUST be pinned to 4.x — 5.x breaks passlib's CryptContext
-bcrypt>=4.0.1,<5.0
+# bcrypt MUST be pinned to 4.0.x — 4.1+ removed `bcrypt.__about__`, which
+# passlib 1.7.4 reads at startup; the call still works (passlib traps
+# the AttributeError) but it spams a noisy traceback on every fresh
+# CryptContext init (e.g. each invocation of seed scripts).
+# 5.x breaks CryptContext outright. Passlib is unmaintained (last
+# release 2020) so neither of these will be fixed upstream.
+bcrypt>=4.0.1,<4.1
 python-multipart>=0.0.18
 python-dotenv>=1.0.0
 # Production server — Gunicorn with Uvicorn workers (see ProductionDeployment.md §9)
