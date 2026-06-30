@@ -116,6 +116,21 @@ async def ask(
                 if total != 1 else "Found 1 matching record."
             ).format(n=total)
 
+        # 4. (Q + A) → follow-up suggestions. Best-effort: if Ollama
+        # is unreachable, slow, or returns garbage we just hand back
+        # an empty list — the UI hides the chip row when it's empty.
+        # Skip entirely when there are zero rows (nothing to drill into).
+        followups: list[str] = []
+        if total > 0:
+            try:
+                followups = await sql_generator.suggest_followups(
+                    body.question, answer, total,
+                )
+            except (OllamaUnreachable, OllamaError):
+                pass
+            except Exception:  # noqa: BLE001
+                log.exception("Follow-up generation failed")
+
         audit.latency_ms = int((time.time() - started) * 1000)
         db.add(audit)
         await db.commit()
@@ -126,6 +141,7 @@ async def ask(
             rows=safe_rows,
             row_count=total,
             latency_ms=audit.latency_ms,
+            followups=followups,
         )
 
     except HTTPException:

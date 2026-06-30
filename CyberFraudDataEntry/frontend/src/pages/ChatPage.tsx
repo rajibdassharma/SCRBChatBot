@@ -102,7 +102,7 @@ export function ChatPage() {
         )}
 
         {turns.map((t, i) => (
-          <Turn key={i} turn={t} isLast={i === turns.length - 1} busy={busy} />
+          <Turn key={i} turn={t} isLast={i === turns.length - 1} busy={busy} onAsk={submit} />
         ))}
       </div>
 
@@ -136,7 +136,7 @@ const cardStyle = {
   boxShadow: '0 6px 16px rgba(0,0,0,0.08)',
 };
 
-function Turn({ turn, isLast, busy }: { turn: Turn; isLast: boolean; busy: boolean }) {
+function Turn({ turn, isLast, busy, onAsk }: { turn: Turn; isLast: boolean; busy: boolean; onAsk: (q: string) => void }) {
   const waiting = isLast && busy && turn.reply === null && turn.error === null;
   return (
     <div className="space-y-2">
@@ -160,7 +160,7 @@ function Turn({ turn, isLast, busy }: { turn: Turn; isLast: boolean; busy: boole
               {turn.error}
             </p>
           ) : turn.reply ? (
-            <ReplyView reply={turn.reply} />
+            <ReplyView reply={turn.reply} busy={busy} onAsk={onAsk} />
           ) : null}
         </div>
       </div>
@@ -168,7 +168,7 @@ function Turn({ turn, isLast, busy }: { turn: Turn; isLast: boolean; busy: boole
   );
 }
 
-function ReplyView({ reply }: { reply: ChatResponse }) {
+function ReplyView({ reply, busy, onAsk }: { reply: ChatResponse; busy: boolean; onAsk: (q: string) => void }) {
   const [showData, setShowData] = useState(reply.row_count > 0 && reply.row_count <= 5);
   const [showSql, setShowSql] = useState(false);
 
@@ -177,6 +177,28 @@ function ReplyView({ reply }: { reply: ChatResponse }) {
       <p className="text-sm leading-relaxed" style={{ color: 'var(--ksp-navy)' }}>
         {reply.answer}
       </p>
+      {reply.followups && reply.followups.length > 0 && (
+        <div>
+          <p className="text-[10px] uppercase tracking-wide font-bold opacity-50 mb-1.5" style={{ color: 'var(--ksp-navy)' }}>
+            Related follow-ups
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            {reply.followups.map((q, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => onAsk(q)}
+                disabled={busy}
+                className="text-xs px-3 py-1.5 rounded-full transition disabled:opacity-50 text-left"
+                style={{ background: 'rgba(11,44,74,0.06)', border: '1px solid rgba(11,44,74,0.18)', color: 'var(--ksp-navy)' }}
+                title="Click to ask this follow-up"
+              >
+                {q}
+              </button>
+            ))}
+          </div>
+        </div>
+      )}
       {reply.row_count > 0 && (
         <div>
           <button

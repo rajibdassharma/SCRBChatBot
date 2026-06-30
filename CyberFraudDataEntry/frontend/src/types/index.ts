@@ -583,6 +583,9 @@ export interface ChatResponse {
   rows: Record<string, unknown>[];
   row_count: number;
   latency_ms: number;
+  /** Up to 3 model-suggested follow-up questions. Empty when generation
+   *  failed or there were no rows to drill into. */
+  followups: string[];
 }
 
 
