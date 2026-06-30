@@ -241,7 +241,7 @@ npm run preview      # preview production build
 | `CFDSR_DB_USER` | MySQL user | `root` |
 | `CFDSR_DB_PASSWORD` | MySQL password | (empty) |
 | `CFDSR_DB_NAME` | MySQL database | `cyber_fraud_dsr` |
-| `CFDSR_JWT_SECRET` | JWT signing secret | (change in prod) |
+| `CFDSR_JWT_SECRET` | JWT signing secret — backend refuses to start if missing/default/<32 chars | **REQUIRED** (generate: `openssl rand -hex 32`) |
 | `CFDSR_JWT_ALGORITHM` | JWT algorithm | `HS256` |
 | `CFDSR_JWT_EXPIRE_MINUTES` | Token expiry | `480` (8 hours) |
 | `CFDSR_CORS_ORIGINS` | Allowed CORS origins | `http://localhost:5173,http://localhost:5175` |

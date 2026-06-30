@@ -1,10 +1,10 @@
-import warnings
 from urllib.parse import quote_plus
 
 from pydantic_settings import BaseSettings
 
 
 _DEFAULT_JWT_SECRET = "change-this-to-a-random-secret-in-production"
+_JWT_MIN_LENGTH = 32
 
 
 class Settings(BaseSettings):
@@ -45,10 +45,19 @@ class Settings(BaseSettings):
 
 settings = Settings()
 
+# Fail-loud on a weak JWT secret. Previously this only printed a warning,
+# which meant prod ran for weeks with the publicly-known default value —
+# anyone with the source could forge admin tokens. Now the backend refuses
+# to start unless CFDSR_JWT_SECRET is set and looks plausibly strong.
 if settings.JWT_SECRET == _DEFAULT_JWT_SECRET:
-    warnings.warn(
-        "\n[SECURITY WARNING] JWT_SECRET is using the default value! "
-        "Set CFDSR_JWT_SECRET to a strong random value in .env. "
-        "Generate one with: openssl rand -hex 32\n",
-        stacklevel=1,
+    raise RuntimeError(
+        "CFDSR_JWT_SECRET is using the public default value. "
+        "Set it in .env to a strong random value before starting the backend. "
+        "Generate one with:  openssl rand -hex 32"
+    )
+if len(settings.JWT_SECRET) < _JWT_MIN_LENGTH:
+    raise RuntimeError(
+        f"CFDSR_JWT_SECRET is too short ({len(settings.JWT_SECRET)} chars). "
+        f"Minimum {_JWT_MIN_LENGTH} characters. "
+        f"Generate a stronger one with:  openssl rand -hex 32"
     )
