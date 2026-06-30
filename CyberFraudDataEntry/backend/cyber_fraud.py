@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -158,6 +158,32 @@ async def list_police_stations_public(
         }
         for s in stations
     ]
+
+
+@app.get("/api/v1/users/public")
+async def list_users_for_ps_public(
+    ps_id: int = Query(..., ge=1),
+    db: AsyncSession = Depends(get_db),
+):
+    """Public endpoint for login page user dropdown (no auth required).
+
+    Returns the active usernames at the given PS so the login form can
+    show a dropdown instead of asking the operator to remember their
+    username. Exposing usernames publicly is acceptable for this
+    deployment — KSWAN is an internal network and password remains
+    the authentication factor.
+
+    Ordering: super_admin → admin → unit_user, then username, so the
+    most-likely-to-log-in accounts surface first.
+    """
+    from models.user import User
+    _role_order = "(CASE role WHEN 'super_admin' THEN 0 WHEN 'admin' THEN 1 ELSE 2 END)"
+    users = (await db.execute(
+        select(User.username, User.role)
+        .where(User.ps_id == ps_id, User.is_active == True)
+        .order_by(text(_role_order), User.username)
+    )).all()
+    return [{"username": u, "role": r} for u, r in users]
 
 
 @app.get("/api/v1/districts/public")

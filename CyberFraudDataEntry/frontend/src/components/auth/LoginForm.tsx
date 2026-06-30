@@ -1,42 +1,31 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
-import { login, getDistrictsPublic, getPoliceStationsPublic } from '../../lib/api/auth';
+import { login, getDistrictsPublic, getPoliceStationsPublic, getUsersForPSPublic } from '../../lib/api/auth';
 import { useAuthStore } from '../../lib/stores/auth-store';
 import { PasswordInput } from '../ui/PasswordInput';
 import kspLogo from '../../assets/ksp_logo.png';
 
-/**
- * Mirrors the backend `seed._to_code` — used to derive the username
- * deterministically from the selected police station + role.
- * If this formula is ever changed, seed.py and this function must move
- * together.
- */
-function toCode(name: string): string {
-  return name
-    .toLowerCase()
-    .trim()
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-}
+const ROLE_LABEL: Record<string, string> = {
+  super_admin: 'Super Admin',
+  admin: 'Admin',
+  unit_user: 'User',
+};
 
 export function LoginForm() {
   const [districts, setDistricts] = useState<{name: string}[]>([]);
   const [selectedDistrict, setSelectedDistrict] = useState('');
   const [policeStations, setPoliceStations] = useState<{id: number, district_name: string, station_name: string, has_super_admin: boolean}[]>([]);
   const [selectedPS, setSelectedPS] = useState('');
-  const [role, setRole] = useState<'user' | 'admin' | 'super'>('user');
+  const [users, setUsers] = useState<{username: string; role: string}[]>([]);
+  const [selectedUsername, setSelectedUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
   const { setAuth } = useAuthStore();
   const navigate = useNavigate();
 
-  // Derived username — always matches what seed.py wrote to the DB
-  const derivedUsername = selectedPS ? `${toCode(selectedPS)}_${role}` : '';
-
-  // Only the one PS that has a Senior Officer seeded shows the Super option.
+  // The picked PS row — used to look up its id for the users fetch.
   const selectedPSRow = policeStations.find(ps => ps.station_name === selectedPS);
-  const superAvailable = !!selectedPSRow?.has_super_admin;
 
   // Load districts on mount
   useEffect(() => {
@@ -58,10 +47,23 @@ export function LoginForm() {
       .catch(() => setPoliceStations([]));
   }, [selectedDistrict]);
 
-  // If the selected PS doesn't have a super user, snap the role back to admin.
+  // When PS changes, fetch the active users at that PS. Pre-select the
+  // single user if there's only one, otherwise leave empty so the
+  // operator picks from the dropdown.
   useEffect(() => {
-    if (role === 'super' && !superAvailable) setRole('admin');
-  }, [role, superAvailable]);
+    setSelectedUsername('');
+    setUsers([]);
+    if (!selectedPSRow) return;
+    let cancelled = false;
+    getUsersForPSPublic(selectedPSRow.id)
+      .then((rows) => {
+        if (cancelled) return;
+        setUsers(rows);
+        if (rows.length === 1) setSelectedUsername(rows[0].username);
+      })
+      .catch(() => { if (!cancelled) setUsers([]); });
+    return () => { cancelled = true; };
+  }, [selectedPSRow]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -69,16 +71,16 @@ export function LoginForm() {
 
     if (!selectedDistrict) { setError('Please select a district'); return; }
     if (!selectedPS) { setError('Please select a police station'); return; }
-    if (!derivedUsername) { setError('Could not derive user ID'); return; }
+    if (!selectedUsername) { setError('Please select a User ID'); return; }
     if (!password) { setError('Please enter password'); return; }
 
     setLoading(true);
     try {
-      const res = await login(derivedUsername, password);
+      const res = await login(selectedUsername, password);
 
       setAuth(res.token, {
         id: 0,
-        username: derivedUsername,
+        username: selectedUsername,
         full_name: null,
         role: res.role as 'admin' | 'unit_user' | 'super_admin',
         unit_id: res.unit_id,
@@ -154,44 +156,35 @@ export function LoginForm() {
             </select>
           </div>
 
-          {/* Role cycle — User → Admin → (Super) → User. The Super option
-              only appears when the selected PS has the Senior Officer
-              account anchored to it. For every other PS the toggle is
-              binary (User / Admin). */}
-          <div className="flex items-center justify-between text-xs">
-            <span className="font-semibold" style={{ color: 'var(--ksp-navy)' }}>
-              Signing in as: <span style={{ color: 'var(--ksp-red)' }}>
-                {role === 'admin' ? 'Admin' : role === 'super' ? 'Super Admin' : 'User'}
-              </span>
-            </span>
-            <button
-              type="button"
-              onClick={() => {
-                if (superAvailable) {
-                  setRole(role === 'user' ? 'admin' : role === 'admin' ? 'super' : 'user');
-                } else {
-                  setRole(role === 'admin' ? 'user' : 'admin');
-                }
-              }}
-              className="font-semibold underline"
-              style={{ color: 'var(--ksp-navy)' }}
-            >
-              Switch role
-            </button>
-          </div>
-
-          {/* Derived User ID — read-only, shown for confirmation */}
+          {/* User ID — server tells us which users live at the selected PS.
+              For PSes with multiple users (the common case — admin + user
+              from seed.py, and now multi-officer PSes like CID), this is
+              a dropdown. With a single user it auto-selects and reads as
+              a regular dropdown with one option. Role is shown inline so
+              the operator knows which entry is theirs. */}
           <div>
             <label className="block text-sm font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>User ID</label>
-            <input
-              type="text"
-              value={derivedUsername}
-              readOnly
-              tabIndex={-1}
-              className="w-full px-4 py-2.5 rounded-xl text-sm outline-none transition cursor-not-allowed"
-              style={{ border: '2px solid var(--ksp-navy)', background: '#f3f4f6', color: '#374151' }}
-              placeholder="Auto-filled after selecting a station"
-            />
+            <select
+              value={selectedUsername}
+              onChange={(e) => setSelectedUsername(e.target.value)}
+              required
+              disabled={!selectedPS || users.length === 0}
+              className="w-full px-4 py-2.5 rounded-xl text-sm font-medium outline-none transition disabled:cursor-not-allowed disabled:bg-gray-100"
+              style={{ border: '2px solid var(--ksp-navy)', background: '#fff', color: 'var(--ksp-navy)' }}
+            >
+              <option value="">
+                {!selectedPS
+                  ? '-- Select a police station first --'
+                  : users.length === 0
+                    ? '-- No active users at this station --'
+                    : '-- Select your User ID --'}
+              </option>
+              {users.map((u) => (
+                <option key={u.username} value={u.username}>
+                  {u.username} — {ROLE_LABEL[u.role] ?? u.role}
+                </option>
+              ))}
+            </select>
           </div>
 
           {/* Password */}
@@ -208,7 +201,7 @@ export function LoginForm() {
 
           <button
             type="submit"
-            disabled={loading || !derivedUsername}
+            disabled={loading || !selectedUsername}
             className="w-full py-2.5 font-bold rounded-xl transition disabled:opacity-50 text-sm"
             style={{ background: 'var(--ksp-yellow)', color: '#000', border: '2px solid rgba(0,0,0,0.25)' }}
           >

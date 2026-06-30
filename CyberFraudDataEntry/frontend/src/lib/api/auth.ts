@@ -36,3 +36,14 @@ export async function getPoliceStationsPublic(district: string): Promise<{id: nu
   if (!res.ok) throw new Error('Failed to load police stations');
   return res.json();
 }
+
+/** Public — fetch the list of active usernames at a given PS so the
+ *  login form can show a dropdown. Returned ordered super_admin →
+ *  admin → unit_user. Username is the login identifier; role is shown
+ *  inline so operators know which one is theirs. */
+export async function getUsersForPSPublic(ps_id: number): Promise<{username: string; role: string}[]> {
+  const base = import.meta.env.VITE_API_BASE ?? '';
+  const res = await fetch(`${base}/api/v1/users/public?ps_id=${ps_id}`);
+  if (!res.ok) throw new Error('Failed to load users for police station');
+  return res.json();
+}
