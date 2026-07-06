@@ -441,7 +441,7 @@ async def list_mule_reports(
         raise HTTPException(status_code=403, detail="No unit assigned.")
 
     q = select(MuleReport).where(MuleReport.unit_id == unit_id)
-    if current_user.role != "admin":
+    if current_user.role not in ("admin", "super_admin"):
         q = q.where(MuleReport.submitted_by == current_user.user_id)
 
     reports = (await db.execute(
@@ -473,7 +473,7 @@ async def search_mule_report(
         .where(MuleReport.acknowledgement_no == ack_no, MuleReport.unit_id == unit_id)
         .options(*_eager_options())
     )
-    if current_user.role != "admin":
+    if current_user.role not in ("admin", "super_admin"):
         q = q.where(MuleReport.submitted_by == current_user.user_id)
     report = (await db.execute(q)).scalar_one_or_none()
     if not report:

@@ -483,7 +483,7 @@ async def list_cases(
         raise HTTPException(status_code=403, detail="No police station assigned to this account.")
 
     q = select(Case).where(Case.unit_id == unit_id, Case.ps_id == ps_id)
-    if current_user.role != "admin":
+    if current_user.role not in ("admin", "super_admin"):
         q = q.where(Case.submitted_by == current_user.user_id)
 
     cases = (await db.execute(
@@ -526,7 +526,7 @@ async def search_case_by_fir(
         )
         .options(*_eager_options())
     )
-    if current_user.role != "admin":
+    if current_user.role not in ("admin", "super_admin"):
         q = q.where(Case.submitted_by == current_user.user_id)
     case = (await db.execute(q)).scalar_one_or_none()
     if not case:
@@ -561,7 +561,7 @@ async def search_case_by_petition(
         )
         .options(*_eager_options())
     )
-    if current_user.role != "admin":
+    if current_user.role not in ("admin", "super_admin"):
         q = q.where(Case.submitted_by == current_user.user_id)
     case = (await db.execute(q)).scalar_one_or_none()
     if not case:
