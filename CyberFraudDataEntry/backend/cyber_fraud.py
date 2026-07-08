@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from database import get_db
+from utils.friendly_errors import to_friendly
 from models.unit import Unit
 from api.deps import get_current_user
 from api.routes_auth import router as auth_router
@@ -82,29 +83,31 @@ app.add_middleware(
 )
 
 
-# ── 422 validation-error logger ─────────────────────────────────────
-# FastAPI's default 422 handler returns the Pydantic error list to the
-# client but doesn't log it, so operators had to open browser DevTools
-# to diagnose "why did that form save fail". Log the error list to the
-# systemd journal so `journalctl -u cyberfraud-backend` surfaces it.
-# `input` is stripped from each entry so PII (phone, email, name) never
-# lands in the journal.
+# ── 422 validation-error handler ────────────────────────────────────
+# Serves two audiences from one place:
+#   * developers — the raw Pydantic error list (PII stripped) goes to
+#     the systemd journal, so `journalctl -u cyberfraud-backend | grep
+#     "422"` shows exact field + rule + ctx.
+#   * end users — the response `detail` is a plain-English sentence
+#     built by `utils.friendly_errors.to_friendly`, so operators see
+#     e.g. "Victim Phone must be at least 10 characters long." in the
+#     toast instead of "victim.phone: String should have at least 10
+#     characters". Multiple failures are joined with "; ".
 
 @app.exception_handler(RequestValidationError)
-async def log_validation_error(request: Request, exc: RequestValidationError):
-    safe_errors = [
-        {k: v for k, v in err.items() if k != "input"}
-        for err in exc.errors()
-    ]
+async def validation_error_handler(request: Request, exc: RequestValidationError):
+    raw = exc.errors()
+    safe_for_log = [{k: v for k, v in err.items() if k != "input"} for err in raw]
     client_ip = request.client.host if request.client else "?"
     logger.warning(
         "422 %s %s from %s → %s",
         request.method,
         request.url.path,
         client_ip,
-        safe_errors,
+        safe_for_log,
     )
-    return JSONResponse(status_code=422, content={"detail": safe_errors})
+    friendly = to_friendly(raw)
+    return JSONResponse(status_code=422, content={"detail": "; ".join(friendly)})
 
 
 app.include_router(auth_router)
