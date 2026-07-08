@@ -17,8 +17,30 @@ export async function apiFetch<T>(path: string, options: RequestInit = {}): Prom
   const res = await fetch(`${BASE}${path}`, { ...options, headers });
 
   if (!res.ok) {
-    const err = await res.json().catch(() => ({ detail: res.statusText }));
-    const message = err.detail || `HTTP ${res.status}`;
+    const body = await res.json().catch(() => ({ detail: res.statusText }));
+    // FastAPI returns Pydantic validation errors as `detail: [{loc, msg, type, ...}]`.
+    // Prior to this fix, passing that array to `new Error()` produced a `.message`
+    // of `[object Object]`, which surfaced verbatim in toasts. Extract a
+    // human-readable string per shape.
+    let message: string;
+    const detail = body?.detail;
+    if (typeof detail === 'string') {
+      message = detail;
+    } else if (Array.isArray(detail)) {
+      message = detail
+        .map((e: { loc?: (string | number)[]; msg?: string }) => {
+          const loc = Array.isArray(e.loc)
+            ? e.loc.filter((x) => x !== 'body').join('.')
+            : '';
+          const msg = e.msg ?? 'invalid value';
+          return loc ? `${loc}: ${msg}` : msg;
+        })
+        .join('; ');
+    } else if (detail && typeof detail === 'object') {
+      message = JSON.stringify(detail);
+    } else {
+      message = `HTTP ${res.status}`;
+    }
 
     if (res.status === 401) {
       // Don't redirect on login, change-password, or logout responses —
