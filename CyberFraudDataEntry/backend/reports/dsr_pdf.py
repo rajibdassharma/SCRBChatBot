@@ -139,3 +139,42 @@ def _render_one_section(flow: list, r: DsrAggregateRow, *, is_all_ps: bool) -> N
             [[bank, str(c), _money(amt)] for bank, (c, amt) in bank_rows],
             col_widths=[90 * mm, 30 * mm, 50 * mm],
         ))
+
+    # ── 4. FIRs registered in the period (skip in the TOTAL row —
+    #      the same rows already showed in the per-PS sections). ──
+    if not is_total and r.firs:
+        flow.append(spacer(4))
+        flow.append(section_heading("FIRs Registered"))
+        flow.append(data_table(
+            ["FIR No", "Registration Date", "Case Type", "Crime Type", "Arrests"],
+            [
+                [
+                    f.fir_no or "—",
+                    f.registration_date.strftime("%d %b %Y") if f.registration_date else "—",
+                    f.case_type or "—",
+                    f.crime_type or "—",
+                    str(f.arrest_count),
+                ]
+                for f in r.firs
+            ],
+            col_widths=[35 * mm, 32 * mm, 28 * mm, 28 * mm, 20 * mm],
+        ))
+
+    # ── 5. Arrest details keyed to the FIR ──
+    if not is_total and r.arrests:
+        flow.append(spacer(4))
+        flow.append(section_heading("Arrest Details"))
+        flow.append(data_table(
+            ["FIR No", "Name", "Date of Arrest", "Aadhar", "Address"],
+            [
+                [
+                    a.fir_no or "—",
+                    a.name or "—",
+                    a.date_of_arrest.strftime("%d %b %Y") if a.date_of_arrest else "—",
+                    a.aadhar or "—",
+                    a.address or "—",
+                ]
+                for a in r.arrests
+            ],
+            col_widths=[30 * mm, 45 * mm, 25 * mm, 25 * mm, 55 * mm],
+        ))

@@ -35,6 +35,26 @@ from models.police_station import PoliceStation
 
 
 @dataclass
+class FirEntry:
+    """One row on the "FIRs Registered" table in the PDF."""
+    fir_no: str
+    registration_date: Optional[date]
+    case_type: Optional[str]
+    crime_type: Optional[str]
+    arrest_count: int
+
+
+@dataclass
+class ArrestEntry:
+    """One row on the "Arrest Details" table in the PDF."""
+    fir_no: str
+    name: str
+    date_of_arrest: Optional[date]
+    aadhar: Optional[str]
+    address: Optional[str]
+
+
+@dataclass
 class DsrAggregateRow:
     """Numbers for one PS over the date range. When the report is for a
     single PS this is the only row; for "all PSes" mode the renderer
@@ -60,6 +80,12 @@ class DsrAggregateRow:
     refunds_amount: float = 0.0
 
     mule_reports_total: int = 0
+
+    # Per-FIR / per-arrest details rendered below the aggregate numbers.
+    # Populated per PS; the TOTAL row leaves these empty so the multi-
+    # PS report doesn't duplicate the same rows twice.
+    firs: list[FirEntry] = field(default_factory=list)
+    arrests: list[ArrestEntry] = field(default_factory=list)
 
 
 # ── Public API ───────────────────────────────────────────────────────
@@ -260,5 +286,75 @@ async def _aggregate_one(
         .where(User.ps_id == ps_id, MuleReport.created_at >= start, MuleReport.created_at < end)
     )
     row.mule_reports_total = (await db.execute(mule_q)).scalar() or 0
+
+    # ── 7. FIR list — one row per case with a non-empty fir_no. ──
+    # Includes an arrest count per case so the report tells operators
+    # "here are the FIRs, and this one has N arrests, follow the arrest
+    # table below for the who/what/when".
+    arrest_count_subq = (
+        select(Arrest.case_id, func.count().label("arrest_count"))
+        .group_by(Arrest.case_id)
+        .subquery()
+    )
+    fir_q = (
+        select(
+            Case.id,
+            Case.fir_no,
+            Case.registration_date,
+            Case.case_type,
+            Case.crime_type,
+            func.coalesce(arrest_count_subq.c.arrest_count, 0),
+        )
+        .join(User, Case.submitted_by == User.id)
+        .join(arrest_count_subq, arrest_count_subq.c.case_id == Case.id, isouter=True)
+        .where(
+            User.ps_id == ps_id,
+            in_window_case,
+            Case.fir_no.is_not(None),
+            Case.fir_no != "",
+        )
+        .order_by(Case.registration_date, Case.fir_no)
+    )
+    case_id_by_fir: dict[str, str] = {}
+    for cid, fir_no, reg_date, case_type, crime_type, arrest_count in (await db.execute(fir_q)).all():
+        row.firs.append(FirEntry(
+            fir_no=fir_no,
+            registration_date=reg_date,
+            case_type=case_type,
+            crime_type=crime_type,
+            arrest_count=int(arrest_count or 0),
+        ))
+        case_id_by_fir[cid] = fir_no
+
+    # ── 8. Arrest details, one row per arrest, tagged with the FIR. ──
+    # Same PS-scoping + window as the arrests_total count so the
+    # detail table can never disagree with the summary number.
+    if case_id_by_fir:
+        arrest_detail_q = (
+            select(
+                Arrest.case_id,
+                Arrest.name,
+                Arrest.date_of_arrest,
+                Arrest.aadhar,
+                Arrest.address,
+            )
+            .join(Case, Arrest.case_id == Case.id)
+            .join(User, Case.submitted_by == User.id)
+            .where(
+                User.ps_id == ps_id,
+                Arrest.created_at >= start,
+                Arrest.created_at < end,
+                Arrest.case_id.in_(list(case_id_by_fir.keys())),
+            )
+            .order_by(Case.fir_no, Arrest.date_of_arrest, Arrest.name)
+        )
+        for cid, name, doa, aadhar, address in (await db.execute(arrest_detail_q)).all():
+            row.arrests.append(ArrestEntry(
+                fir_no=case_id_by_fir.get(cid, ""),
+                name=name or "",
+                date_of_arrest=doa,
+                aadhar=aadhar,
+                address=address,
+            ))
 
     return row
