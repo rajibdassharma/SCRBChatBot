@@ -5,7 +5,9 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import FastAPI, Depends, Query, UploadFile, File, HTTPException, Request
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
@@ -78,6 +80,32 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["Content-Type", "Authorization"],
 )
+
+
+# ── 422 validation-error logger ─────────────────────────────────────
+# FastAPI's default 422 handler returns the Pydantic error list to the
+# client but doesn't log it, so operators had to open browser DevTools
+# to diagnose "why did that form save fail". Log the error list to the
+# systemd journal so `journalctl -u cyberfraud-backend` surfaces it.
+# `input` is stripped from each entry so PII (phone, email, name) never
+# lands in the journal.
+
+@app.exception_handler(RequestValidationError)
+async def log_validation_error(request: Request, exc: RequestValidationError):
+    safe_errors = [
+        {k: v for k, v in err.items() if k != "input"}
+        for err in exc.errors()
+    ]
+    client_ip = request.client.host if request.client else "?"
+    logger.warning(
+        "422 %s %s from %s → %s",
+        request.method,
+        request.url.path,
+        client_ip,
+        safe_errors,
+    )
+    return JSONResponse(status_code=422, content={"detail": safe_errors})
+
 
 app.include_router(auth_router)
 app.include_router(case_router)
