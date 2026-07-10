@@ -11,6 +11,10 @@ class DsrEntry(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     unit_id = Column(Integer, ForeignKey("units.id"), nullable=False)
+    # DSR became a per-PS filing in migration 008 (2026-07-08). Before
+    # that the uniqueness key was (unit_id, report_date) — one DSR per
+    # district per date — and this column didn't exist.
+    ps_id = Column(Integer, ForeignKey("police_stations.id"), nullable=False)
     report_date = Column(Date, nullable=False)
 
     # Group: Cases & Petitions
@@ -55,5 +59,5 @@ class DsrEntry(Base):
     updated_at = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     __table_args__ = (
-        UniqueConstraint("unit_id", "report_date", name="uq_dsr_unit_date"),
+        UniqueConstraint("unit_id", "ps_id", "report_date", name="uq_dsr_unit_ps_date"),
     )

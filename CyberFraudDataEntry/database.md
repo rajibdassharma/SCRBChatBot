@@ -168,11 +168,12 @@ Likely sources of drift:
 | 005 | `005_add_chat_messages.py` | Adds `chat_messages` audit table (only deploy if chat feature is enabled) |
 | 006 | `006_add_is_financial_to_cases.py` | Adds `is_financial TINYINT(1) NOT NULL DEFAULT 1` to `cases`; backfills all existing rows as Financial |
 | 007 | `007_add_daily_nil_declarations.py` | Creates `daily_nil_declarations` table — lets a PS explicitly mark a date as "no activity"; UNIQUE `(unit_id, ps_id, nil_date)` |
+| 008 | `008_add_ps_id_to_dsr_entries.py` | Adds `ps_id` to `dsr_entries`; re-scopes uniqueness from `(unit_id, report_date)` to `(unit_id, ps_id, report_date)`. DSR becomes per-PS. Backfills from `users.ps_id` via `submitted_by`. |
 
 All migrations are idempotent — safe to re-run. Order matters only when
 later migrations depend on earlier columns/tables existing.
 
-**Deploy:** `deploy/update.sh` runs 001 → 004, 006, 007 in sequence
+**Deploy:** `deploy/update.sh` runs 001 → 004, 006, 007, 008 in sequence
 (005 is skipped on prod until the chat GPU box is in place). The script
 includes a pre-migration backup and post-migration sanity checks. NEVER
 run migrations by hand on prod unless `update.sh` itself is broken.

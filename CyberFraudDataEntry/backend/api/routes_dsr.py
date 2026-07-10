@@ -33,6 +33,7 @@ def _entry_to_response(entry: DsrEntry, unit_name: str | None = None) -> dict:
     d.update(
         id=entry.id,
         unit_id=entry.unit_id,
+        ps_id=entry.ps_id,
         unit_name=unit_name,
         report_date=entry.report_date,
         submitted_by=entry.submitted_by,
@@ -42,18 +43,30 @@ def _entry_to_response(entry: DsrEntry, unit_name: str | None = None) -> dict:
     return d
 
 
+def _require_scope(current_user: CurrentUser) -> tuple[int, int]:
+    """Return (unit_id, ps_id) for the caller. Every DSR route is
+    (unit, ps)-scoped after migration 008 (2026-07-08)."""
+    if not current_user.unit_id:
+        raise HTTPException(status_code=403, detail="No district assigned to this account.")
+    if not current_user.ps_id:
+        raise HTTPException(status_code=403, detail="No police station assigned to this account.")
+    return current_user.unit_id, current_user.ps_id
+
+
 @router.post("/", response_model=DsrResponse)
 async def upsert_dsr(
     body: DsrCreate,
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    unit_id = current_user.unit_id
-    if not unit_id:
-        raise HTTPException(status_code=403, detail="No district assigned to this account.")
+    unit_id, ps_id = _require_scope(current_user)
 
     existing = (await db.execute(
-        select(DsrEntry).where(DsrEntry.unit_id == unit_id, DsrEntry.report_date == body.report_date)
+        select(DsrEntry).where(
+            DsrEntry.unit_id == unit_id,
+            DsrEntry.ps_id == ps_id,
+            DsrEntry.report_date == body.report_date,
+        )
     )).scalar_one_or_none()
 
     if existing:
@@ -64,7 +77,12 @@ async def upsert_dsr(
         await db.refresh(existing)
         return _entry_to_response(existing, current_user.unit_name)
     else:
-        entry = DsrEntry(unit_id=unit_id, report_date=body.report_date, submitted_by=current_user.user_id)
+        entry = DsrEntry(
+            unit_id=unit_id,
+            ps_id=ps_id,
+            report_date=body.report_date,
+            submitted_by=current_user.user_id,
+        )
         for f in _DSR_FIELDS:
             setattr(entry, f, getattr(body, f))
         db.add(entry)
@@ -79,12 +97,14 @@ async def get_own_dsr(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    unit_id = current_user.unit_id
-    if not unit_id:
-        raise HTTPException(status_code=403, detail="Use /all endpoint for admin access")
+    unit_id, ps_id = _require_scope(current_user)
 
     entry = (await db.execute(
-        select(DsrEntry).where(DsrEntry.unit_id == unit_id, DsrEntry.report_date == date)
+        select(DsrEntry).where(
+            DsrEntry.unit_id == unit_id,
+            DsrEntry.ps_id == ps_id,
+            DsrEntry.report_date == date,
+        )
     )).scalar_one_or_none()
 
     if not entry:
@@ -98,13 +118,11 @@ async def get_dsr_history(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    unit_id = current_user.unit_id
-    if not unit_id:
-        raise HTTPException(status_code=403, detail="Use /all endpoint for admin access")
+    unit_id, ps_id = _require_scope(current_user)
 
     entries = (await db.execute(
         select(DsrEntry)
-        .where(DsrEntry.unit_id == unit_id)
+        .where(DsrEntry.unit_id == unit_id, DsrEntry.ps_id == ps_id)
         .order_by(DsrEntry.report_date.desc())
         .limit(limit)
     )).scalars().all()
@@ -120,18 +138,17 @@ async def get_all_dsr(
 ):
     """Admin view of DSR entries on a date.
 
-    Per VAPT 7.8: scoped to the admin's own PS only (no cross-PS data).
-    There is no global admin role - this endpoint is now equivalent to
-    GET /dsr/?date= when called by an admin and is kept for frontend
-    backward compatibility.
+    Per VAPT 7.8 + migration 008: scoped to the admin's own PS only.
+    Equivalent to GET /dsr/?date= when called by an admin — kept for
+    frontend backward compatibility.
     """
-    if not admin.unit_id:
-        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+    unit_id, ps_id = _require_scope(admin)
 
     entries = (await db.execute(
         select(DsrEntry).where(
             DsrEntry.report_date == date,
-            DsrEntry.unit_id == admin.unit_id,
+            DsrEntry.unit_id == unit_id,
+            DsrEntry.ps_id == ps_id,
         )
     )).scalars().all()
 

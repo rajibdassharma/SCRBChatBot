@@ -389,8 +389,11 @@ async def compute_submission_status(
         .group_by(Case.unit_id, Case.ps_id)
     )).all()
 
+    # DSR became per-PS in migration 008 (was per-district before then).
+    # Fetch the (unit_id, ps_id) tuples that filed for target_date so
+    # each PS row can render its own DSR flag independently.
     dsr_rows = (await db.execute(
-        select(DsrEntry.unit_id)
+        select(DsrEntry.unit_id, DsrEntry.ps_id)
         .where(DsrEntry.report_date == target_date)
     )).all()
 
@@ -413,7 +416,9 @@ async def compute_submission_status(
     petition_last: dict[tuple[int, int], date | None] = {
         (int(uid), int(pid)): d for uid, pid, _, d in petition_rows if pid is not None
     }
-    dsr_filed: set[int] = {row[0] for row in dsr_rows}
+    dsr_filed: set[tuple[int, int]] = {
+        (int(u), int(p)) for u, p in dsr_rows if u is not None and p is not None
+    }
 
     # NIL declarations for target_date — one row per (unit_id, ps_id)
     # because the PS explicitly said "no activity today". We also pick up
@@ -477,7 +482,7 @@ async def compute_submission_status(
             petitions_count=p,
             mule_count=m,
             last_entry_date=last.isoformat() if last else None,
-            dsr_filed=int(uid) in dsr_filed,
+            dsr_filed=(int(uid), int(pid)) in dsr_filed,
             nil_declared=key in nil_map,
             nil_declared_by_name=nil_map.get(key),
             nil_count=nil_counts.get(key, 0),
@@ -1205,12 +1210,18 @@ async def get_accounts_at_layer(
 
 
 def _latest_dsr_subquery(target_date: date):
-    """Latest DSR per unit on or before `target_date`. Used as a join target
-    so we read only the most recent snapshot per unit, not the whole history."""
+    """Latest DSR per (unit, ps) on or before `target_date`. Used as a
+    join target so we read only the most recent snapshot per PS, not
+    the whole history. Grouping is per (unit_id, ps_id) since migration
+    008 — before that DSR was a per-unit filing."""
     return (
-        select(DsrEntry.unit_id, func.max(DsrEntry.report_date).label("max_date"))
+        select(
+            DsrEntry.unit_id,
+            DsrEntry.ps_id,
+            func.max(DsrEntry.report_date).label("max_date"),
+        )
         .where(DsrEntry.report_date <= target_date)
-        .group_by(DsrEntry.unit_id)
+        .group_by(DsrEntry.unit_id, DsrEntry.ps_id)
         .subquery()
     )
 
@@ -1236,6 +1247,7 @@ async def get_disposal_summary(
         )
         .join(sub, and_(
             DsrEntry.unit_id == sub.c.unit_id,
+            DsrEntry.ps_id == sub.c.ps_id,
             DsrEntry.report_date == sub.c.max_date,
         ))
     )
@@ -1275,6 +1287,7 @@ async def get_trial_summary(
         )
         .join(sub, and_(
             DsrEntry.unit_id == sub.c.unit_id,
+            DsrEntry.ps_id == sub.c.ps_id,
             DsrEntry.report_date == sub.c.max_date,
         ))
     )
@@ -1304,22 +1317,27 @@ async def get_pending_by_year(
     if admin.role == "admin" and not admin.unit_id:
         raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
 
+    # Latest DSR is per (unit, ps) after migration 008. For the
+    # district-level pending-years view we SUM across the PSes in
+    # each district so operators still see one row per unit.
     sub = _latest_dsr_subquery(target_date)
     q = (
         select(
             Unit.name,
-            DsrEntry.ui_cases_pending_2021,
-            DsrEntry.ui_cases_pending_2022,
-            DsrEntry.ui_cases_pending_2023,
-            DsrEntry.ui_cases_pending_2024,
-            DsrEntry.ui_cases_pending_2025,
-            DsrEntry.ui_cases_pending_2026,
+            func.coalesce(func.sum(DsrEntry.ui_cases_pending_2021), 0),
+            func.coalesce(func.sum(DsrEntry.ui_cases_pending_2022), 0),
+            func.coalesce(func.sum(DsrEntry.ui_cases_pending_2023), 0),
+            func.coalesce(func.sum(DsrEntry.ui_cases_pending_2024), 0),
+            func.coalesce(func.sum(DsrEntry.ui_cases_pending_2025), 0),
+            func.coalesce(func.sum(DsrEntry.ui_cases_pending_2026), 0),
         )
         .join(sub, and_(
             DsrEntry.unit_id == sub.c.unit_id,
+            DsrEntry.ps_id == sub.c.ps_id,
             DsrEntry.report_date == sub.c.max_date,
         ))
         .join(Unit, Unit.id == DsrEntry.unit_id)
+        .group_by(Unit.name)
     )
     if admin.role != "super_admin":
         q = q.where(DsrEntry.unit_id == admin.unit_id)

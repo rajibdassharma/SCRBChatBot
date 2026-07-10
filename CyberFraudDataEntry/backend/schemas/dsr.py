@@ -60,6 +60,7 @@ class DsrCreate(BaseModel):
 class DsrResponse(DsrCreate):
     id: int
     unit_id: int
+    ps_id: int
     unit_name: str | None = None
     submitted_by: int | None = None
     created_at: str | None = None

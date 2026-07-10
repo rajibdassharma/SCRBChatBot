@@ -69,7 +69,7 @@ sudo bash "$SOURCE/deploy/backup-db.sh"
 
 # ── 4. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 4. Run additive DB migrations 001 → 004, 006, 007 (idempotent) ==="
+echo "=== 4. Run additive DB migrations 001 → 004, 006, 007, 008 (idempotent) ==="
 # Migration 005 (chat_messages) is deliberately skipped until the GPU box
 # is in place for the chat feature — there's no point provisioning an
 # empty audit table for an endpoint the prod app does not yet expose.
@@ -86,6 +86,7 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.004_break_victim_address
     venv/bin/python -m migrations.006_add_is_financial_to_cases
     venv/bin/python -m migrations.007_add_daily_nil_declarations
+    venv/bin/python -m migrations.008_add_ps_id_to_dsr_entries
 "
 
 # ── 5. Build the frontend ────────────────────────────────────────────
