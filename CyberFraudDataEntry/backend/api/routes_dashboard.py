@@ -405,12 +405,39 @@ async def compute_submission_status(
         (int(u), int(p)): (full or uname) for u, p, full, uname in nil_rows
     }
 
+    # Cumulative NIL rollup up to target_date, per (unit_id, ps_id).
+    # Feeds both the new "NIL" column (count) and the "Last Entry"
+    # column, which treats a NIL declaration as a valid entry per the
+    # 2026-07-08 product refinement.
+    nil_rollup_rows = (await db.execute(
+        select(
+            NilDeclaration.unit_id,
+            NilDeclaration.ps_id,
+            func.count(NilDeclaration.id),
+            func.max(NilDeclaration.nil_date),
+        )
+        .where(NilDeclaration.nil_date <= target_date)
+        .group_by(NilDeclaration.unit_id, NilDeclaration.ps_id)
+    )).all()
+    nil_counts: dict[tuple[int, int], int] = {
+        (int(u), int(p)): int(n or 0) for u, p, n, _ in nil_rollup_rows
+    }
+    nil_last: dict[tuple[int, int], date | None] = {
+        (int(u), int(p)): d for u, p, _, d in nil_rollup_rows
+    }
+
     out: List[SubmissionStatus] = []
     for uid, uname, pid, pname in ps_rows:
         key = (int(uid), int(pid))
         c = case_counts.get(key, 0)
         m = mule_counts.get(key, 0)
-        last_dates = [d for d in (case_last.get(key), mule_last.get(key)) if d is not None]
+        # last_entry_date is the max across cases, mule reports, AND NIL
+        # declarations. If a PS only declares NIL and never enters real
+        # cases, the column still shows the last NIL date instead of "Never".
+        last_dates = [
+            d for d in (case_last.get(key), mule_last.get(key), nil_last.get(key))
+            if d is not None
+        ]
         last = max(last_dates) if last_dates else None
         out.append(SubmissionStatus(
             unit_id=int(uid),
@@ -424,6 +451,7 @@ async def compute_submission_status(
             dsr_filed=int(uid) in dsr_filed,
             nil_declared=key in nil_map,
             nil_declared_by_name=nil_map.get(key),
+            nil_count=nil_counts.get(key, 0),
         ))
     return out
 

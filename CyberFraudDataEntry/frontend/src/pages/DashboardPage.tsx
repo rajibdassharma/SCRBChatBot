@@ -340,7 +340,7 @@ function SubmissionStatusTable({ statuses, refDate }: { statuses: SubmissionStat
       <div className="px-5 py-4 flex items-start justify-between gap-4" style={{ borderBottom: '3px solid var(--ksp-yellow)' }}>
         <div className="min-w-0">
           <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>Submission Status for {refDate}</h3>
-          <p className="text-xs mt-1 opacity-60">One row per Police Station. Click District / Cases / Total / Last Entry to sort — click again to reverse direction. Last-entry colour: green = today/yesterday, navy ≤ 7d, amber ≤ 30d, red &gt; 30d or never. DSR is district-level so all PSes in the same district show the same flag.</p>
+          <p className="text-xs mt-1 opacity-60">One row per Police Station. Click District / Cases / Total / Last Entry to sort — click again to reverse direction. Last-entry colour: green = today/yesterday, navy ≤ 7d, amber ≤ 30d, red &gt; 30d or never. NIL declarations count as a valid entry, so a PS that only ever declares NIL never shows "Never". DSR is district-level so all PSes in the same district show the same flag.</p>
         </div>
         <button
           type="button"
@@ -378,6 +378,7 @@ function SubmissionStatusTable({ statuses, refDate }: { statuses: SubmissionStat
                 title="Sort by Total">
               Total{arrow('total')}
             </th>
+            <th className="px-4 py-3 text-xs uppercase font-bold text-right" title="Cumulative NIL declarations up to the selected date">NIL</th>
             <th className="px-4 py-3 text-xs uppercase font-bold"
                 style={{ cursor: 'pointer', userSelect: 'none' }}
                 onClick={() => onSort('last_entry', 'desc')}
@@ -415,6 +416,9 @@ function SubmissionStatusTable({ statuses, refDate }: { statuses: SubmissionStat
                       {formatNumber(s.entry_count)}
                     </span>
                   )}
+                </td>
+                <td className="px-4 py-2 text-right" style={{ color: s.nil_count > 0 ? '#0a5c2a' : 'rgba(0,0,0,0.35)' }}>
+                  {s.nil_count > 0 ? formatNumber(s.nil_count) : '—'}
                 </td>
                 <td className="px-4 py-2">
                   <span className="text-xs font-bold px-2 py-0.5 rounded" style={{ color: last.color, background: 'rgba(0,0,0,0.04)' }}>

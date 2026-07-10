@@ -33,15 +33,10 @@ def _fmt_dsr(row: SubmissionStatus) -> str:
 
 
 def _fmt_nil(row: SubmissionStatus) -> str:
-    """NIL pill text — only meaningful when entry_count is 0.
-
-    Matches the dashboard rendering: green "NIL ✓" replaces the red
-    zero. If there's real activity the column shows a dash, since NIL
-    is irrelevant on a day with submissions."""
-    if row.entry_count == 0 and row.nil_declared:
-        suffix = f" ({row.nil_declared_by_name})" if row.nil_declared_by_name else ""
-        return f"NIL{suffix}"
-    return "—"
+    """Cumulative NIL count for this PS. Matches the on-screen NIL
+    column so the exported PDF and the dashboard read the same. A
+    zero renders as a dash to keep the column visually quiet."""
+    return str(row.nil_count) if row.nil_count > 0 else "—"
 
 
 def render_submission_status_pdf(
@@ -58,7 +53,7 @@ def render_submission_status_pdf(
     # by other columns; the PDF picks the most-asked-for default.
     rows_sorted = sorted(rows, key=lambda r: (r.unit_name, r.ps_name))
 
-    header = ["#", "District", "Police Station", "Cases", "Mule", "Total", "Last Entry", "DSR", "NIL"]
+    header = ["#", "District", "Police Station", "Cases", "Mule", "Total", "NIL", "Last Entry", "DSR"]
     body = [
         [
             str(i + 1),
@@ -67,9 +62,9 @@ def render_submission_status_pdf(
             r.cases_count,
             r.mule_count,
             r.entry_count,
+            _fmt_nil(r),
             _fmt_last(r.last_entry_date),
             _fmt_dsr(r),
-            _fmt_nil(r),
         ]
         for i, r in enumerate(rows_sorted)
     ]
@@ -82,9 +77,9 @@ def render_submission_status_pdf(
         18 * mm,   # Cases
         18 * mm,   # Mule
         18 * mm,   # Total
-        28 * mm,   # Last entry
+        18 * mm,   # NIL
+        28 * mm,   # Last Entry
         20 * mm,   # DSR
-        40 * mm,   # NIL
     ]
 
     total_entries = sum(r.entry_count for r in rows_sorted)

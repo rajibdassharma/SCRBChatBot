@@ -50,18 +50,24 @@ class SubmissionStatus(BaseModel):
     # work or mule-report work.
     cases_count: int = 0
     mule_count: int = 0
-    # Most recent date (cases OR mule_reports) the PS has entered anything
-    # at all. None = never. ISO format (YYYY-MM-DD).
+    # Most recent date the PS has done anything at all — cases,
+    # mule_reports, OR a NIL declaration. NIL is treated as a valid
+    # entry for this purpose, so a PS that only ever declares NIL
+    # never shows "Never". None = never (no entry AND no NIL). ISO
+    # format (YYYY-MM-DD).
     last_entry_date: str | None = None
     # Whether the statutory daily report was filed for `date` for this PS's
     # district. DSR is a district-level concept, so all PS rows in the same
     # district share the same flag.
     dsr_filed: bool = False
-    # Whether the PS explicitly declared "no activity" for `date`. Used to
-    # show a green "NIL declared" pill when entry_count is 0 — distinguishes
-    # "we genuinely had nothing" from "we forgot to enter data".
+    # Whether the PS explicitly declared "no activity" for `date` (the
+    # target date only). Used to render the green "NIL declared" pill in
+    # the Total column when entry_count is 0.
     nil_declared: bool = False
     nil_declared_by_name: str | None = None
+    # Cumulative NIL declarations by this PS up to `date`. Rendered as
+    # the "NIL" column on the Submission Status table.
+    nil_count: int = 0
 
 
 class QuietUnit(BaseModel):

@@ -366,6 +366,8 @@ export interface SubmissionStatus {
   /** Whether this PS explicitly declared "no activity" for the selected date. */
   nil_declared: boolean;
   nil_declared_by_name: string | null;
+  /** Cumulative NIL declarations by this PS up to the selected date. */
+  nil_count: number;
 }
 
 export interface QuietUnit {
