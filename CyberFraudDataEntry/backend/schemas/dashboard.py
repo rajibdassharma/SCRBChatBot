@@ -44,11 +44,15 @@ class SubmissionStatus(BaseModel):
     # City has multiple and each needs its own row.
     ps_id: int = 0
     ps_name: str = ""
-    # Cumulative cases + mule_reports made by this PS up to `date`.
+    # Cumulative cases + petitions + mule_reports made by this PS up to
+    # `date`. Petitions count rows in the `petitions` child table, not
+    # cases where case_type='Petition' — same definition the DSR
+    # aggregator uses, so dashboard and DSR PDF stay reconciled.
     entry_count: int = 0
     # Cumulative split — useful to see whether a PS is leaning more on case
-    # work or mule-report work.
+    # work, petition intake, or mule-report work.
     cases_count: int = 0
+    petitions_count: int = 0
     mule_count: int = 0
     # Most recent date the PS has done anything at all — cases,
     # mule_reports, OR a NIL declaration. NIL is treated as a valid

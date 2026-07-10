@@ -53,13 +53,14 @@ def render_submission_status_pdf(
     # by other columns; the PDF picks the most-asked-for default.
     rows_sorted = sorted(rows, key=lambda r: (r.unit_name, r.ps_name))
 
-    header = ["#", "District", "Police Station", "Cases", "Mule", "Total", "NIL", "Last Entry", "DSR"]
+    header = ["#", "District", "Police Station", "Cases", "Petitions", "Mule", "Total", "NIL", "Last Entry", "DSR"]
     body = [
         [
             str(i + 1),
             r.unit_name,
             r.ps_name or "—",
             r.cases_count,
+            r.petitions_count,
             r.mule_count,
             r.entry_count,
             _fmt_nil(r),
@@ -72,14 +73,15 @@ def render_submission_status_pdf(
     # Column widths (landscape A4 minus margins ≈ 267mm).
     col_widths = [
         10 * mm,   # #
-        45 * mm,   # District
-        70 * mm,   # PS
-        18 * mm,   # Cases
-        18 * mm,   # Mule
-        18 * mm,   # Total
-        18 * mm,   # NIL
+        43 * mm,   # District
+        60 * mm,   # PS
+        16 * mm,   # Cases
+        20 * mm,   # Petitions
+        16 * mm,   # Mule
+        16 * mm,   # Total
+        16 * mm,   # NIL
         28 * mm,   # Last Entry
-        20 * mm,   # DSR
+        18 * mm,   # DSR
     ]
 
     total_entries = sum(r.entry_count for r in rows_sorted)

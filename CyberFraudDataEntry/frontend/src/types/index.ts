@@ -354,9 +354,10 @@ export interface SubmissionStatus {
   unit_name: string;
   ps_id: number;
   ps_name: string;
-  /** Total entries (cases + mule reports) this PS has made up to the selected date. */
+  /** Total entries (cases + petitions + mule reports) this PS has made up to the selected date. */
   entry_count: number;
   cases_count: number;
+  petitions_count: number;
   mule_count: number;
   /** ISO date of the most recent case or mule report for this PS, or null if never. */
   last_entry_date: string | null;

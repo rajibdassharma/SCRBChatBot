@@ -340,7 +340,7 @@ function SubmissionStatusTable({ statuses, refDate }: { statuses: SubmissionStat
       <div className="px-5 py-4 flex items-start justify-between gap-4" style={{ borderBottom: '3px solid var(--ksp-yellow)' }}>
         <div className="min-w-0">
           <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>Submission Status for {refDate}</h3>
-          <p className="text-xs mt-1 opacity-60">One row per Police Station. Click District / Cases / Total / Last Entry to sort — click again to reverse direction. Last-entry colour: green = today/yesterday, navy ≤ 7d, amber ≤ 30d, red &gt; 30d or never. NIL declarations count as a valid entry, so a PS that only ever declares NIL never shows "Never". DSR is district-level so all PSes in the same district show the same flag.</p>
+          <p className="text-xs mt-1 opacity-60">One row per Police Station. Total = Cases + Petitions + Mule. Click District / Cases / Total / Last Entry to sort — click again to reverse direction. Last-entry colour: green = today/yesterday, navy ≤ 7d, amber ≤ 30d, red &gt; 30d or never. NIL declarations count as a valid entry, so a PS that only ever declares NIL never shows "Never". DSR is district-level so all PSes in the same district show the same flag.</p>
         </div>
         <button
           type="button"
@@ -371,11 +371,12 @@ function SubmissionStatusTable({ statuses, refDate }: { statuses: SubmissionStat
                 title="Sort by Cases">
               Cases{arrow('cases')}
             </th>
+            <th className="px-4 py-3 text-xs uppercase font-bold text-right">Petitions</th>
             <th className="px-4 py-3 text-xs uppercase font-bold text-right">Mule</th>
             <th className="px-4 py-3 text-xs uppercase font-bold text-right"
                 style={{ cursor: 'pointer', userSelect: 'none' }}
                 onClick={() => onSort('total', 'desc')}
-                title="Sort by Total">
+                title="Sort by Total (Cases + Petitions + Mule)">
               Total{arrow('total')}
             </th>
             <th className="px-4 py-3 text-xs uppercase font-bold text-right" title="Cumulative NIL declarations up to the selected date">NIL</th>
@@ -398,6 +399,9 @@ function SubmissionStatusTable({ statuses, refDate }: { statuses: SubmissionStat
                 <td className="px-4 py-2" style={{ color: 'var(--ksp-navy)' }}>{s.ps_name || '—'}</td>
                 <td className="px-4 py-2 text-right" style={{ color: 'var(--ksp-navy)' }}>
                   {formatNumber(s.cases_count)}
+                </td>
+                <td className="px-4 py-2 text-right" style={{ color: 'var(--ksp-navy)' }}>
+                  {formatNumber(s.petitions_count)}
                 </td>
                 <td className="px-4 py-2 text-right" style={{ color: 'var(--ksp-navy)' }}>
                   {formatNumber(s.mule_count)}

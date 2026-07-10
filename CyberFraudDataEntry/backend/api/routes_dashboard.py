@@ -373,6 +373,22 @@ async def compute_submission_status(
         .group_by(MuleReport.unit_id, User.ps_id)
     )).all()
 
+    # Petitions — child rows of `petitions`. Attribute to a PS via the
+    # parent case's (unit_id, ps_id). Same definition the DSR aggregator
+    # uses so the two reports stay reconciled.
+    petition_rows = (await db.execute(
+        select(
+            Case.unit_id,
+            Case.ps_id,
+            func.count(Petition.id),
+            func.max(func.date(Petition.created_at)),
+        )
+        .select_from(Petition)
+        .join(Case, Petition.case_id == Case.id)
+        .where(func.date(Petition.created_at) <= target_date)
+        .group_by(Case.unit_id, Case.ps_id)
+    )).all()
+
     dsr_rows = (await db.execute(
         select(DsrEntry.unit_id)
         .where(DsrEntry.report_date == target_date)
@@ -390,6 +406,12 @@ async def compute_submission_status(
     }
     mule_last: dict[tuple[int, int], date | None] = {
         (int(uid), int(pid)): d for uid, pid, _, d in mule_rows if pid is not None
+    }
+    petition_counts: dict[tuple[int, int], int] = {
+        (int(uid), int(pid)): int(n or 0) for uid, pid, n, _ in petition_rows if pid is not None
+    }
+    petition_last: dict[tuple[int, int], date | None] = {
+        (int(uid), int(pid)): d for uid, pid, _, d in petition_rows if pid is not None
     }
     dsr_filed: set[int] = {row[0] for row in dsr_rows}
 
@@ -430,12 +452,18 @@ async def compute_submission_status(
     for uid, uname, pid, pname in ps_rows:
         key = (int(uid), int(pid))
         c = case_counts.get(key, 0)
+        p = petition_counts.get(key, 0)
         m = mule_counts.get(key, 0)
-        # last_entry_date is the max across cases, mule reports, AND NIL
-        # declarations. If a PS only declares NIL and never enters real
-        # cases, the column still shows the last NIL date instead of "Never".
+        # last_entry_date is the max across cases, petitions, mule reports,
+        # AND NIL declarations. A PS whose only activity is petitions (or
+        # only NIL) still shows the last real date, not "Never".
         last_dates = [
-            d for d in (case_last.get(key), mule_last.get(key), nil_last.get(key))
+            d for d in (
+                case_last.get(key),
+                petition_last.get(key),
+                mule_last.get(key),
+                nil_last.get(key),
+            )
             if d is not None
         ]
         last = max(last_dates) if last_dates else None
@@ -444,8 +472,9 @@ async def compute_submission_status(
             unit_name=uname,
             ps_id=int(pid),
             ps_name=pname or "",
-            entry_count=c + m,
+            entry_count=c + p + m,
             cases_count=c,
+            petitions_count=p,
             mule_count=m,
             last_entry_date=last.isoformat() if last else None,
             dsr_filed=int(uid) in dsr_filed,
