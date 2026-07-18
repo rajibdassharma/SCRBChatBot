@@ -274,7 +274,7 @@ export function MuleReportEntryPage() {
     <div>
       {/* Header */}
       <div className="rounded-2xl p-4 mb-4" style={{ background: 'var(--ksp-navy)', color: '#fff' }}>
-        <h1 className="text-lg font-bold" style={{ color: 'var(--ksp-yellow)' }}>Mule Accounts Data</h1>
+        <h1 className="text-lg font-bold" style={{ color: 'var(--ksp-yellow)' }}>NCRP Data</h1>
         <div className="flex gap-6 mt-2 text-sm">
           <span><strong>District:</strong> {user?.unit_name}</span>
           <span><strong>CCPS:</strong> {user?.ps_name || 'N/A'}</span>

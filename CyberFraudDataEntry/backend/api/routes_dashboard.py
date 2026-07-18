@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, and_
+from sqlalchemy import case, select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
@@ -20,6 +20,8 @@ from models.mule_entry import MuleEntry
 from models.mule_report import MuleReport
 from models.money_transfer import MoneyTransfer
 from models.atm_withdrawal import AtmWithdrawal
+from models.all_account import AllAccount
+from models.all_account_mule_herder import AllAccountMuleHerder
 from models.unit import Unit
 from models.user import User
 from models.police_station import PoliceStation
@@ -31,6 +33,7 @@ from schemas.dashboard import (
     AccountCaseDetail, CaseDetailFull,
     ArrestSummary, LienSummary, PetitionSummary, RefundSummary,
     DisposalSummary, TrialSummary, PendingByYearRow,
+    AccountsKpiSummary, AccountsPsComparison,
 )
 from api.deps import require_admin, CurrentUser
 
@@ -1354,3 +1357,145 @@ async def get_pending_by_year(
     # Heaviest backlog first
     out.sort(key=lambda r: -(r.y2021 + r.y2022 + r.y2023 + r.y2024 + r.y2025 + r.y2026))
     return out
+
+
+# ════════════════════════════════════════════════════════════════
+# ── Accounts dashboard (All Accounts feature, 2026-07-18) ──────
+# Same scoping as DSR: admin sees own PS, super_admin sees all.
+# ════════════════════════════════════════════════════════════════
+
+
+def _scope_accounts(query, current: CurrentUser):
+    if current.role == "super_admin":
+        return query
+    if not current.unit_id or not current.ps_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to a Police Station.")
+    return query.where(
+        AllAccount.unit_id == current.unit_id,
+        AllAccount.ps_id == current.ps_id,
+    )
+
+
+@router.get("/accounts-summary", response_model=AccountsKpiSummary)
+async def get_accounts_summary(
+    target_date: date = Query(..., alias="date", description="Cumulative cutoff — include accounts created on or before this date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Cumulative account-level KPIs as of `date`. Mirrors the shape
+    of /summary but populated from all_accounts + its child rows."""
+    base = _scope_accounts(select(AllAccount), admin).where(
+        func.date(AllAccount.created_at) <= target_date
+    )
+
+    total_accounts = (await db.execute(
+        _scope_accounts(select(func.count(AllAccount.id)), admin)
+        .where(func.date(AllAccount.created_at) <= target_date)
+    )).scalar() or 0
+
+    victim_accounts = (await db.execute(
+        _scope_accounts(select(func.count(AllAccount.id)), admin)
+        .where(func.date(AllAccount.created_at) <= target_date)
+        .where(AllAccount.account_type == "Victim")
+    )).scalar() or 0
+
+    mule_accounts = (await db.execute(
+        _scope_accounts(select(func.count(AllAccount.id)), admin)
+        .where(func.date(AllAccount.created_at) <= target_date)
+        .where(AllAccount.account_type == "Mule")
+    )).scalar() or 0
+
+    unique_banks = (await db.execute(
+        _scope_accounts(select(func.count(func.distinct(AllAccount.bank_name))), admin)
+        .where(func.date(AllAccount.created_at) <= target_date)
+    )).scalar() or 0
+
+    # Distinct mule herder names (across accounts scoped to caller).
+    herder_q = (
+        select(func.count(func.distinct(AllAccountMuleHerder.name)))
+        .join(AllAccount, AllAccountMuleHerder.account_id == AllAccount.id)
+        .where(func.date(AllAccountMuleHerder.created_at) <= target_date)
+    )
+    if admin.role != "super_admin":
+        herder_q = herder_q.where(
+            AllAccount.unit_id == admin.unit_id,
+            AllAccount.ps_id == admin.ps_id,
+        )
+    unique_mule_herders = (await db.execute(herder_q)).scalar() or 0
+
+    accounts_with_photo = (await db.execute(
+        _scope_accounts(select(func.count(AllAccount.id)), admin)
+        .where(func.date(AllAccount.created_at) <= target_date)
+        .where(AllAccount.id_photo_path.is_not(None))
+        .where(AllAccount.id_photo_path != "")
+    )).scalar() or 0
+
+    if admin.role == "super_admin":
+        units_submitted = (await db.execute(
+            select(func.count(func.distinct(AllAccount.ps_id)))
+            .where(func.date(AllAccount.created_at) <= target_date)
+        )).scalar() or 0
+        units_total = (await db.execute(
+            select(func.count(PoliceStation.id))
+        )).scalar() or 0
+    else:
+        units_submitted = 1 if total_accounts > 0 else 0
+        units_total = 1
+    _ = base  # keep for reader — base isn't executed directly
+
+    return AccountsKpiSummary(
+        total_accounts=int(total_accounts),
+        victim_accounts=int(victim_accounts),
+        mule_accounts=int(mule_accounts),
+        unique_banks=int(unique_banks),
+        unique_mule_herders=int(unique_mule_herders),
+        accounts_with_photo=int(accounts_with_photo),
+        units_submitted=int(units_submitted),
+        units_total=int(units_total),
+    )
+
+
+@router.get("/accounts-comparison", response_model=List[AccountsPsComparison])
+async def get_accounts_comparison(
+    target_date: date = Query(..., alias="date", description="Cumulative cutoff — include accounts created on or before this date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """One row per PS. admin sees just their own PS; super_admin sees
+    every PS that has at least one account."""
+    q = (
+        select(
+            AllAccount.unit_id,
+            Unit.name.label("unit_name"),
+            AllAccount.ps_id,
+            PoliceStation.station_name.label("ps_name"),
+            func.count(AllAccount.id).label("total"),
+            func.sum(
+                case((AllAccount.account_type == "Victim", 1), else_=0)
+            ).label("victims"),
+            func.sum(
+                case((AllAccount.account_type == "Mule", 1), else_=0)
+            ).label("mules"),
+        )
+        .join(Unit, Unit.id == AllAccount.unit_id)
+        .join(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+        .where(func.date(AllAccount.created_at) <= target_date)
+        .group_by(AllAccount.unit_id, Unit.name, AllAccount.ps_id, PoliceStation.station_name)
+        .order_by(func.count(AllAccount.id).desc())
+    )
+    if admin.role != "super_admin":
+        q = q.where(AllAccount.unit_id == admin.unit_id, AllAccount.ps_id == admin.ps_id)
+
+    rows = (await db.execute(q)).all()
+    return [
+        AccountsPsComparison(
+            unit_id=r.unit_id,
+            unit_name=r.unit_name,
+            ps_id=r.ps_id,
+            ps_name=r.ps_name,
+            total=int(r.total or 0),
+            victims=int(r.victims or 0),
+            mules=int(r.mules or 0),
+        )
+        for r in rows
+    ]

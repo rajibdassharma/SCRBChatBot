@@ -609,3 +609,96 @@ export interface NilDeclarationCreatePayload {
   nil_date?: string;            // defaults to today server-side if omitted
   reason?: string;
 }
+
+
+// ── All Accounts (2026-07-18) ────────────────────────────────
+
+export type AccountType = 'Victim' | 'Mule';
+
+export interface MuleHerder {
+  id?: string;
+  name: string;
+  address: string | null;
+  mobile_no: string | null;
+}
+
+export interface AllAccount {
+  id: string;
+  unit_id: number;
+  ps_id: number;
+  serial_no: number;
+
+  fir_no: string | null;
+  ncrp_ack_no: string | null;
+
+  account_no: string;
+  bank_name: string;
+  branch_name: string | null;
+  ifsc_code: string | null;
+
+  account_holder_name: string;
+  kyc_address: string | null;
+  kyc_mobile: string | null;
+  id_photo_path: string | null;
+
+  account_type: AccountType;
+  mule_herders: MuleHerder[];
+
+  submitted_by: number | null;
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface AllAccountListItem {
+  id: string;
+  serial_no: number;
+  account_no: string;
+  bank_name: string;
+  account_holder_name: string;
+  account_type: AccountType;
+  fir_no: string | null;
+  ncrp_ack_no: string | null;
+  created_at: string;
+}
+
+/** POST/PUT body — the server fills serial_no + ps_id + unit_id. */
+export interface AllAccountWritePayload {
+  fir_no: string | null;
+  ncrp_ack_no: string | null;
+
+  account_no: string;
+  bank_name: string;
+  branch_name: string | null;
+  ifsc_code: string | null;
+
+  account_holder_name: string;
+  kyc_address: string | null;
+  kyc_mobile: string | null;
+  id_photo_path: string | null;
+
+  account_type: AccountType;
+  mule_herders: MuleHerder[];
+}
+
+// ── Accounts dashboard KPIs ─────────────────────────────────
+
+export interface AccountsKpiSummary {
+  total_accounts: number;
+  victim_accounts: number;
+  mule_accounts: number;
+  unique_banks: number;
+  unique_mule_herders: number;
+  accounts_with_photo: number;
+  units_submitted: number;
+  units_total: number;
+}
+
+export interface AccountsPsComparison {
+  unit_id: number;
+  unit_name: string;
+  ps_id: number;
+  ps_name: string;
+  total: number;
+  victims: number;
+  mules: number;
+}

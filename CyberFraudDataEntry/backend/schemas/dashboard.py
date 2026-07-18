@@ -25,6 +25,35 @@ class UnitComparison(BaseModel):
     ps_count: int = 0
 
 
+# ── Accounts dashboard (2026-07-18) ─────────────────────────────
+# Same shape as DSR Overview — headline KPI cards + per-PS
+# comparison table — but populated from all_accounts.
+
+
+class AccountsKpiSummary(BaseModel):
+    total_accounts: int = 0
+    victim_accounts: int = 0
+    mule_accounts: int = 0
+    unique_banks: int = 0
+    unique_mule_herders: int = 0
+    accounts_with_photo: int = 0
+    units_submitted: int = 0
+    units_total: int = 45
+
+
+class AccountsPsComparison(BaseModel):
+    """One row per PS on the accounts comparison table. Mirrors the
+    shape of DSR's UnitComparison — a PS scope is finer than a unit
+    scope (Bangalore City has many PSes), so we group by PS directly."""
+    unit_id: int
+    unit_name: str
+    ps_id: int
+    ps_name: str
+    total: int = 0
+    victims: int = 0
+    mules: int = 0
+
+
 class PsComparison(BaseModel):
     ps_name: str
     cases: int = 0

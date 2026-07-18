@@ -29,6 +29,7 @@ from api.routes_users import router as users_router
 from api.routes_reports import router as reports_router
 from api.routes_chat import router as chat_router
 from api.routes_nil import router as nil_router
+from api.routes_all_accounts import router as all_accounts_router
 
 logger = logging.getLogger(__name__)
 
@@ -121,6 +122,7 @@ app.include_router(reports_router)
 if settings.CHAT_ENABLED:
     app.include_router(chat_router)
 app.include_router(nil_router)
+app.include_router(all_accounts_router)
 
 
 @app.get("/health")

@@ -1,7 +1,7 @@
 import { NavLink } from 'react-router';
 import { useAuthStore } from '../../lib/stores/auth-store';
 import { useState, useEffect } from 'react';
-import { FilePlus, Search, BarChart3, LogOut, FileText, Upload, Users, FileDown, MessageSquare, CalendarOff } from 'lucide-react';
+import { FilePlus, Search, BarChart3, LogOut, FileText, Upload, Users, FileDown, MessageSquare, CalendarOff, Wallet } from 'lucide-react';
 import { toast } from 'sonner';
 import { declareNil, getNilToday } from '../../lib/api/nil';
 import { getFeatures } from '../../lib/api/features';
@@ -74,8 +74,11 @@ export function Sidebar() {
         {/* Divider between sections */}
         <div className="h-[1px] mx-4 my-2" style={{ background: 'rgba(11,44,74,0.15)' }} />
 
-        {/* Mule Accounts Data Section */}
-        <p className="px-4 pt-1 pb-2 text-sm font-extrabold uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>Mule Accounts Data</p>
+        {/* NCRP Data Section (renamed from Mule Accounts Data 2026-07-18 —
+             underlying URLs / API endpoints / DB tables still say "mule"
+             to avoid a breaking rename in production; only the display
+             label changes). */}
+        <p className="px-4 pt-1 pb-2 text-sm font-extrabold uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>NCRP Data</p>
         <NavLink to="/mule/new" className={linkClass}>
           <FilePlus className="w-4 h-4" /> New Report
         </NavLink>
@@ -86,15 +89,34 @@ export function Sidebar() {
           <Upload className="w-4 h-4" /> Upload Bulk Data
         </NavLink>
 
+        {/* Divider between sections */}
+        <div className="h-[1px] mx-4 my-2" style={{ background: 'rgba(11,44,74,0.15)' }} />
+
+        {/* All Accounts Section (2026-07-18) — victim + mule accounts
+             tracked in one place, with the dedicated Account Details
+             Dashboard rendered separately below. */}
+        <p className="px-4 pt-1 pb-2 text-sm font-extrabold uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>All Accounts</p>
+        <NavLink to="/all-accounts/new" className={linkClass}>
+          <FilePlus className="w-4 h-4" /> New Account
+        </NavLink>
+        <NavLink to="/all-accounts/update" className={linkClass}>
+          <Search className="w-4 h-4" /> Update Account
+        </NavLink>
+
         <div className="h-[1px] mx-4 my-2" style={{ background: 'rgba(11,44,74,0.15)' }} />
         <NavLink to="/reports" className={linkClass}>
           <FileDown className="w-4 h-4" /> Reports
         </NavLink>
 
         {isAdmin && (
-          <NavLink to="/dashboard" className={linkClass}>
-            <BarChart3 className="w-4 h-4" /> Dashboard
-          </NavLink>
+          <>
+            <NavLink to="/dashboard" className={linkClass}>
+              <BarChart3 className="w-4 h-4" /> DSR Dashboard
+            </NavLink>
+            <NavLink to="/accounts-dashboard" className={linkClass}>
+              <Wallet className="w-4 h-4" /> Account Details Dashboard
+            </NavLink>
+          </>
         )}
 
         {chatEnabled && (

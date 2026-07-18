@@ -17,6 +17,9 @@ import { ChangePasswordPage } from './pages/ChangePasswordPage';
 import { UserManagementPage } from './pages/UserManagementPage';
 import { ReportsPage } from './pages/ReportsPage';
 import { ChatPage } from './pages/ChatPage';
+import { AllAccountEntryPage } from './pages/AllAccountEntryPage';
+import { AllAccountUpdatePage } from './pages/AllAccountUpdatePage';
+import { AccountsDashboardPage } from './pages/AccountsDashboardPage';
 
 function App() {
   const { logout } = useAuthStore();
@@ -53,11 +56,24 @@ function App() {
         <Route path="/mule/update" element={<MuleUpdatePage />} />
         <Route path="/mule/:id" element={<MuleReportEntryPage />} />
 
+        <Route path="/all-accounts/new" element={<AllAccountEntryPage />} />
+        <Route path="/all-accounts/update" element={<AllAccountUpdatePage />} />
+        <Route path="/all-accounts/:id" element={<AllAccountEntryPage />} />
+
         <Route
           path="/dashboard"
           element={
             <ProtectedRoute requireAdmin>
               <DashboardPage />
+            </ProtectedRoute>
+          }
+        />
+
+        <Route
+          path="/accounts-dashboard"
+          element={
+            <ProtectedRoute requireAdmin>
+              <AccountsDashboardPage />
             </ProtectedRoute>
           }
         />

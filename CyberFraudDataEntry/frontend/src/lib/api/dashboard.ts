@@ -5,7 +5,17 @@ import type {
   RecurringAccount, BankConcentration, AtmHotspot, LayerBucket, LienAccountAtLayer,
   AccountCaseDetail, CaseDetailFull,
   DisposalSummary, TrialSummary, PendingByYearRow,
+  AccountsKpiSummary, AccountsPsComparison,
 } from '../../types';
+
+/** All Accounts dashboard — KPI cards + per-PS comparison. */
+export async function getAccountsSummary(date: string): Promise<AccountsKpiSummary> {
+  return apiFetch<AccountsKpiSummary>(`/api/v1/dashboard/accounts-summary?date=${date}`);
+}
+
+export async function getAccountsComparison(date: string): Promise<AccountsPsComparison[]> {
+  return apiFetch<AccountsPsComparison[]>(`/api/v1/dashboard/accounts-comparison?date=${date}`);
+}
 
 export async function getSummary(date: string): Promise<KpiSummary> {
   return apiFetch<KpiSummary>(`/api/v1/dashboard/summary?date=${date}`);
