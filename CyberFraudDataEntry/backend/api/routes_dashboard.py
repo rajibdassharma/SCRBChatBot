@@ -1405,6 +1405,12 @@ async def get_accounts_summary(
         .where(AllAccount.account_type == "Mule")
     )).scalar() or 0
 
+    non_mule_accounts = (await db.execute(
+        _scope_accounts(select(func.count(AllAccount.id)), admin)
+        .where(func.date(AllAccount.created_at) <= target_date)
+        .where(AllAccount.account_type == "Non-Mule")
+    )).scalar() or 0
+
     unique_banks = (await db.execute(
         _scope_accounts(select(func.count(func.distinct(AllAccount.bank_name))), admin)
         .where(func.date(AllAccount.created_at) <= target_date)
@@ -1447,6 +1453,7 @@ async def get_accounts_summary(
         total_accounts=int(total_accounts),
         victim_accounts=int(victim_accounts),
         mule_accounts=int(mule_accounts),
+        non_mule_accounts=int(non_mule_accounts),
         unique_banks=int(unique_banks),
         unique_mule_herders=int(unique_mule_herders),
         accounts_with_photo=int(accounts_with_photo),
@@ -1476,6 +1483,9 @@ async def get_accounts_comparison(
             func.sum(
                 case((AllAccount.account_type == "Mule", 1), else_=0)
             ).label("mules"),
+            func.sum(
+                case((AllAccount.account_type == "Non-Mule", 1), else_=0)
+            ).label("non_mules"),
         )
         .join(Unit, Unit.id == AllAccount.unit_id)
         .join(PoliceStation, PoliceStation.id == AllAccount.ps_id)
@@ -1496,6 +1506,7 @@ async def get_accounts_comparison(
             total=int(r.total or 0),
             victims=int(r.victims or 0),
             mules=int(r.mules or 0),
+            non_mules=int(r.non_mules or 0),
         )
         for r in rows
     ]

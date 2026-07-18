@@ -613,7 +613,7 @@ export interface NilDeclarationCreatePayload {
 
 // ── All Accounts (2026-07-18) ────────────────────────────────
 
-export type AccountType = 'Victim' | 'Mule';
+export type AccountType = 'Victim' | 'Mule' | 'Non-Mule';
 
 export interface MuleHerder {
   id?: string;
@@ -686,6 +686,7 @@ export interface AccountsKpiSummary {
   total_accounts: number;
   victim_accounts: number;
   mule_accounts: number;
+  non_mule_accounts: number;
   unique_banks: number;
   unique_mule_herders: number;
   accounts_with_photo: number;
@@ -701,4 +702,5 @@ export interface AccountsPsComparison {
   total: number;
   victims: number;
   mules: number;
+  non_mules: number;
 }

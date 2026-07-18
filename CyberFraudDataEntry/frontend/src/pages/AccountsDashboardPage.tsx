@@ -70,10 +70,11 @@ export function AccountsDashboardPage() {
       ) : (
         <div className="space-y-6">
           {/* KPI cards row */}
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
             <KpiCard label="Total Accounts" value={formatNumber(summary?.total_accounts ?? 0)} />
             <KpiCard label="Victim Accounts" value={formatNumber(summary?.victim_accounts ?? 0)} />
             <KpiCard label="Mule Accounts" value={formatNumber(summary?.mule_accounts ?? 0)} />
+            <KpiCard label="Non-Mule Accounts" value={formatNumber(summary?.non_mule_accounts ?? 0)} />
             <KpiCard label="Unique Banks" value={formatNumber(summary?.unique_banks ?? 0)} />
             <KpiCard label="Mule Herders" value={formatNumber(summary?.unique_mule_herders ?? 0)}
               sub="distinct names" />
@@ -108,12 +109,13 @@ export function AccountsDashboardPage() {
                   <th className="px-3 py-2 text-right">Total</th>
                   <th className="px-3 py-2 text-right">Victim</th>
                   <th className="px-3 py-2 text-right">Mule</th>
+                  <th className="px-3 py-2 text-right">Non-Mule</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-3 py-8 text-center italic opacity-60">
+                    <td colSpan={6} className="px-3 py-8 text-center italic opacity-60">
                       No account records yet for this cut-off date.
                     </td>
                   </tr>
@@ -128,6 +130,9 @@ export function AccountsDashboardPage() {
                     </td>
                     <td className="px-3 py-2 text-right font-mono">
                       <span style={{ color: '#8b1919' }}>{formatNumber(r.mules)}</span>
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono">
+                      <span style={{ color: '#0b2c4a' }}>{formatNumber(r.non_mules)}</span>
                     </td>
                   </tr>
                 ))}

@@ -28,7 +28,7 @@ export function deleteAllAccount(id: string) {
 /** PS-scoped list with optional free-text search + type filter. */
 export function listAllAccounts(opts: {
   q?: string;
-  accountType?: 'Victim' | 'Mule';
+  accountType?: 'Victim' | 'Mule' | 'Non-Mule';
   limit?: number;
   offset?: number;
 } = {}) {

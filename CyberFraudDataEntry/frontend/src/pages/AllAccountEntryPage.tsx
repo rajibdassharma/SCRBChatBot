@@ -108,26 +108,31 @@ function RemBtn({ onClick }: { onClick: () => void }) {
   );
 }
 
-/** Victim / Mule pill radio — flipping to Victim clears any herders. */
-function TypeRadio({ value, onChange }: { value: 'Victim' | 'Mule'; onChange: (v: 'Victim' | 'Mule') => void }) {
+/** Victim / Mule / Non-Mule pill radio. Herder rows only apply to
+ *  Mule — switching away clears them. */
+function TypeRadio({ value, onChange }: {
+  value: 'Victim' | 'Mule' | 'Non-Mule';
+  onChange: (v: 'Victim' | 'Mule' | 'Non-Mule') => void;
+}) {
   const pill = (active: boolean) => ({
     background: active ? 'var(--ksp-navy)' : '#fff',
     color: active ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
     border: active ? '2px solid var(--ksp-navy)' : '2px solid rgba(11,44,74,0.18)',
     cursor: 'pointer' as const,
   });
+  const options: ('Victim' | 'Mule' | 'Non-Mule')[] = ['Victim', 'Mule', 'Non-Mule'];
   return (
-    <div className="rounded-2xl p-4 flex items-center gap-4"
+    <div className="rounded-2xl p-4 flex items-center gap-4 flex-wrap"
       style={{ background: '#fff', border: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 6px 16px rgba(0,0,0,0.08)' }}>
       <span className="text-xs font-bold uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>Account Type</span>
-      <label className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition" style={pill(value === 'Victim')}>
-        <input type="radio" className="sr-only" checked={value === 'Victim'} onChange={() => onChange('Victim')} />
-        Victim
-      </label>
-      <label className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition" style={pill(value === 'Mule')}>
-        <input type="radio" className="sr-only" checked={value === 'Mule'} onChange={() => onChange('Mule')} />
-        Mule
-      </label>
+      {options.map((opt) => (
+        <label key={opt}
+          className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm font-bold transition"
+          style={pill(value === opt)}>
+          <input type="radio" className="sr-only" checked={value === opt} onChange={() => onChange(opt)} />
+          {opt}
+        </label>
+      ))}
       <p className="text-xs opacity-60 ml-2">
         {value === 'Mule'
           ? 'Mule herder rows appear below — add one per person.'
@@ -370,7 +375,8 @@ export function AllAccountEntryPage() {
         <TypeRadio value={f.account_type}
           onChange={(v) => {
             upd('account_type', v);
-            if (v === 'Victim') upd('mule_herders', []);
+            // Herder rows are Mule-exclusive — clear on any other type.
+            if (v !== 'Mule') upd('mule_herders', []);
           }} />
 
         {/* Mule Herders (only when type = 'Mule'). */}

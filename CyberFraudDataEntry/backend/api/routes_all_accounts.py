@@ -72,13 +72,11 @@ async def _next_serial_no(db: AsyncSession, unit_id: int, ps_id: int) -> int:
 
 def _validate_type_and_herders(body: AllAccountCreate) -> None:
     """Reject payloads that violate the type ↔ herders rule:
-      - Victim + herders  → 422 (herders don't apply)
-      - Mule   + no name  → let the operator save partial drafts;
-                             enforced only at submit time, so we
-                             DON'T reject empty herders on Mule."""
+      - Victim / Non-Mule + herders → 422 (herders don't apply)
+      - Mule + no herders → allowed (operator can save partial drafts)"""
     if body.account_type not in ACCOUNT_TYPES:
         raise HTTPException(status_code=422, detail=f"account_type must be one of {sorted(ACCOUNT_TYPES)}.")
-    if body.account_type == "Victim" and body.mule_herders:
+    if body.account_type != "Mule" and body.mule_herders:
         raise HTTPException(
             status_code=422,
             detail="Mule herder rows are only allowed when account_type = 'Mule'.",

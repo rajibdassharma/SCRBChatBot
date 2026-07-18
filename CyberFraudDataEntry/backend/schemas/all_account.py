@@ -16,7 +16,7 @@ from typing import List, Literal, Optional
 from pydantic import BaseModel, Field, field_validator
 
 
-AccountType = Literal["Victim", "Mule"]
+AccountType = Literal["Victim", "Mule", "Non-Mule"]
 
 
 # ── Mule herder (child) ─────────────────────────────────────────

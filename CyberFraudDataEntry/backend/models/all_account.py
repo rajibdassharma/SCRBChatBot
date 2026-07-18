@@ -26,7 +26,10 @@ from sqlalchemy.orm import relationship
 from database import Base
 
 
-ACCOUNT_TYPES = frozenset({"Victim", "Mule"})
+# Non-Mule = an account under investigation that has NOT been
+# confirmed as a mule (the operator either still needs to verify, or
+# has verified it isn't one). Mule Herder rows only apply to 'Mule'.
+ACCOUNT_TYPES = frozenset({"Victim", "Mule", "Non-Mule"})
 
 
 class AllAccount(Base):

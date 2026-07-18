@@ -34,6 +34,7 @@ class AccountsKpiSummary(BaseModel):
     total_accounts: int = 0
     victim_accounts: int = 0
     mule_accounts: int = 0
+    non_mule_accounts: int = 0
     unique_banks: int = 0
     unique_mule_herders: int = 0
     accounts_with_photo: int = 0
@@ -52,6 +53,7 @@ class AccountsPsComparison(BaseModel):
     total: int = 0
     victims: int = 0
     mules: int = 0
+    non_mules: int = 0
 
 
 class PsComparison(BaseModel):
