@@ -69,7 +69,7 @@ sudo bash "$SOURCE/deploy/backup-db.sh"
 
 # ── 4. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 4. Run additive DB migrations 001 → 004, 006, 007, 008 (idempotent) ==="
+echo "=== 4. Run additive DB migrations 001 → 004, 006 → 009 (idempotent) ==="
 # Migration 005 (chat_messages) is deliberately skipped until the GPU box
 # is in place for the chat feature — there's no point provisioning an
 # empty audit table for an endpoint the prod app does not yet expose.
@@ -87,6 +87,7 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.006_add_is_financial_to_cases
     venv/bin/python -m migrations.007_add_daily_nil_declarations
     venv/bin/python -m migrations.008_add_ps_id_to_dsr_entries
+    venv/bin/python -m migrations.009_add_all_accounts_tables
 "
 
 # ── 5. Build the frontend ────────────────────────────────────────────
@@ -234,10 +235,57 @@ else
     exit 1
 fi
 
+# Migration 009 schema sanity check — All Accounts feature tables + the
+# per-PS Serial No unique index.
+ALL_ACC_TABLE=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='all_accounts'" 2>/dev/null || echo "ERROR")
+if [ "$ALL_ACC_TABLE" = "1" ]; then
+    echo "    ✓ all_accounts table present"
+else
+    echo "    ✗ all_accounts table missing — migration 009 did not complete"
+    exit 1
+fi
+HERDER_TABLE=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='all_account_mule_herders'" 2>/dev/null || echo "ERROR")
+if [ "$HERDER_TABLE" = "1" ]; then
+    echo "    ✓ all_account_mule_herders table present"
+else
+    echo "    ✗ all_account_mule_herders table missing — migration 009 did not complete"
+    exit 1
+fi
+ALL_ACC_UQ=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='all_accounts' AND INDEX_NAME='uq_all_account_ps_serial'" 2>/dev/null || echo "ERROR")
+if [ "$ALL_ACC_UQ" != "0" ] && [ "$ALL_ACC_UQ" != "ERROR" ]; then
+    echo "    ✓ uq_all_account_ps_serial unique index in place"
+else
+    echo "    ✗ uq_all_account_ps_serial unique index missing — migration 009 incomplete"
+    exit 1
+fi
+
+# /api/v1/all-accounts must be mounted (401/403 is fine — no session)
+if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" https://localhost/api/v1/all-accounts | grep -qE '^(401|403)$'; then
+    echo "    ✓ /api/v1/all-accounts mounted"
+else
+    echo "    ✗ /api/v1/all-accounts not responding correctly"
+    exit 1
+fi
+
+# /api/v1/dashboard/accounts-summary must be mounted too.
+if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "https://localhost/api/v1/dashboard/accounts-summary?date=2026-01-01" | grep -qE '^(401|403)$'; then
+    echo "    ✓ /api/v1/dashboard/accounts-summary mounted"
+else
+    echo "    ✗ /api/v1/dashboard/accounts-summary not responding correctly"
+    exit 1
+fi
+
 echo
 echo "================================================================"
 echo "  ✓ Incremental update complete."
 echo
-echo "  Reminder: tell users of the renamed PS to pick"
-echo "  'South East CEN PS' on the login dropdown."
+echo "  This deploy adds the All Accounts feature — a new sidebar"
+echo "  section (New Account / Update Account) + Account Details"
+echo "  Dashboard. Third account type 'Non-Mule' now available"
+echo "  alongside Victim + Mule. The former 'Dashboard' link is now"
+echo "  'DSR Dashboard' and the 'Mule Accounts Data' section header"
+echo "  is renamed 'NCRP Data' (URLs / API paths unchanged)."
 echo "================================================================"
