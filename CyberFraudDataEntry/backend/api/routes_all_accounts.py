@@ -100,6 +100,7 @@ def _to_response(row: AllAccount) -> AllAccountResponse:
         kyc_address=row.kyc_address,
         kyc_mobile=row.kyc_mobile,
         id_photo_path=row.id_photo_path,
+        account_statement_path=row.account_statement_path,
         account_type=row.account_type,
         mule_herders=[
             MuleHerderOut(id=h.id, name=h.name, address=h.address, mobile_no=h.mobile_no)
@@ -152,6 +153,7 @@ async def create_account(
             kyc_address=body.kyc_address,
             kyc_mobile=body.kyc_mobile,
             id_photo_path=body.id_photo_path,
+            account_statement_path=body.account_statement_path,
             account_type=body.account_type,
             submitted_by=current.user_id,
         )
@@ -273,6 +275,7 @@ async def update_account(
     row.kyc_address = body.kyc_address
     row.kyc_mobile = body.kyc_mobile
     row.id_photo_path = body.id_photo_path
+    row.account_statement_path = body.account_statement_path
     row.account_type = body.account_type
 
     # Wholesale replace of the child collection.

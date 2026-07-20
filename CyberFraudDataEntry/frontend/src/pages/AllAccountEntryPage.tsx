@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { toast } from 'sonner';
-import { Plus, Save, Trash2, Upload, X } from 'lucide-react';
+import { FileText, Plus, Save, Trash2, Upload, X } from 'lucide-react';
 import {
   createAllAccount, deleteAllAccount, getAllAccount, updateAllAccount,
 } from '../lib/api/all-accounts';
@@ -29,6 +29,13 @@ function validateAccountNo(v: string): string | null {
   return null;
 }
 
+function validateFirNo(v: string | null | undefined): string | null {
+  const t = (v ?? '').trim();
+  if (!t) return null;   // optional field — blank is fine
+  if (!/^\d{4}\/\d{4}$/.test(t)) return 'FIR No must be in the format XXXX/XXXX (e.g. 0001/2026)';
+  return null;
+}
+
 function validateMobile(v: string | null | undefined, label: string): string | null {
   const t = (v ?? '').trim();
   if (!t) return null;   // optional field — blank is fine
@@ -43,6 +50,7 @@ const emptyForm = (): AllAccountWritePayload => ({
   account_no: '', bank_name: '', branch_name: null, branch_district: null, ifsc_code: null,
   account_holder_name: '', kyc_address: null, kyc_mobile: null,
   id_photo_path: null,
+  account_statement_path: null,
   account_type: 'Victim',
   mule_herders: [],
 });
@@ -203,6 +211,7 @@ export function AllAccountEntryPage() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadingStatement, setUploadingStatement] = useState(false);
   const [districts, setDistricts] = useState<string[]>([]);
 
   // Load the Karnataka districts list once — same public endpoint the
@@ -231,6 +240,7 @@ export function AllAccountEntryPage() {
           kyc_address: data.kyc_address,
           kyc_mobile: data.kyc_mobile,
           id_photo_path: data.id_photo_path,
+          account_statement_path: data.account_statement_path,
           account_type: data.account_type,
           mule_herders: data.mule_herders.map((h) => ({
             id: h.id, name: h.name, address: h.address, mobile_no: h.mobile_no,
@@ -243,6 +253,33 @@ export function AllAccountEntryPage() {
 
   const upd = <K extends keyof AllAccountWritePayload>(k: K, v: AllAccountWritePayload[K]) =>
     setF((p) => ({ ...p, [k]: v }));
+
+  /** Uploads a bank account statement (PDF or Excel) to the dedicated
+   *  /api/v1/uploads/statement endpoint. 5MB cap enforced server-side. */
+  const handleStatementUpload = async (file: File) => {
+    setUploadingStatement(true);
+    try {
+      const token = localStorage.getItem('token');
+      const formData = new FormData();
+      formData.append('file', file);
+      const res = await fetch(`${BASE}/api/v1/uploads/statement`, {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${token}` },
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      const data = await res.json();
+      upd('account_statement_path', data.statement_path);
+      toast.success(`Statement uploaded (${file.name})`);
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Statement upload failed');
+    } finally {
+      setUploadingStatement(false);
+    }
+  };
 
   /** Reuses the existing /api/v1/uploads/photo endpoint the accused-photo
    *  flow uses — accepts image/pdf, 500KB cap on the server. */
@@ -272,6 +309,8 @@ export function AllAccountEntryPage() {
   };
 
   const handleSave = async () => {
+    const firErr = validateFirNo(f.fir_no);
+    if (firErr) { toast.error(firErr); return; }
     const acctErr = validateAccountNo(f.account_no);
     if (acctErr) { toast.error(acctErr); return; }
     if (!f.bank_name.trim())           { toast.error('Bank Name is required'); return; }
@@ -301,6 +340,7 @@ export function AllAccountEntryPage() {
         kyc_address: f.kyc_address?.trim() || null,
         kyc_mobile: f.kyc_mobile?.trim() || null,
         id_photo_path: f.id_photo_path?.trim() || null,
+        account_statement_path: f.account_statement_path?.trim() || null,
         mule_herders: f.account_type === 'Mule'
           ? f.mule_herders.map((h) => ({
               id: h.id,
@@ -368,7 +408,8 @@ export function AllAccountEntryPage() {
       <div className="space-y-5 max-w-5xl">
         <Section title="Case Reference">
           <TextField label="FIR No" value={f.fir_no ?? ''}
-            onChange={(v) => upd('fir_no', v)} placeholder="e.g. 123/2026" />
+            onChange={(v) => upd('fir_no', v.replace(/[^\d/]/g, ''))}
+            maxLength={9} placeholder="0001/2026" />
           <TextField label="NCRP Ack No" value={f.ncrp_ack_no ?? ''}
             onChange={(v) => upd('ncrp_ack_no', v)}
             placeholder="e.g. 30811260070042" />
@@ -391,6 +432,49 @@ export function AllAccountEntryPage() {
           <TextField label="IFSC Code" value={f.ifsc_code ?? ''}
             onChange={(v) => upd('ifsc_code', v.toUpperCase())}
             maxLength={11} placeholder="e.g. HDFC0001234" />
+
+          {/* Account statement upload — PDF or Excel, one per account, 5MB cap.
+              Sits inside the Account Details grid as a full-width row. */}
+          <div className="col-span-full">
+            <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>
+              Account Statement (PDF or Excel)
+            </label>
+            {f.account_statement_path ? (
+              <div className="flex items-center gap-3 px-3 py-2 rounded-xl"
+                   style={{ border: '2px solid var(--ksp-navy)', background: '#fff' }}>
+                <FileText className="w-5 h-5" style={{ color: 'var(--ksp-navy)' }} />
+                <a href={`${BASE}/${f.account_statement_path}`} target="_blank" rel="noreferrer"
+                   className="text-sm font-mono truncate flex-1 hover:underline"
+                   style={{ color: 'var(--ksp-navy)' }}
+                   title={f.account_statement_path}>
+                  {f.account_statement_path.split('/').pop()}
+                </a>
+                <label className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold rounded-lg cursor-pointer transition"
+                  style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)', border: '2px solid rgba(0,0,0,0.25)' }}>
+                  <Upload className="w-3.5 h-3.5" /> Replace
+                  <input type="file" accept=".pdf,.xlsx,.xls,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                    className="hidden" disabled={uploadingStatement}
+                    onChange={(e) => { const file = e.target.files?.[0]; if (file) handleStatementUpload(file); }} />
+                </label>
+                <button type="button"
+                  onClick={() => upd('account_statement_path', null)}
+                  className="inline-flex items-center gap-1 px-3 py-1.5 text-xs font-semibold rounded-lg"
+                  style={{ background: 'rgba(177,0,0,0.08)', color: 'var(--ksp-red)', border: '1px solid rgba(177,0,0,0.2)' }}>
+                  <X className="w-3.5 h-3.5" /> Remove
+                </button>
+              </div>
+            ) : (
+              <label className="inline-flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-xl cursor-pointer transition"
+                style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)', border: '2px solid rgba(0,0,0,0.25)' }}>
+                <Upload className="w-4 h-4" />
+                {uploadingStatement ? 'Uploading…' : 'Upload Statement'}
+                <input type="file" accept=".pdf,.xlsx,.xls,application/pdf,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel"
+                  className="hidden" disabled={uploadingStatement}
+                  onChange={(e) => { const file = e.target.files?.[0]; if (file) handleStatementUpload(file); }} />
+              </label>
+            )}
+            <p className="text-xs mt-1 opacity-60">PDF, XLSX or XLS. Max 5MB.</p>
+          </div>
         </Section>
 
         <Section title="Account Holder — KYC">

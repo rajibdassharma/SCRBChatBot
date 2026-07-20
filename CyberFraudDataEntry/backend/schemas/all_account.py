@@ -25,6 +25,21 @@ AccountType = Literal["Victim", "Mule", "Non-Mule"]
 # depth). Rules confirmed with operators 2026-07-20.
 
 _NUMERIC = re.compile(r"^\d+$")
+_FIR_NO = re.compile(r"^\d{4}/\d{4}$")
+
+
+def _validate_fir_no(v: Optional[str]) -> Optional[str]:
+    """FIR No must be XXXX/XXXX (4 numeric digits, slash, 4 numeric
+    digits) so operators enter 0001/2026, not 1/2026. Blank/None is
+    allowed — the field is optional."""
+    if v is None:
+        return None
+    t = v.strip()
+    if not t:
+        return None
+    if not _FIR_NO.match(t):
+        raise ValueError("FIR No must be in the format XXXX/XXXX (e.g. 0001/2026).")
+    return t
 
 
 def _validate_account_no(v: str) -> str:
@@ -113,6 +128,7 @@ class AllAccountCreate(BaseModel):
     kyc_address: Optional[str] = Field(default=None, max_length=5000)
     kyc_mobile: Optional[str] = Field(default=None, max_length=20)
     id_photo_path: Optional[str] = Field(default=None, max_length=500)
+    account_statement_path: Optional[str] = Field(default=None, max_length=500)
 
     account_type: AccountType
     # Only meaningful when account_type == 'Mule'. If [] and Victim,
@@ -136,6 +152,11 @@ class AllAccountCreate(BaseModel):
     @classmethod
     def _v_kyc_mobile(cls, v):
         return _validate_mobile(v, label="Mobile No")
+
+    @field_validator("fir_no")
+    @classmethod
+    def _v_fir_no(cls, v):
+        return _validate_fir_no(v)
 
 
 class AllAccountUpdate(AllAccountCreate):
@@ -164,6 +185,7 @@ class AllAccountResponse(BaseModel):
     kyc_address: Optional[str] = None
     kyc_mobile: Optional[str] = None
     id_photo_path: Optional[str] = None
+    account_statement_path: Optional[str] = None
 
     account_type: str
     mule_herders: List[MuleHerderOut] = []

@@ -641,6 +641,7 @@ export interface AllAccount {
   kyc_address: string | null;
   kyc_mobile: string | null;
   id_photo_path: string | null;
+  account_statement_path: string | null;
 
   account_type: AccountType;
   mule_herders: MuleHerder[];
@@ -677,6 +678,7 @@ export interface AllAccountWritePayload {
   kyc_address: string | null;
   kyc_mobile: string | null;
   id_photo_path: string | null;
+  account_statement_path: string | null;
 
   account_type: AccountType;
   mule_herders: MuleHerder[];

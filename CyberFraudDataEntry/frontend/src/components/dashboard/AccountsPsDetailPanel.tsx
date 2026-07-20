@@ -47,6 +47,7 @@ const COLUMNS: Array<{
   { key: 'kyc_address',         label: 'KYC Address', export: (r) => r.kyc_address ?? '' },
   { key: 'kyc_mobile',          label: 'KYC Mobile',  export: (r) => r.kyc_mobile ?? '' },
   { key: 'id_photo_path',       label: 'ID Photo',    export: (r) => (r.id_photo_path ? 'Yes' : '') },
+  { key: 'account_statement_path', label: 'Statement', export: (r) => r.account_statement_path ?? '' },
   {
     key: 'mule_herders_summary',
     label: 'Mule Herders',
@@ -143,7 +144,8 @@ export function AccountsPsDetailPanel({ ps, asOfDate, onBack }: Props) {
       alternateRowStyles: { fillColor: [245, 245, 247] },
       columnStyles: {
         10: { cellWidth: 90 },   // KYC Address — wider
-        13: { cellWidth: 120 },  // Mule Herders — widest
+        13: { cellWidth: 60 },   // Statement — path is long
+        14: { cellWidth: 120 },  // Mule Herders — widest
       },
     });
     const filename = `account-details_${slug(ps.unit_name)}_${slug(ps.ps_name)}_${asOfDate}.pdf`;
@@ -253,6 +255,14 @@ export function AccountsPsDetailPanel({ ps, asOfDate, onBack }: Props) {
                         </td>
                         <td className="px-3 py-2 font-mono">{r.kyc_mobile ?? '—'}</td>
                         <td className="px-3 py-2">{r.id_photo_path ? 'Yes' : '—'}</td>
+                        <td className="px-3 py-2">
+                          {r.account_statement_path
+                            ? <a href={`/${r.account_statement_path}`} target="_blank" rel="noreferrer"
+                                 className="hover:underline" style={{ color: 'var(--ksp-navy)' }}>
+                                Yes
+                              </a>
+                            : '—'}
+                        </td>
                         <td className="px-3 py-2">
                           {herders.length > 0
                             ? <span className="font-semibold">{herders.length}</span>

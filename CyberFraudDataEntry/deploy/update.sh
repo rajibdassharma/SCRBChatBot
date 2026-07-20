@@ -69,7 +69,7 @@ sudo bash "$SOURCE/deploy/backup-db.sh"
 
 # ── 4. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 4. Run additive DB migrations 001 → 004, 006 → 010 (idempotent) ==="
+echo "=== 4. Run additive DB migrations 001 → 004, 006 → 011 (idempotent) ==="
 # Migration 005 (chat_messages) is deliberately skipped until the GPU box
 # is in place for the chat feature — there's no point provisioning an
 # empty audit table for an endpoint the prod app does not yet expose.
@@ -89,6 +89,7 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.008_add_ps_id_to_dsr_entries
     venv/bin/python -m migrations.009_add_all_accounts_tables
     venv/bin/python -m migrations.010_add_branch_district_to_all_accounts
+    venv/bin/python -m migrations.011_add_account_statement_path_to_all_accounts
 "
 
 # ── 5. Build the frontend ────────────────────────────────────────────
@@ -290,6 +291,29 @@ else
     exit 1
 fi
 
+# Migration 011 schema sanity check — account_statement_path column
+# landed on all_accounts. Nullable, so no NOT NULL check.
+STATEMENT_COL=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='all_accounts' AND COLUMN_NAME='account_statement_path'" 2>/dev/null || echo "ERROR")
+if [ "$STATEMENT_COL" = "1" ]; then
+    echo "    ✓ all_accounts.account_statement_path column present"
+else
+    echo "    ✗ all_accounts.account_statement_path column missing — migration 011 did not complete"
+    exit 1
+fi
+
+# Statement upload endpoint must be mounted (401/403 fine — no session).
+# Multipart upload endpoints reject GET; a bare curl gets 405, so we check
+# for the presence of any auth/method error rather than 401 specifically.
+STATEMENT_CODE=$(curl -sk --max-time 5 -o /dev/null -w "%{http_code}" \
+    https://localhost/api/v1/uploads/statement)
+if echo "$STATEMENT_CODE" | grep -qE '^(401|403|405|422)$'; then
+    echo "    ✓ /api/v1/uploads/statement mounted (returned $STATEMENT_CODE)"
+else
+    echo "    ✗ /api/v1/uploads/statement not responding correctly (got $STATEMENT_CODE)"
+    exit 1
+fi
+
 # Drill-down endpoint that powers the per-PS detail grid + Excel/PDF export.
 # Query params must be present so the request reaches the auth dependency
 # (Pydantic-validated params run before dependencies in FastAPI).
@@ -312,8 +336,11 @@ echo "  Dashboard, now with click-through drill-down per Police"
 echo "  Station and Excel / PDF export of the detail grid. Third"
 echo "  account type 'Non-Mule' now available alongside Victim + Mule."
 echo "  Entry form now captures 'Branch District' (dropdown of KA"
-echo "  districts) alongside Branch Name — surfaces in the drill-down"
-echo "  grid + Excel/PDF export. The former 'Dashboard' link is now"
-echo "  'DSR Dashboard' and the 'Mule Accounts Data' section header"
-echo "  is renamed 'NCRP Data' (URLs / API paths unchanged)."
+echo "  districts) alongside Branch Name, plus an 'Account Statement'"
+echo "  upload widget (PDF / Excel, 5MB cap) — both surface in the"
+echo "  drill-down grid + Excel/PDF export. FIR No is now format-"
+echo "  validated (XXXX/XXXX, e.g. 0001/2026) and Account No / Mobile"
+echo "  are numeric-only with length checks. The former 'Dashboard'"
+echo "  link is now 'DSR Dashboard' and the 'Mule Accounts Data'"
+echo "  section header is renamed 'NCRP Data' (URLs / API paths unchanged)."
 echo "================================================================"

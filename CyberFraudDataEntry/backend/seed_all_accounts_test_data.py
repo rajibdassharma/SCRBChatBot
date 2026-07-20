@@ -3,12 +3,13 @@ Seed a batch of realistic test records into `all_accounts` so the
 Entry screen + Account Details Dashboard can be exercised end-to-end
 on a real environment.
 
-Every record is tagged with `fir_no` starting `TEST-` so the matching
-purge script (`purge_all_accounts_test_data.py`) can strip them
-cleanly without touching anything the operators entered. The
-`account_no` field is a plain 12-digit number so the seeded rows also
-pass the entry-form validators (11-18 digits, all numeric) if you
-open one for editing.
+Every record is tagged with `ncrp_ack_no` starting `TEST-` so the
+matching purge script (`purge_all_accounts_test_data.py`) can strip
+them cleanly without touching anything the operators entered. Both
+`account_no` (plain 12-digit numeric) and `fir_no` (XXXX/XXXX) are
+formatted to pass the entry-form validators, so opening a seeded row
+for edit doesn't trigger a 422. Only `ncrp_ack_no` is validator-free,
+which is why the purge marker lives there.
 
 Records span the three account types (Victim, Mule, Non-Mule) across
 a handful of real banks + fake but plausible holder/herder names.
@@ -182,7 +183,9 @@ async def seed(ps_id: int, count: int) -> None:
                 unit_id=unit_id,
                 ps_id=ps.id,
                 serial_no=serial,
-                fir_no=f"{TAG_PREFIX}FIR-{i:03d}/2026",
+                # fir_no now format-validated (XXXX/XXXX). Purge marker
+                # moved to ncrp_ack_no — the only free-form field left.
+                fir_no=f"{(i + 1):04d}/2026",
                 ncrp_ack_no=f"{TAG_PREFIX}NCRP-{random.randint(10**11, 10**12 - 1)}",
                 account_no=_fake_account_no(),
                 bank_name=bank_name,
@@ -216,9 +219,9 @@ async def seed(ps_id: int, count: int) -> None:
     for t, n in created_by_type.items():
         print(f"    {t:8s}: {n}")
     print()
-    print(f"All rows carry `fir_no` starting with '{TAG_PREFIX}' — that's how the")
-    print(f"purge script finds them (account_no is a plain numeric that would")
-    print(f"otherwise collide with real operator entries).")
+    print(f"All rows carry `ncrp_ack_no` starting with '{TAG_PREFIX}' — that's the")
+    print(f"marker the purge script uses. account_no + fir_no are format-real so")
+    print(f"the rows also pass the entry-form validators if you open one to edit.")
     print(f"Purge them anytime with:")
     print(f"    venv/bin/python purge_all_accounts_test_data.py")
 

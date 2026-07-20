@@ -69,6 +69,10 @@ class AllAccount(Base):
     # (Aadhaar/PAN/passport etc.) — filesystem path under /uploads.
     # Reuses the existing POST /api/v1/uploads/photo endpoint.
     id_photo_path = Column(String(500), nullable=True)
+    # Path to the uploaded bank account statement (PDF or Excel).
+    # Filesystem path under /uploads/statements/. Populated via
+    # POST /api/v1/uploads/statement.
+    account_statement_path = Column(String(500), nullable=True)
 
     # Victim vs Mule (see ACCOUNT_TYPES).
     account_type = Column(String(20), nullable=False)

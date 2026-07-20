@@ -1563,6 +1563,7 @@ async def get_accounts_details_by_ps(
             kyc_address=r.kyc_address,
             kyc_mobile=r.kyc_mobile,
             id_photo_path=r.id_photo_path,
+            account_statement_path=r.account_statement_path,
             account_type=r.account_type,
             mule_herders=[
                 MuleHerderOut(id=h.id, name=h.name, address=h.address, mobile_no=h.mobile_no)

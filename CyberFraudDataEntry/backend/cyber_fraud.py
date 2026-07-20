@@ -38,6 +38,18 @@ ALLOWED_PHOTO_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif", ".webp"}
 ALLOWED_PHOTO_MIMETYPES = {"image/jpeg", "image/png", "image/gif", "image/webp"}
 MAX_PHOTO_SIZE = 5 * 1024 * 1024  # 5 MB
 
+STATEMENT_DIR = Path("uploads/statements")
+ALLOWED_STATEMENT_EXTENSIONS = {".pdf", ".xlsx", ".xls"}
+# Some browsers/OSes send application/octet-stream for xlsx — accept
+# it too since the extension check above narrows the risk anyway.
+ALLOWED_STATEMENT_MIMETYPES = {
+    "application/pdf",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",  # xlsx
+    "application/vnd.ms-excel",                                            # xls
+    "application/octet-stream",
+}
+MAX_STATEMENT_SIZE = 5 * 1024 * 1024  # 5 MB — enough for a few months of statements
+
 
 # ── Security Headers Middleware ──────────────────────────────────────────
 
@@ -260,6 +272,48 @@ async def upload_photo(
     filepath = UPLOAD_DIR / filename
     filepath.write_bytes(content)
     return {"ok": True, "photo_path": f"uploads/photos/{filename}"}
+
+
+# -- Account statement upload endpoint (PDF + Excel) ---------------------
+
+@app.post("/api/v1/uploads/statement")
+async def upload_statement(
+    file: UploadFile = File(...),
+    _: None = Depends(get_current_user),
+):
+    """Upload a bank account statement (PDF or Excel) attached to an
+    All Accounts row. Files stored under uploads/statements/ and served
+    via the existing /uploads static mount. Called from the entry form's
+    Account Details section."""
+    STATEMENT_DIR.mkdir(parents=True, exist_ok=True)
+
+    ext = Path(file.filename).suffix.lower() if file.filename else ""
+    if ext not in ALLOWED_STATEMENT_EXTENSIONS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid file type. Allowed: {', '.join(sorted(ALLOWED_STATEMENT_EXTENSIONS))}",
+        )
+
+    if file.content_type and file.content_type not in ALLOWED_STATEMENT_MIMETYPES:
+        raise HTTPException(status_code=400, detail="Invalid file type")
+
+    content = await file.read()
+    if len(content) > MAX_STATEMENT_SIZE:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size: {MAX_STATEMENT_SIZE // (1024 * 1024)}MB",
+        )
+
+    filename = f"{uuid.uuid4()}{ext}"
+    filepath = STATEMENT_DIR / filename
+    filepath.write_bytes(content)
+    # Keep the original filename so the UI can show it back to the user
+    # (server-authoritative path is what actually gets stored on the row).
+    return {
+        "ok": True,
+        "statement_path": f"uploads/statements/{filename}",
+        "original_filename": file.filename,
+    }
 
 
 if __name__ == "__main__":
