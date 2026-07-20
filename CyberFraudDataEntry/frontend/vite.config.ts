@@ -9,6 +9,10 @@ export default defineConfig({
     proxy: {
       '/api': 'http://localhost:8000',
       '/health': 'http://localhost:8000',
+      // Uploads (id photos + statements) live on the backend. Without
+      // this proxy, /uploads/* falls through to the SPA and gets
+      // captured by ProtectedRoute → login page.
+      '/uploads': 'http://localhost:8000',
     },
   },
 })
