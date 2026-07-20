@@ -15,7 +15,9 @@
 #   5. Build the frontend (npm install + npm run build)
 #   6. Sync backend/ + frontend/dist/ from source to runtime
 #   7. Restart the backend systemd service
-#   8. Self-verify: service active, /health responding, schema sane
+#   8. Ensure nginx proxies /uploads/* to the backend (auto-inserts
+#      the location block once if missing; idempotent afterwards)
+#   9. Self-verify: service active, /health responding, schema sane
 #
 # Usage on the server:
 #   cd /opt/scrb && git pull && \
@@ -116,9 +118,72 @@ sudo systemctl restart "$SVC"
 sleep 2
 sudo systemctl is-active "$SVC"
 
-# ── 8. Self-verify ───────────────────────────────────────────────────
+# ── 8. Nginx: ensure /uploads/ is proxied to backend (idempotent) ────
+# The backend serves file downloads at /uploads/photos/* and
+# /uploads/statements/* — but nginx by default only forwards /api/*.
+# Without this, browser requests to /uploads/xxx hit the SPA fallback
+# and get caught by ProtectedRoute → redirected to /login. We insert
+# the location block once, right before the existing /api/ block, so
+# it lands in the same server context (HTTPS listener). Idempotent:
+# a re-run notices the block is already there and does nothing.
 echo
-echo "=== 8. Self-verify ==="
+echo "=== 8. Nginx /uploads/ proxy ==="
+SITE_LINK=$(ls /etc/nginx/sites-enabled/*cyberfraud* 2>/dev/null | head -1 || true)
+if [ -z "$SITE_LINK" ]; then
+    echo "    ⚠  no cyberfraud site under /etc/nginx/sites-enabled/ — skipping."
+    echo "       Add the location /uploads/ block manually if drill-down file links redirect to login."
+else
+    # Follow the symlink so we edit the real file in sites-available/.
+    SITE_CONF=$(readlink -f "$SITE_LINK" 2>/dev/null || echo "$SITE_LINK")
+
+    if grep -q "location /uploads/" "$SITE_CONF"; then
+        echo "    ✓ /uploads/ location already present in $SITE_CONF"
+    elif ! grep -q "location /api/" "$SITE_CONF"; then
+        echo "    ⚠  no 'location /api/' anchor in $SITE_CONF — refusing to guess where to insert."
+        echo "       Add the /uploads/ block manually and re-run."
+    else
+        BACKUP="$SITE_CONF.bak.$(date +%s)"
+        NEW_CONF=$(mktemp)
+        echo "    + inserting /uploads/ location before /api/ in $SITE_CONF"
+
+        # Insert before the first `location /api/` line, matching that
+        # line's leading whitespace so the block stays properly indented.
+        awk '
+            /location \/api\// && !inserted {
+                match($0, /^[[:space:]]*/); pad = substr($0, RSTART, RLENGTH)
+                print pad "# cyberfraud: added by deploy/update.sh -- proxy /uploads/* to backend"
+                print pad "location /uploads/ {"
+                print pad "    proxy_pass http://127.0.0.1:8000;"
+                print pad "    proxy_set_header Host $host;"
+                print pad "    proxy_set_header X-Real-IP $remote_addr;"
+                print pad "    proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;"
+                print pad "    proxy_set_header X-Forwarded-Proto $scheme;"
+                print pad "}"
+                print ""
+                inserted = 1
+            }
+            { print }
+        ' "$SITE_CONF" > "$NEW_CONF"
+
+        cp "$SITE_CONF" "$BACKUP"
+        cat "$NEW_CONF" > "$SITE_CONF"
+        rm -f "$NEW_CONF"
+
+        if sudo nginx -t; then
+            sudo systemctl reload nginx
+            echo "    ✓ nginx reloaded (pre-edit backup: $BACKUP)"
+        else
+            echo "    ✗ nginx -t FAILED — restoring $BACKUP"
+            cp "$BACKUP" "$SITE_CONF"
+            sudo nginx -t
+            exit 1
+        fi
+    fi
+fi
+
+# ── 9. Self-verify ───────────────────────────────────────────────────
+echo
+echo "=== 9. Self-verify ==="
 # Health endpoint via nginx (proxied path)
 if curl -sk --max-time 5 https://localhost/health | grep -q '"ok"'; then
     echo "    ✓ /health responding via nginx"
