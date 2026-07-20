@@ -35,6 +35,10 @@ fi
 
 mkdir -p "$BACKUP_DIR"
 chmod 750 "$BACKUP_DIR"
+# Owned by the backend user (not root) so future non-sudo readers /
+# nightly timers can access it. Chown is a no-op if we're already
+# the target user.
+chown -R cyberfraud:cyberfraud "$BACKUP_DIR" 2>/dev/null || true
 
 TIMESTAMP=$(date +'%Y-%m-%d_%H%M')
 OUTFILE="$BACKUP_DIR/uploads_${TIMESTAMP}.tar.gz"
@@ -46,7 +50,9 @@ echo "[backup-uploads] $(date -Iseconds) — archiving $UPLOAD_DIR → $OUTFILE"
 tar -C "$(dirname "$UPLOAD_DIR")" -czf "$OUTFILE" "$(basename "$UPLOAD_DIR")"
 
 # Restrict access — attached files may contain PII (IDs, KYC docs).
+# Chown to the backend user so cyberfraud (not root) owns the file.
 chmod 640 "$OUTFILE"
+chown cyberfraud:cyberfraud "$OUTFILE" 2>/dev/null || true
 
 SIZE=$(stat -c '%s' "$OUTFILE")
 FILE_COUNT=$(find "$UPLOAD_DIR" -type f | wc -l)

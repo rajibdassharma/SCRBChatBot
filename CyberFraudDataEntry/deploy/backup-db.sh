@@ -48,6 +48,11 @@ fi
 # ── Prepare output path ──────────────────────────────────────────────
 mkdir -p "$BACKUP_DIR"
 chmod 750 "$BACKUP_DIR"
+# The backup dir + everything in it should be owned by the backend
+# user, not root — otherwise `sudo bash` invocations leave root-owned
+# artefacts that the cyberfraud user (nightly timers, scp readbacks)
+# can't touch. Chown is a no-op if we're already the target user.
+chown -R cyberfraud:cyberfraud "$BACKUP_DIR" 2>/dev/null || true
 
 TIMESTAMP=$(date +'%Y-%m-%d_%H%M')
 OUTFILE="$BACKUP_DIR/${DB_NAME}_${TIMESTAMP}.sql.gz"
@@ -71,8 +76,11 @@ MYSQL_PWD="$DB_PASS" mysqldump \
     "$DB_NAME" \
   | gzip --best > "$OUTFILE"
 
-# Restrict access — dumps contain bcrypt hashes and operational data
+# Restrict access — dumps contain bcrypt hashes and operational data.
+# Chown to the backend user so cyberfraud (not root) owns the file —
+# consistent with the rest of /opt/cyberfraud/.
 chmod 640 "$OUTFILE"
+chown cyberfraud:cyberfraud "$OUTFILE" 2>/dev/null || true
 
 # ── Sanity check: a dump of any real DB is well over 1 KB ────────────
 SIZE=$(stat -c '%s' "$OUTFILE")
