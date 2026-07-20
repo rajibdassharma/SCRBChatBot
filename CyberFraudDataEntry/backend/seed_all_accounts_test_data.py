@@ -3,9 +3,12 @@ Seed a batch of realistic test records into `all_accounts` so the
 Entry screen + Account Details Dashboard can be exercised end-to-end
 on a real environment.
 
-Every record is tagged with `account_no` starting `TEST-` so the
-matching purge script (`purge_all_accounts_test_data.py`) can strip
-them cleanly without touching anything the operators entered.
+Every record is tagged with `fir_no` starting `TEST-` so the matching
+purge script (`purge_all_accounts_test_data.py`) can strip them
+cleanly without touching anything the operators entered. The
+`account_no` field is a plain 12-digit number so the seeded rows also
+pass the entry-form validators (11-18 digits, all numeric) if you
+open one for editing.
 
 Records span the three account types (Victim, Mule, Non-Mule) across
 a handful of real banks + fake but plausible holder/herder names.
@@ -92,9 +95,12 @@ CITIES_KYC = [
 TAG_PREFIX = "TEST-"
 
 
-def _fake_account_no(i: int) -> str:
-    # 12-digit numeric with TEST- prefix so grep + LIKE queries find them.
-    return f"{TAG_PREFIX}{random.randint(100000000000, 999999999999)}-{i:03d}"
+def _fake_account_no() -> str:
+    # 12-digit numeric, always leading non-zero. Passes the entry-form
+    # validators (11-18 digits, all numeric, not all-zeros/all-nines) so
+    # opening a seeded row for edit doesn't trigger a 422. Purge marker
+    # lives on fir_no now (not here) so we can be free-format-numeric.
+    return str(random.randint(10**11, 10**12 - 1))
 
 
 def _fake_ifsc(bank_code: str) -> str:
@@ -178,7 +184,7 @@ async def seed(ps_id: int, count: int) -> None:
                 serial_no=serial,
                 fir_no=f"{TAG_PREFIX}FIR-{i:03d}/2026",
                 ncrp_ack_no=f"{TAG_PREFIX}NCRP-{random.randint(10**11, 10**12 - 1)}",
-                account_no=_fake_account_no(i),
+                account_no=_fake_account_no(),
                 bank_name=bank_name,
                 branch_name=branch,
                 ifsc_code=_fake_ifsc(bank_code),
@@ -210,7 +216,9 @@ async def seed(ps_id: int, count: int) -> None:
     for t, n in created_by_type.items():
         print(f"    {t:8s}: {n}")
     print()
-    print(f"All rows carry `account_no` starting with '{TAG_PREFIX}'.")
+    print(f"All rows carry `fir_no` starting with '{TAG_PREFIX}' — that's how the")
+    print(f"purge script finds them (account_no is a plain numeric that would")
+    print(f"otherwise collide with real operator entries).")
     print(f"Purge them anytime with:")
     print(f"    venv/bin/python purge_all_accounts_test_data.py")
 

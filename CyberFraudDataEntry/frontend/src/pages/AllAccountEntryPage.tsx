@@ -15,6 +15,29 @@ const BASE = import.meta.env.VITE_API_BASE ?? '';
 
 const emptyHerder = (): MuleHerder => ({ name: '', address: '', mobile_no: '' });
 
+// ── Shared field validators — mirrored on the backend (schemas/all_account.py). ──
+// Keep in sync: the server rejects the same shapes with 422, so any drift here
+// just means the UX is friendlier or stricter than the server.
+
+function validateAccountNo(v: string): string | null {
+  const t = (v ?? '').trim();
+  if (!t) return 'Account No is required';
+  if (!/^\d+$/.test(t)) return 'Account No must be all numeric digits';
+  if (t.length < 11 || t.length > 18) return 'Account No must be between 11 and 18 digits';
+  if (/^0+$/.test(t)) return 'Account No cannot be all zeros';
+  if (/^9+$/.test(t)) return 'Account No cannot be all nines';
+  return null;
+}
+
+function validateMobile(v: string | null | undefined, label: string): string | null {
+  const t = (v ?? '').trim();
+  if (!t) return null;   // optional field — blank is fine
+  if (!/^\d+$/.test(t)) return `${label} must be all numeric digits`;
+  if (t.length !== 10)  return `${label} must be exactly 10 digits`;
+  if (t === '0000000000' || t === '9999999999') return `${label} cannot be all zeros or all nines`;
+  return null;
+}
+
 const emptyForm = (): AllAccountWritePayload => ({
   fir_no: null, ncrp_ack_no: null,
   account_no: '', bank_name: '', branch_name: null, branch_district: null, ifsc_code: null,
@@ -249,12 +272,19 @@ export function AllAccountEntryPage() {
   };
 
   const handleSave = async () => {
-    if (!f.account_no.trim())          { toast.error('Account No is required'); return; }
+    const acctErr = validateAccountNo(f.account_no);
+    if (acctErr) { toast.error(acctErr); return; }
     if (!f.bank_name.trim())           { toast.error('Bank Name is required'); return; }
     if (!f.account_holder_name.trim()) { toast.error('Account Holder Name is required'); return; }
+    const mobErr = validateMobile(f.kyc_mobile, 'Mobile No');
+    if (mobErr) { toast.error(mobErr); return; }
     if (f.account_type === 'Mule') {
-      const badHerder = f.mule_herders.find((h) => !h.name?.trim());
-      if (badHerder) { toast.error('Each Mule Herder needs a name'); return; }
+      for (let i = 0; i < f.mule_herders.length; i++) {
+        const h = f.mule_herders[i];
+        if (!h.name?.trim()) { toast.error(`Mule Herder #${i + 1}: name is required`); return; }
+        const hMobErr = validateMobile(h.mobile_no, `Mule Herder #${i + 1} mobile`);
+        if (hMobErr) { toast.error(hMobErr); return; }
+      }
     }
 
     setSaving(true);
@@ -346,7 +376,9 @@ export function AllAccountEntryPage() {
 
         <Section title="Account Details">
           <TextField label="Account No *" value={f.account_no}
-            onChange={(v) => upd('account_no', v)} />
+            onChange={(v) => upd('account_no', v.replace(/\D/g, ''))}
+            maxLength={18} inputMode="numeric"
+            placeholder="11–18 digits" />
           <TextField label="Bank Name *" value={f.bank_name}
             onChange={(v) => upd('bank_name', v)} />
           <TextField label="Branch Name" value={f.branch_name ?? ''}

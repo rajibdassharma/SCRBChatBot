@@ -10,6 +10,7 @@ One read shape:
 """
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import List, Literal, Optional
 
@@ -17,6 +18,53 @@ from pydantic import BaseModel, Field, field_validator
 
 
 AccountType = Literal["Victim", "Mule", "Non-Mule"]
+
+
+# ── Shared field validators ─────────────────────────────────────
+# Applied identically at the entry form (UX) and here (defence in
+# depth). Rules confirmed with operators 2026-07-20.
+
+_NUMERIC = re.compile(r"^\d+$")
+
+
+def _validate_account_no(v: str) -> str:
+    """Bank account number rules:
+      - all numeric (digits only)
+      - 11 to 18 digits
+      - not a trivial run of a single digit (all-zeros / all-nines)
+    """
+    t = (v or "").strip()
+    if not t:
+        raise ValueError("Account No is required.")
+    if not _NUMERIC.match(t):
+        raise ValueError("Account No must be all numeric digits.")
+    if len(t) < 11 or len(t) > 18:
+        raise ValueError("Account No must be between 11 and 18 digits.")
+    if t == "0" * len(t):
+        raise ValueError("Account No cannot be all zeros.")
+    if t == "9" * len(t):
+        raise ValueError("Account No cannot be all nines.")
+    return t
+
+
+def _validate_mobile(v: Optional[str], *, label: str = "Mobile No") -> Optional[str]:
+    """Indian-format mobile rules (optional field — None / '' passes):
+      - all numeric (digits only)
+      - exactly 10 digits
+      - not 0000000000 / not 9999999999
+    """
+    if v is None:
+        return None
+    t = v.strip()
+    if not t:
+        return None
+    if not _NUMERIC.match(t):
+        raise ValueError(f"{label} must be all numeric digits.")
+    if len(t) != 10:
+        raise ValueError(f"{label} must be exactly 10 digits.")
+    if t in ("0000000000", "9999999999"):
+        raise ValueError(f"{label} cannot be all zeros or all nines.")
+    return t
 
 
 # ── Mule herder (child) ─────────────────────────────────────────
@@ -31,6 +79,11 @@ class MuleHerderIn(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     address: Optional[str] = Field(default=None, max_length=2000)
     mobile_no: Optional[str] = Field(default=None, max_length=20)
+
+    @field_validator("mobile_no")
+    @classmethod
+    def _v_mobile_no(cls, v):
+        return _validate_mobile(v, label="Mule Herder Mobile No")
 
 
 class MuleHerderOut(BaseModel):
@@ -73,6 +126,16 @@ class AllAccountCreate(BaseModel):
         # dict; the server-side route handler enforces the invariant
         # explicitly after validation for a clearer error message.
         return v
+
+    @field_validator("account_no")
+    @classmethod
+    def _v_account_no(cls, v: str) -> str:
+        return _validate_account_no(v)
+
+    @field_validator("kyc_mobile")
+    @classmethod
+    def _v_kyc_mobile(cls, v):
+        return _validate_mobile(v, label="Mobile No")
 
 
 class AllAccountUpdate(AllAccountCreate):

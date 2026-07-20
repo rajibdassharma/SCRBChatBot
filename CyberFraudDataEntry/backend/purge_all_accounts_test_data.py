@@ -1,9 +1,12 @@
 """
 Delete every test record inserted by `seed_all_accounts_test_data.py`.
 
-Matches by `account_no LIKE 'TEST-%'` — the same prefix the seed
-script stamps on every row. Never touches records an operator
-entered (their account_no values do not carry the prefix).
+Matches by `fir_no LIKE 'TEST-%'` — the same prefix the seed script
+stamps on every row's `fir_no`. Never touches records an operator
+entered (real FIR numbers don't carry the prefix). Marker moved off
+`account_no` when the entry form gained numeric-only validation —
+seeded accounts are now real-looking 12-digit numbers so they pass
+edit-form validators too.
 
 Cascading deletes remove the linked `all_account_mule_herders` rows
 automatically (ON DELETE CASCADE on the FK).
@@ -40,12 +43,12 @@ async def _count_test_rows(db: AsyncSession) -> tuple[int, int]:
     """Return (test_account_count, herder_count) for reporting."""
     n_acc = (await db.execute(
         select(func.count(AllAccount.id))
-        .where(AllAccount.account_no.like(f"{TAG_PREFIX}%"))
+        .where(AllAccount.fir_no.like(f"{TAG_PREFIX}%"))
     )).scalar_one()
     n_herder = (await db.execute(
         select(func.count(AllAccountMuleHerder.id))
         .join(AllAccount, AllAccountMuleHerder.account_id == AllAccount.id)
-        .where(AllAccount.account_no.like(f"{TAG_PREFIX}%"))
+        .where(AllAccount.fir_no.like(f"{TAG_PREFIX}%"))
     )).scalar_one()
     return int(n_acc), int(n_herder)
 
@@ -54,8 +57,8 @@ async def purge(dry_run: bool) -> None:
     async with async_session() as db:
         n_acc, n_herder = await _count_test_rows(db)
         print(f"Test-tagged rows found:")
-        print(f"    all_accounts (account_no LIKE '{TAG_PREFIX}%'): {n_acc}")
-        print(f"    all_account_mule_herders (cascaded):            {n_herder}")
+        print(f"    all_accounts (fir_no LIKE '{TAG_PREFIX}%'):    {n_acc}")
+        print(f"    all_account_mule_herders (cascaded):           {n_herder}")
 
         if n_acc == 0:
             print("Nothing to delete.")
@@ -70,7 +73,7 @@ async def purge(dry_run: bool) -> None:
         # all_account_mule_herders is ON DELETE CASCADE, so the child
         # rows drop with the parent in one statement.
         result = await db.execute(
-            delete(AllAccount).where(AllAccount.account_no.like(f"{TAG_PREFIX}%"))
+            delete(AllAccount).where(AllAccount.fir_no.like(f"{TAG_PREFIX}%"))
         )
         await db.commit()
 
