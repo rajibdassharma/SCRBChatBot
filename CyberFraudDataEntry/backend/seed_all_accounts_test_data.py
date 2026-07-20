@@ -14,10 +14,14 @@ Mule rows carry 1-3 herders each so the child table gets exercised too.
 USAGE (on the server, as the cyberfraud user):
 
     cd /opt/cyberfraud/backend
-    venv/bin/python seed_all_accounts_test_data.py --ps-code CENPS_BLR_C
+    # First find a PS id:
+    mysql -u root -p cyber_fraud_dsr \
+        -e "SELECT id, district_name, station_name FROM police_stations ORDER BY district_name, station_name"
+    # Then seed into it:
+    venv/bin/python seed_all_accounts_test_data.py --ps-id 12
 
 Args:
-    --ps-code   REQUIRED. The `police_stations.code` value to attach
+    --ps-id     REQUIRED. The `police_stations.id` value to attach
                 every seeded row to (also drives which user gets set
                 as submitted_by — first active user in that PS).
     --count     Optional. How many records to seed (default 30).
@@ -102,16 +106,19 @@ def _fake_mobile() -> str:
 
 
 async def _resolve_ps_and_user(
-    db: AsyncSession, ps_code: str,
+    db: AsyncSession, ps_id: int,
 ) -> tuple[PoliceStation, User]:
     ps = (await db.execute(
-        select(PoliceStation).where(PoliceStation.code == ps_code)
+        select(PoliceStation).where(PoliceStation.id == ps_id)
     )).scalar_one_or_none()
     if not ps:
         raise SystemExit(
-            f"[!] No PoliceStation with code={ps_code!r}. "
-            f"Check `SELECT code, station_name FROM police_stations` on the DB."
+            f"[!] No PoliceStation with id={ps_id}. "
+            f"Check `SELECT id, district_name, station_name FROM police_stations` on the DB."
         )
+    # PoliceStation carries district_name (not a unit FK), so figure
+    # out which unit_id to attach records to by looking at an active
+    # user in this PS — every user has both unit_id + ps_id set.
     user = (await db.execute(
         select(User)
         .where(User.ps_id == ps.id, User.is_active == True)   # noqa: E712
@@ -119,8 +126,9 @@ async def _resolve_ps_and_user(
     )).scalars().first()
     if not user:
         raise SystemExit(
-            f"[!] No active user attached to PS code={ps_code!r}. "
-            f"Provision a user via seed.py or the User Management UI first."
+            f"[!] No active user attached to PS id={ps_id} "
+            f"({ps.district_name} — {ps.station_name}). "
+            f"Provision a user via User Management UI first."
         )
     return ps, user
 
@@ -141,12 +149,15 @@ def _pick_type(i: int, total: int) -> str:
     return "Non-Mule"
 
 
-async def seed(ps_code: str, count: int) -> None:
+async def seed(ps_id: int, count: int) -> None:
     random.seed(42)   # deterministic-ish so re-runs of the same batch look consistent
     async with async_session() as db:
-        ps, user = await _resolve_ps_and_user(db, ps_code)
-        print(f"Seeding into PS: {ps.station_name} (id={ps.id}, unit_id={ps.unit_id})")
-        print(f"Recording as submitted_by user: {user.username} (id={user.id})")
+        ps, user = await _resolve_ps_and_user(db, ps_id)
+        # unit_id is sourced from the resolver-picked user, not the PS —
+        # PoliceStation has district_name (text) but no unit_id FK.
+        unit_id = user.unit_id
+        print(f"Seeding into PS: {ps.district_name} — {ps.station_name} (ps_id={ps.id})")
+        print(f"Recording as submitted_by user: {user.username} (id={user.id}, unit_id={unit_id})")
 
         created_by_type = {"Victim": 0, "Mule": 0, "Non-Mule": 0}
 
@@ -159,10 +170,10 @@ async def seed(ps_code: str, count: int) -> None:
             holder = random.choice(HOLDER_NAMES)
             city   = random.choice(CITIES_KYC)
 
-            serial = await _next_serial(db, ps.unit_id, ps.id)
+            serial = await _next_serial(db, unit_id, ps.id)
             row = AllAccount(
                 id=str(uuid.uuid4()),
-                unit_id=ps.unit_id,
+                unit_id=unit_id,
                 ps_id=ps.id,
                 serial_no=serial,
                 fir_no=f"{TAG_PREFIX}FIR-{i:03d}/2026",
@@ -206,12 +217,12 @@ async def seed(ps_code: str, count: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.strip().splitlines()[0])
-    parser.add_argument("--ps-code", required=True, help="police_stations.code value to attach records to")
+    parser.add_argument("--ps-id", required=True, type=int, help="police_stations.id value to attach records to")
     parser.add_argument("--count", type=int, default=30, help="How many records to seed (default 30)")
     args = parser.parse_args()
     if args.count < 1 or args.count > 500:
         raise SystemExit("--count must be between 1 and 500")
-    asyncio.run(seed(args.ps_code, args.count))
+    asyncio.run(seed(args.ps_id, args.count))
 
 
 if __name__ == "__main__":

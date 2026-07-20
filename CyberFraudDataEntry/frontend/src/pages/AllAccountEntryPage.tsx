@@ -5,6 +5,7 @@ import { Plus, Save, Trash2, Upload, X } from 'lucide-react';
 import {
   createAllAccount, deleteAllAccount, getAllAccount, updateAllAccount,
 } from '../lib/api/all-accounts';
+import { getDistrictsPublic } from '../lib/api/auth';
 import { useAuthStore } from '../lib/stores/auth-store';
 import type { AllAccount, AllAccountWritePayload, MuleHerder } from '../types';
 
@@ -16,7 +17,7 @@ const emptyHerder = (): MuleHerder => ({ name: '', address: '', mobile_no: '' })
 
 const emptyForm = (): AllAccountWritePayload => ({
   fir_no: null, ncrp_ack_no: null,
-  account_no: '', bank_name: '', branch_name: null, ifsc_code: null,
+  account_no: '', bank_name: '', branch_name: null, branch_district: null, ifsc_code: null,
   account_holder_name: '', kyc_address: null, kyc_mobile: null,
   id_photo_path: null,
   account_type: 'Victim',
@@ -72,6 +73,30 @@ function TextAreaField({
         className="w-full px-3 py-2 rounded-xl text-sm outline-none resize-y"
         style={{ border: '2px solid var(--ksp-navy)', background: '#fff' }}
       />
+    </div>
+  );
+}
+
+function SelectField({
+  label, value, onChange, options, placeholder = '— Select —', disabled = false,
+}: {
+  label: string; value: string; onChange: (v: string) => void;
+  options: string[]; placeholder?: string; disabled?: boolean;
+}) {
+  return (
+    <div>
+      <label className="block text-xs font-semibold mb-1" style={{ color: 'var(--ksp-navy)' }}>{label}</label>
+      <select
+        value={value} disabled={disabled}
+        onChange={(e) => onChange(e.target.value)}
+        className="w-full px-3 py-2 rounded-xl text-sm outline-none bg-white"
+        style={{ border: '2px solid var(--ksp-navy)' }}
+      >
+        <option value="">{placeholder}</option>
+        {options.map((o) => (
+          <option key={o} value={o}>{o}</option>
+        ))}
+      </select>
     </div>
   );
 }
@@ -155,6 +180,15 @@ export function AllAccountEntryPage() {
   const [loading, setLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [districts, setDistricts] = useState<string[]>([]);
+
+  // Load the Karnataka districts list once — same public endpoint the
+  // login flow uses. Failure is non-fatal: the dropdown just stays empty.
+  useEffect(() => {
+    getDistrictsPublic()
+      .then((rows) => setDistricts(rows.map((r) => r.name)))
+      .catch(() => { /* dropdown will be empty; entry can still proceed */ });
+  }, []);
 
   useEffect(() => {
     if (!id) return;
@@ -168,6 +202,7 @@ export function AllAccountEntryPage() {
           account_no: data.account_no,
           bank_name: data.bank_name,
           branch_name: data.branch_name,
+          branch_district: data.branch_district,
           ifsc_code: data.ifsc_code,
           account_holder_name: data.account_holder_name,
           kyc_address: data.kyc_address,
@@ -231,6 +266,7 @@ export function AllAccountEntryPage() {
         fir_no: f.fir_no?.trim() || null,
         ncrp_ack_no: f.ncrp_ack_no?.trim() || null,
         branch_name: f.branch_name?.trim() || null,
+        branch_district: f.branch_district?.trim() || null,
         ifsc_code: f.ifsc_code?.trim() || null,
         kyc_address: f.kyc_address?.trim() || null,
         kyc_mobile: f.kyc_mobile?.trim() || null,
@@ -315,6 +351,11 @@ export function AllAccountEntryPage() {
             onChange={(v) => upd('bank_name', v)} />
           <TextField label="Branch Name" value={f.branch_name ?? ''}
             onChange={(v) => upd('branch_name', v)} />
+          <SelectField label="Branch District" value={f.branch_district ?? ''}
+            onChange={(v) => upd('branch_district', v || null)}
+            options={districts}
+            placeholder={districts.length ? '— Select District —' : 'Loading…'}
+            disabled={districts.length === 0} />
           <TextField label="IFSC Code" value={f.ifsc_code ?? ''}
             onChange={(v) => upd('ifsc_code', v.toUpperCase())}
             maxLength={11} placeholder="e.g. HDFC0001234" />

@@ -6,6 +6,7 @@ import type {
   AccountCaseDetail, CaseDetailFull,
   DisposalSummary, TrialSummary, PendingByYearRow,
   AccountsKpiSummary, AccountsPsComparison,
+  AllAccount,
 } from '../../types';
 
 /** All Accounts dashboard — KPI cards + per-PS comparison. */
@@ -15,6 +16,16 @@ export async function getAccountsSummary(date: string): Promise<AccountsKpiSumma
 
 export async function getAccountsComparison(date: string): Promise<AccountsPsComparison[]> {
   return apiFetch<AccountsPsComparison[]>(`/api/v1/dashboard/accounts-comparison?date=${date}`);
+}
+
+/** Drill-down: full account-detail rows (with mule herders eager-loaded)
+ *  for the requested (unit_id, ps_id) up to the given cutoff date. */
+export async function getAccountsDetailsByPs(
+  date: string, unitId: number, psId: number,
+): Promise<AllAccount[]> {
+  return apiFetch<AllAccount[]>(
+    `/api/v1/dashboard/accounts-details-by-ps?date=${date}&unit_id=${unitId}&ps_id=${psId}`,
+  );
 }
 
 export async function getSummary(date: string): Promise<KpiSummary> {

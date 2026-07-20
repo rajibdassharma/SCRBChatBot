@@ -634,6 +634,7 @@ export interface AllAccount {
   account_no: string;
   bank_name: string;
   branch_name: string | null;
+  branch_district: string | null;
   ifsc_code: string | null;
 
   account_holder_name: string;
@@ -669,6 +670,7 @@ export interface AllAccountWritePayload {
   account_no: string;
   bank_name: string;
   branch_name: string | null;
+  branch_district: string | null;
   ifsc_code: string | null;
 
   account_holder_name: string;

@@ -55,6 +55,10 @@ class AllAccount(Base):
     account_no = Column(String(50), nullable=False)
     bank_name = Column(String(200), nullable=False)
     branch_name = Column(String(200), nullable=True)
+    # Karnataka district the branch is located in. Nullable because
+    # existing rows predate the field; the entry form treats it as
+    # optional so operators can save a draft before confirming.
+    branch_district = Column(String(100), nullable=True)
     ifsc_code = Column(String(20), nullable=True)
 
     # Account holder identity.

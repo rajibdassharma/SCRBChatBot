@@ -94,6 +94,7 @@ def _to_response(row: AllAccount) -> AllAccountResponse:
         account_no=row.account_no,
         bank_name=row.bank_name,
         branch_name=row.branch_name,
+        branch_district=row.branch_district,
         ifsc_code=row.ifsc_code,
         account_holder_name=row.account_holder_name,
         kyc_address=row.kyc_address,
@@ -145,6 +146,7 @@ async def create_account(
             account_no=body.account_no,
             bank_name=body.bank_name,
             branch_name=body.branch_name,
+            branch_district=body.branch_district,
             ifsc_code=body.ifsc_code,
             account_holder_name=body.account_holder_name,
             kyc_address=body.kyc_address,
@@ -265,6 +267,7 @@ async def update_account(
     row.account_no = body.account_no
     row.bank_name = body.bank_name
     row.branch_name = body.branch_name
+    row.branch_district = body.branch_district
     row.ifsc_code = body.ifsc_code
     row.account_holder_name = body.account_holder_name
     row.kyc_address = body.kyc_address

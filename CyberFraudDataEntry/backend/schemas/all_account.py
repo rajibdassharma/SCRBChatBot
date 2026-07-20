@@ -53,6 +53,7 @@ class AllAccountCreate(BaseModel):
     account_no: str = Field(min_length=1, max_length=50)
     bank_name: str = Field(min_length=1, max_length=200)
     branch_name: Optional[str] = Field(default=None, max_length=200)
+    branch_district: Optional[str] = Field(default=None, max_length=100)
     ifsc_code: Optional[str] = Field(default=None, max_length=20)
 
     account_holder_name: str = Field(min_length=1, max_length=200)
@@ -93,6 +94,7 @@ class AllAccountResponse(BaseModel):
     account_no: str
     bank_name: str
     branch_name: Optional[str] = None
+    branch_district: Optional[str] = None
     ifsc_code: Optional[str] = None
 
     account_holder_name: str

@@ -6,6 +6,7 @@ from typing import List
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import case, select, func, and_
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from database import get_db
 from models.case import Case
@@ -35,6 +36,7 @@ from schemas.dashboard import (
     DisposalSummary, TrialSummary, PendingByYearRow,
     AccountsKpiSummary, AccountsPsComparison,
 )
+from schemas.all_account import AllAccountResponse, MuleHerderOut
 from api.deps import require_admin, CurrentUser
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
@@ -1507,6 +1509,68 @@ async def get_accounts_comparison(
             victims=int(r.victims or 0),
             mules=int(r.mules or 0),
             non_mules=int(r.non_mules or 0),
+        )
+        for r in rows
+    ]
+
+
+@router.get("/accounts-details-by-ps", response_model=List[AllAccountResponse])
+async def get_accounts_details_by_ps(
+    unit_id: int = Query(..., description="Unit id (from the PS-comparison row on the dashboard)"),
+    ps_id: int = Query(..., description="Police Station id (from the PS-comparison row on the dashboard)"),
+    target_date: date = Query(..., alias="date", description="Cumulative cutoff — include accounts created on or before this date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Powers the drill-down grid on the Account Details Dashboard.
+    Returns every account row (with mule herders eager-loaded) for the
+    requested (unit_id, ps_id) up to `date`.
+
+    admin is pinned to their own PS (VAPT 7.8 — cannot peek into other
+    PSes via the dashboard). super_admin can drill into any PS."""
+    if admin.role != "super_admin":
+        if admin.unit_id != unit_id or admin.ps_id != ps_id:
+            raise HTTPException(
+                status_code=403,
+                detail="You can only view account details for your own Police Station.",
+            )
+
+    rows = (await db.execute(
+        select(AllAccount)
+        .options(selectinload(AllAccount.mule_herders))
+        .where(
+            AllAccount.unit_id == unit_id,
+            AllAccount.ps_id == ps_id,
+            func.date(AllAccount.created_at) <= target_date,
+        )
+        .order_by(AllAccount.serial_no.asc())
+    )).scalars().all()
+
+    return [
+        AllAccountResponse(
+            id=r.id,
+            unit_id=r.unit_id,
+            ps_id=r.ps_id,
+            serial_no=r.serial_no,
+            fir_no=r.fir_no,
+            ncrp_ack_no=r.ncrp_ack_no,
+            account_no=r.account_no,
+            bank_name=r.bank_name,
+            branch_name=r.branch_name,
+            branch_district=r.branch_district,
+            ifsc_code=r.ifsc_code,
+            account_holder_name=r.account_holder_name,
+            kyc_address=r.kyc_address,
+            kyc_mobile=r.kyc_mobile,
+            id_photo_path=r.id_photo_path,
+            account_type=r.account_type,
+            mule_herders=[
+                MuleHerderOut(id=h.id, name=h.name, address=h.address, mobile_no=h.mobile_no)
+                for h in r.mule_herders
+            ],
+            submitted_by=r.submitted_by,
+            created_at=r.created_at,
+            updated_at=r.updated_at,
         )
         for r in rows
     ]

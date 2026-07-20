@@ -3,6 +3,7 @@ import { BarChart3 } from 'lucide-react';
 import { toast } from 'sonner';
 import { getAccountsSummary, getAccountsComparison } from '../lib/api/dashboard';
 import { formatNumber, todayISO } from '../lib/utils/format';
+import { AccountsPsDetailPanel } from '../components/dashboard/AccountsPsDetailPanel';
 import type { AccountsKpiSummary, AccountsPsComparison } from '../types';
 
 /** Account Details Dashboard — mirrors the shell + feel of the DSR
@@ -32,6 +33,7 @@ export function AccountsDashboardPage() {
   const [summary, setSummary] = useState<AccountsKpiSummary | null>(null);
   const [rows, setRows] = useState<AccountsPsComparison[]>([]);
   const [loading, setLoading] = useState(true);
+  const [drilldown, setDrilldown] = useState<AccountsPsComparison | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -43,6 +45,19 @@ export function AccountsDashboardPage() {
       if (u.status === 'fulfilled') setRows(u.value); else { setRows([]); toast.error(`Per-PS: ${(u as any).reason?.message ?? 'failed'}`); }
     }).finally(() => setLoading(false));
   }, [date]);
+
+  // Drill-down: full account detail grid for a single PS, with Excel + PDF export.
+  // Clicking a row in the per-PS comparison table sets this; the Back button on
+  // the detail panel clears it and we fall back to the summary view.
+  if (drilldown) {
+    return (
+      <AccountsPsDetailPanel
+        ps={drilldown}
+        asOfDate={date}
+        onBack={() => setDrilldown(null)}
+      />
+    );
+  }
 
   return (
     <div>
@@ -93,13 +108,15 @@ export function AccountsDashboardPage() {
             </div>
           </div>
 
-          {/* Per-PS comparison table */}
+          {/* Per-PS comparison table — clickable rows open the detail grid. */}
           <div className="rounded-2xl overflow-hidden" style={cardStyle}>
             <div className="px-5 py-3 border-b">
               <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>
                 Per-PS Account Comparison
               </h3>
-              <p className="text-xs opacity-60">Descending by total account count.</p>
+              <p className="text-xs opacity-60">
+                Descending by total account count. Click any Police Station to see the full account list with Excel / PDF download.
+              </p>
             </div>
             <table className="w-full text-sm">
               <thead style={{ background: '#f5f5f7' }}>
@@ -121,9 +138,16 @@ export function AccountsDashboardPage() {
                   </tr>
                 )}
                 {rows.map((r) => (
-                  <tr key={`${r.unit_id}-${r.ps_id}`} className="border-t border-slate-100">
+                  <tr key={`${r.unit_id}-${r.ps_id}`}
+                      className="border-t border-slate-100 cursor-pointer hover:bg-slate-50"
+                      onClick={() => setDrilldown(r)}
+                      role="button"
+                      tabIndex={0}
+                      onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') setDrilldown(r); }}>
                     <td className="px-3 py-2">{r.unit_name}</td>
-                    <td className="px-3 py-2">{r.ps_name}</td>
+                    <td className="px-3 py-2 font-semibold" style={{ color: 'var(--ksp-navy)' }}>
+                      {r.ps_name}
+                    </td>
                     <td className="px-3 py-2 text-right font-mono">{formatNumber(r.total)}</td>
                     <td className="px-3 py-2 text-right font-mono">
                       <span style={{ color: '#0a6b28' }}>{formatNumber(r.victims)}</span>
