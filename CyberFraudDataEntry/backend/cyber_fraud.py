@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from config import settings
 from database import get_db
 from utils.friendly_errors import to_friendly
+from auth.upload_signing import verify_signature
 from models.unit import Unit
 from api.deps import get_current_user
 from api.routes_auth import router as auth_router
@@ -65,6 +66,25 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         return response
 
 
+# ── Upload Signature Middleware ──────────────────────────────────────────
+# Any GET/HEAD to /uploads/* must present a valid `?exp=&sig=` pair
+# minted by auth.upload_signing.sign_path. Everything else on that
+# prefix (unsigned, expired, tampered) returns 403 without touching disk.
+
+class UploadSignatureMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        path = request.url.path
+        if path.startswith("/uploads/") and request.method in ("GET", "HEAD"):
+            # sign_path signs the DB-shaped value ("uploads/foo/bar.jpg"),
+            # no leading slash — so strip one here before verifying.
+            signable = path.lstrip("/")
+            exp = request.query_params.get("exp")
+            sig = request.query_params.get("sig")
+            if not verify_signature(signable, exp, sig):
+                return Response(status_code=403, content="Forbidden")
+        return await call_next(request)
+
+
 # ── App Setup ────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -86,6 +106,7 @@ app = FastAPI(
 )
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(UploadSignatureMiddleware)
 
 app.add_middleware(
     CORSMiddleware,

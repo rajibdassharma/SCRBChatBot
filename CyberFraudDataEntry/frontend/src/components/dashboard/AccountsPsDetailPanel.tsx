@@ -1,4 +1,10 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
+
+// Resolve upload paths against the backend base URL — matches how the
+// entry form loads photos + statements. In prod BASE is empty and the
+// signed path resolves against the current origin; in dev VITE_API_BASE
+// points at http://localhost:8000 so the middleware can validate.
+const BASE = import.meta.env.VITE_API_BASE ?? '';
 import { ArrowLeft, ChevronDown, ChevronRight, FileSpreadsheet, FileText } from 'lucide-react';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
@@ -254,11 +260,18 @@ export function AccountsPsDetailPanel({ ps, asOfDate, onBack }: Props) {
                           {r.kyc_address ?? '—'}
                         </td>
                         <td className="px-3 py-2 font-mono">{r.kyc_mobile ?? '—'}</td>
-                        <td className="px-3 py-2">{r.id_photo_path ? 'Yes' : '—'}</td>
+                        <td className="px-3 py-2">
+                          {r.id_photo_path
+                            ? <a href={`${BASE}/${r.id_photo_path}`} target="_blank" rel="noreferrer"
+                                 className="hover:underline font-semibold" style={{ color: 'var(--ksp-navy)' }}>
+                                Yes
+                              </a>
+                            : '—'}
+                        </td>
                         <td className="px-3 py-2">
                           {r.account_statement_path
-                            ? <a href={`/${r.account_statement_path}`} target="_blank" rel="noreferrer"
-                                 className="hover:underline" style={{ color: 'var(--ksp-navy)' }}>
+                            ? <a href={`${BASE}/${r.account_statement_path}`} target="_blank" rel="noreferrer"
+                                 className="hover:underline font-semibold" style={{ color: 'var(--ksp-navy)' }}>
                                 Yes
                               </a>
                             : '—'}

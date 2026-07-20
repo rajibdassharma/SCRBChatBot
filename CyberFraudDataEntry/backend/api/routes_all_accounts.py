@@ -11,6 +11,8 @@ concurrent creates pick the same next number — we retry once.
 """
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -20,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from api.deps import CurrentUser, check_record_access, get_current_user
+from auth.upload_signing import sign_path, strip_signature
 from database import get_db
 from models.all_account import ACCOUNT_TYPES, AllAccount
 from models.all_account_mule_herder import AllAccountMuleHerder
@@ -33,6 +36,30 @@ from schemas.all_account import (
 
 
 router = APIRouter(prefix="/api/v1/all-accounts", tags=["all-accounts"])
+logger = logging.getLogger(__name__)
+
+
+def _unlink_upload(rel_path: str | None) -> None:
+    """Best-effort delete of a file under uploads/. Never raises — a
+    missing or already-deleted file is fine; we just log and move on.
+    Path is the DB value ("uploads/photos/xxx.jpg") — no leading slash."""
+    if not rel_path:
+        return
+    # Defence against absolute paths or ../ traversal — must stay
+    # within uploads/. If someone stored a hostile string in the DB
+    # we don't want to unlink random filesystem paths.
+    if not rel_path.startswith("uploads/") or ".." in rel_path.split("/"):
+        logger.warning("refusing to unlink suspicious path: %s", rel_path)
+        return
+    p = Path(rel_path)
+    try:
+        if p.exists():
+            p.unlink()
+            logger.info("unlinked %s", rel_path)
+    except OSError as e:
+        # Disk error / permissions — log but let the DB delete proceed.
+        # Orphan file will get swept by sweep_orphaned_uploads.py.
+        logger.warning("failed to unlink %s: %s", rel_path, e)
 
 
 # ── Helpers ──────────────────────────────────────────────────────
@@ -99,8 +126,11 @@ def _to_response(row: AllAccount) -> AllAccountResponse:
         account_holder_name=row.account_holder_name,
         kyc_address=row.kyc_address,
         kyc_mobile=row.kyc_mobile,
-        id_photo_path=row.id_photo_path,
-        account_statement_path=row.account_statement_path,
+        # Sign the paths on the way out so the front-end URL is
+        # time-limited (1h). Middleware on /uploads/* rejects
+        # anything unsigned/expired.
+        id_photo_path=sign_path(row.id_photo_path),
+        account_statement_path=sign_path(row.account_statement_path),
         account_type=row.account_type,
         mule_herders=[
             MuleHerderOut(id=h.id, name=h.name, address=h.address, mobile_no=h.mobile_no)
@@ -152,8 +182,10 @@ async def create_account(
             account_holder_name=body.account_holder_name,
             kyc_address=body.kyc_address,
             kyc_mobile=body.kyc_mobile,
-            id_photo_path=body.id_photo_path,
-            account_statement_path=body.account_statement_path,
+            # Client round-trips the signed value we handed it on read
+            # — strip the ?exp=&sig= so the DB always holds the clean path.
+            id_photo_path=strip_signature(body.id_photo_path),
+            account_statement_path=strip_signature(body.account_statement_path),
             account_type=body.account_type,
             submitted_by=current.user_id,
         )
@@ -274,8 +306,9 @@ async def update_account(
     row.account_holder_name = body.account_holder_name
     row.kyc_address = body.kyc_address
     row.kyc_mobile = body.kyc_mobile
-    row.id_photo_path = body.id_photo_path
-    row.account_statement_path = body.account_statement_path
+    # Same signature strip as on create — DB never sees ?exp=&sig=.
+    row.id_photo_path = strip_signature(body.id_photo_path)
+    row.account_statement_path = strip_signature(body.account_statement_path)
     row.account_type = body.account_type
 
     # Wholesale replace of the child collection.
@@ -308,6 +341,14 @@ async def delete_account(
 ):
     row = await _load(db, account_id)
     check_record_access(row, current)
+    # Snapshot the file paths BEFORE the DB delete so we can clean them
+    # up after the row is gone. If the DB delete fails, we haven't
+    # touched disk; if the file unlink fails, the sweep script picks it
+    # up later — either way, no half-state visible to the client.
+    photo = row.id_photo_path
+    statement = row.account_statement_path
     await db.delete(row)
     await db.commit()
+    _unlink_upload(photo)
+    _unlink_upload(statement)
     return {"ok": True}

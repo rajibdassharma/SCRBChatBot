@@ -37,6 +37,7 @@ from schemas.dashboard import (
     AccountsKpiSummary, AccountsPsComparison,
 )
 from schemas.all_account import AllAccountResponse, MuleHerderOut
+from auth.upload_signing import sign_path
 from api.deps import require_admin, CurrentUser
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
@@ -1562,8 +1563,10 @@ async def get_accounts_details_by_ps(
             account_holder_name=r.account_holder_name,
             kyc_address=r.kyc_address,
             kyc_mobile=r.kyc_mobile,
-            id_photo_path=r.id_photo_path,
-            account_statement_path=r.account_statement_path,
+            # Sign the file paths so /uploads/* is gated behind a
+            # short-lived HMAC — same rule as the CRUD response.
+            id_photo_path=sign_path(r.id_photo_path),
+            account_statement_path=sign_path(r.account_statement_path),
             account_type=r.account_type,
             mule_herders=[
                 MuleHerderOut(id=h.id, name=h.name, address=h.address, mobile_no=h.mobile_no)

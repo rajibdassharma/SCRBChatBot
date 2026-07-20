@@ -58,14 +58,15 @@ sudo -u cyberfraud bash -c "
 echo "    Done."
 
 # ── 3. Pre-migration safety backup ───────────────────────────────────
-# Take an ad-hoc backup of cyber_fraud_dsr just before any schema
-# changes. Re-using deploy/backup-db.sh keeps the format identical to
-# nightly backups so restore is a one-liner if anything regresses.
-# Safe to run even when no migration changes apply — backup-db.sh
-# always writes a fresh timestamped file and prunes older than 14d.
+# Take an ad-hoc backup of cyber_fraud_dsr AND the uploads/ tree just
+# before any schema/code changes. Re-using the same backup scripts as
+# nightly means restore is a one-liner if anything regresses. Safe to
+# run even when no migration changes apply — both scripts always write
+# a fresh timestamped file and prune anything older than 14d.
 echo
-echo "=== 3. Pre-migration DB backup ==="
+echo "=== 3. Pre-migration DB + uploads backup ==="
 sudo bash "$SOURCE/deploy/backup-db.sh"
+sudo bash "$SOURCE/deploy/backup-uploads.sh"
 
 # ── 4. Run additive DB migrations ────────────────────────────────────
 echo
@@ -302,6 +303,19 @@ else
     exit 1
 fi
 
+# Upload signature middleware must be gating /uploads/* — an unsigned
+# GET to any path under the mount should now return 403 (was 200/404
+# with the old public StaticFiles mount). Path doesn't need to exist —
+# middleware rejects BEFORE the file lookup.
+UPLOAD_UNSIGNED=$(curl -sk --max-time 5 -o /dev/null -w "%{http_code}" \
+    https://localhost/uploads/photos/does-not-exist.jpg)
+if [ "$UPLOAD_UNSIGNED" = "403" ]; then
+    echo "    ✓ /uploads/* rejects unsigned request (403) — signature middleware active"
+else
+    echo "    ✗ /uploads/* returned $UPLOAD_UNSIGNED for an unsigned request — signature middleware missing/broken"
+    exit 1
+fi
+
 # Statement upload endpoint must be mounted (401/403 fine — no session).
 # Multipart upload endpoints reject GET; a bare curl gets 405, so we check
 # for the presence of any auth/method error rather than 401 specifically.
@@ -340,7 +354,15 @@ echo "  districts) alongside Branch Name, plus an 'Account Statement'"
 echo "  upload widget (PDF / Excel, 5MB cap) — both surface in the"
 echo "  drill-down grid + Excel/PDF export. FIR No is now format-"
 echo "  validated (XXXX/XXXX, e.g. 0001/2026) and Account No / Mobile"
-echo "  are numeric-only with length checks. The former 'Dashboard'"
-echo "  link is now 'DSR Dashboard' and the 'Mule Accounts Data'"
-echo "  section header is renamed 'NCRP Data' (URLs / API paths unchanged)."
+echo "  are numeric-only with length checks."
+echo
+echo "  /uploads/* is no longer public — every file URL now carries an"
+echo "  HMAC-signed 1-hour expiry. Leaked URLs (in exports, screenshots)"
+echo "  die fast. Deleting an account row now unlinks its files too."
+echo "  Nightly orphan cleanup: venv/bin/python sweep_orphaned_uploads.py"
+echo "  Pre-deploy backup now also archives uploads/ (see backup-uploads.sh)."
+echo
+echo "  The former 'Dashboard' link is now 'DSR Dashboard' and the"
+echo "  'Mule Accounts Data' section header is renamed 'NCRP Data'"
+echo "  (URLs / API paths unchanged)."
 echo "================================================================"
