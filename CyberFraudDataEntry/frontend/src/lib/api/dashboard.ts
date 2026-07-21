@@ -7,6 +7,7 @@ import type {
   DisposalSummary, TrialSummary, PendingByYearRow,
   AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
   AllAccount,
+  PortalsDsrKpiSummary, PortalsDsrPsComparison,
 } from '../../types';
 
 /** All Accounts dashboard — KPI cards + per-PS comparison. */
@@ -24,6 +25,20 @@ export async function getAccountsTopBanks(
 ): Promise<AccountsBankConcentration[]> {
   return apiFetch<AccountsBankConcentration[]>(
     `/api/v1/dashboard/accounts-top-banks?date=${date}&limit=${limit}`,
+  );
+}
+
+/** Portals DSR — grand totals across the caller's scope + window. */
+export async function getPortalsSummary(from: string, to: string): Promise<PortalsDsrKpiSummary> {
+  return apiFetch<PortalsDsrKpiSummary>(
+    `/api/v1/dashboard/portals-summary?from=${from}&to=${to}`,
+  );
+}
+
+/** Portals DSR — one row per PS with entry count + summed total. */
+export async function getPortalsComparison(from: string, to: string): Promise<PortalsDsrPsComparison[]> {
+  return apiFetch<PortalsDsrPsComparison[]>(
+    `/api/v1/dashboard/portals-comparison?from=${from}&to=${to}`,
   );
 }
 

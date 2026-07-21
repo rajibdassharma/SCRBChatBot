@@ -37,8 +37,10 @@ from schemas.dashboard import (
     AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
 )
 from schemas.all_account import AllAccountResponse, MuleHerderOut
+from schemas.portals_dsr import PortalsDsrKpiSummary, PortalsDsrPsComparison
 from auth.upload_signing import sign_path
 from api.deps import require_admin, CurrentUser
+from models.portals_dsr_entry import PortalsDsrEntry
 
 router = APIRouter(prefix="/api/v1/dashboard", tags=["dashboard"])
 
@@ -1618,6 +1620,151 @@ async def get_accounts_details_by_ps(
             submitted_by=r.submitted_by,
             created_at=r.created_at,
             updated_at=r.updated_at,
+        )
+        for r in rows
+    ]
+
+
+# ════════════════════════════════════════════════════════════════
+# ── Portals DSR dashboard (2026-07-21) ─────────────────────────
+# Multiple entries per PS per day are legal (shift-based data
+# entry), so SUM-aggregate every metric across the window.
+# Drafts EXCLUDED so KPIs never inflate on in-progress work.
+# ════════════════════════════════════════════════════════════════
+
+
+# Metric columns to SUM in dashboard queries — mirrors the model +
+# schema. Kept as a plain tuple so we can build a select() with
+# func.sum() per column without repeating the list five times.
+_PORTAL_METRICS: tuple[str, ...] = (
+    "ncrp_received", "ncrp_disposed", "ncrp_pending",
+    "samanvaya_request_received", "samanvaya_actions", "samanvaya_action_pending",
+    "samanvaya_request_sent", "samanvaya_reply_received", "samanvaya_replies_pending",
+    "sahayog_unlawful_content_removal", "sahayog_intermediary_requests",
+    "sahayog_crypto_requests",
+    "grm_request_received", "grm_action", "grm_pending",
+    "mrm_request_received", "mrm_action", "mrm_pending",
+    "bharatpol_request_received",
+    "ocwc_received", "ocwc_disposed", "ocwc_pending",
+    "ncmec_received", "ncmec_disposed", "ncmec_pending",
+)
+
+
+def _scope_portals(query, admin: CurrentUser):
+    if admin.role == "super_admin":
+        return query
+    if not admin.unit_id or not admin.ps_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to a Police Station.")
+    return query.where(
+        PortalsDsrEntry.unit_id == admin.unit_id,
+        PortalsDsrEntry.ps_id == admin.ps_id,
+    )
+
+
+@router.get("/portals-summary", response_model=PortalsDsrKpiSummary)
+async def get_portals_summary(
+    from_date: date = Query(..., alias="from", description="Start of the report window (inclusive)"),
+    to_date: date = Query(..., alias="to", description="End of the report window (inclusive)"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Portals DSR grand totals across the caller's scope + window.
+    Only submitted entries counted."""
+    # Build one SUM(col) per metric.
+    sums = [
+        func.coalesce(func.sum(getattr(PortalsDsrEntry, f)), 0).label(f)
+        for f in _PORTAL_METRICS
+    ]
+    entry_count = func.count(PortalsDsrEntry.id).label("total_entries")
+
+    q = select(entry_count, *sums).where(
+        PortalsDsrEntry.status == "submitted",
+        PortalsDsrEntry.report_date >= from_date,
+        PortalsDsrEntry.report_date <= to_date,
+    )
+    q = _scope_portals(q, admin)
+    row = (await db.execute(q)).one()
+
+    # Coverage — how many PSes have any submitted entry in the window.
+    if admin.role == "super_admin":
+        units_submitted = (await db.execute(
+            select(func.count(func.distinct(PortalsDsrEntry.ps_id)))
+            .where(
+                PortalsDsrEntry.status == "submitted",
+                PortalsDsrEntry.report_date >= from_date,
+                PortalsDsrEntry.report_date <= to_date,
+            )
+        )).scalar() or 0
+        units_total = (await db.execute(
+            select(func.count(PoliceStation.id))
+        )).scalar() or 0
+    else:
+        units_submitted = 1 if (row.total_entries or 0) > 0 else 0
+        units_total = 1
+
+    payload = {"total_entries": int(row.total_entries or 0)}
+    for f in _PORTAL_METRICS:
+        payload[f] = int(getattr(row, f) or 0)
+    payload["units_submitted"] = int(units_submitted)
+    payload["units_total"] = int(units_total)
+    return PortalsDsrKpiSummary(**payload)
+
+
+@router.get("/portals-comparison", response_model=List[PortalsDsrPsComparison])
+async def get_portals_comparison(
+    from_date: date = Query(..., alias="from", description="Start of the report window (inclusive)"),
+    to_date: date = Query(..., alias="to", description="End of the report window (inclusive)"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """One row per PS. `total` is the coarse ranking metric — sum of
+    all 25 counters this PS has submitted in the window. `entries`
+    is how many submissions the PS made."""
+    # Sum of every metric column, expressed as a single grand-total
+    # per row so SQL does the addition (avoids pulling all 25 back
+    # into Python just to sum them).
+    metric_sum = sum(
+        (func.coalesce(func.sum(getattr(PortalsDsrEntry, f)), 0) for f in _PORTAL_METRICS),
+        start=0,
+    )
+
+    q = (
+        select(
+            PortalsDsrEntry.unit_id,
+            Unit.name.label("unit_name"),
+            PortalsDsrEntry.ps_id,
+            PoliceStation.station_name.label("ps_name"),
+            func.count(PortalsDsrEntry.id).label("entries"),
+            metric_sum.label("total"),
+        )
+        .join(Unit, Unit.id == PortalsDsrEntry.unit_id)
+        .join(PoliceStation, PoliceStation.id == PortalsDsrEntry.ps_id)
+        .where(
+            PortalsDsrEntry.status == "submitted",
+            PortalsDsrEntry.report_date >= from_date,
+            PortalsDsrEntry.report_date <= to_date,
+        )
+        .group_by(
+            PortalsDsrEntry.unit_id, Unit.name,
+            PortalsDsrEntry.ps_id, PoliceStation.station_name,
+        )
+        .order_by(func.count(PortalsDsrEntry.id).desc())
+    )
+    if admin.role != "super_admin":
+        q = q.where(
+            PortalsDsrEntry.unit_id == admin.unit_id,
+            PortalsDsrEntry.ps_id == admin.ps_id,
+        )
+
+    rows = (await db.execute(q)).all()
+    return [
+        PortalsDsrPsComparison(
+            unit_id=r.unit_id,
+            unit_name=r.unit_name,
+            ps_id=r.ps_id,
+            ps_name=r.ps_name,
+            entries=int(r.entries or 0),
+            total=int(r.total or 0),
         )
         for r in rows
     ]

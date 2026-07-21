@@ -1,12 +1,19 @@
-import { NavLink } from 'react-router';
+import { NavLink, useLocation } from 'react-router';
 import { useAuthStore } from '../../lib/stores/auth-store';
 import { useState, useEffect } from 'react';
-import { FilePlus, Search, BarChart3, LogOut, FileText, Upload, Users, FileDown, MessageSquare, CalendarOff, Wallet } from 'lucide-react';
+import { CalendarOff, Home, LogOut } from 'lucide-react';
 import { toast } from 'sonner';
 import { declareNil, getNilToday } from '../../lib/api/nil';
 import { getFeatures } from '../../lib/api/features';
+import { getCurrentModule } from '../../lib/utils/modules';
 import type { NilDeclaration } from '../../types';
 import kspLogo from '../../assets/ksp_logo.png';
+
+/** Contextual sidebar. Shows only the links belonging to the module
+ *  the current URL falls in. Home link at the top takes the operator
+ *  back to the tile-grid landing (`/`). On the landing itself the
+ *  navigation area collapses to just user info + Sign Out — the
+ *  tiles ARE the navigation there. */
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   `flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-semibold transition ${
@@ -17,27 +24,25 @@ const linkClass = ({ isActive }: { isActive: boolean }) =>
 
 export function Sidebar() {
   const { user, logout } = useAuthStore();
-  // admin + super_admin both see Dashboard; only super_admin gets cross-PS data.
-  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
-  // User Management — per-PS administrator (admin or super_admin who is
-  // anchored to a specific PS). Same-PS isolation is enforced server-side.
-  const isPsAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  const location = useLocation();
+  const currentModule = getCurrentModule(location.pathname);
 
-  // Chat ("Ask the Data") is gated server-side until the GPU box is
-  // provisioned. Hide the link in environments where the backend reports
-  // chat_enabled=false (or where the features endpoint is unreachable —
-  // fail closed so a broken deploy doesn't dangle a dead link).
+  const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+
+  // Chat feature flag — some links in modules.ts (e.g. Admin > Ask the
+  // Data) hide until the server reports chat_enabled=true.
   const [chatEnabled, setChatEnabled] = useState(false);
   useEffect(() => {
     let cancelled = false;
     getFeatures()
       .then((f) => { if (!cancelled) setChatEnabled(f.chat_enabled); })
-      .catch(() => { /* fail closed — keep link hidden */ });
+      .catch(() => { /* fail closed — keep chat-only links hidden */ });
     return () => { cancelled = true; };
   }, []);
 
   return (
-    <aside className="w-[280px] flex flex-col min-h-screen p-4 gap-3" style={{ background: 'var(--ksp-yellow-soft)', borderRight: '2px solid var(--ksp-yellow-border)' }}>
+    <aside className="w-[280px] flex flex-col min-h-screen p-4 gap-3"
+      style={{ background: 'var(--ksp-yellow-soft)', borderRight: '2px solid var(--ksp-yellow-border)' }}>
       {/* KSP Logo */}
       <div className="flex justify-center items-center">
         <div className="p-2 rounded-xl" style={{ background: 'rgba(255,255,255,0.45)', boxShadow: 'inset 0 0 0 1px rgba(0,0,0,0.18)' }}>
@@ -45,7 +50,7 @@ export function Sidebar() {
         </div>
       </div>
 
-      {/* Title */}
+      {/* App title */}
       <div className="text-center">
         <h2 className="text-lg font-bold" style={{ color: 'var(--ksp-navy)' }}>Cyber Fraud Cases</h2>
         <p className="text-xs font-medium" style={{ color: 'var(--ksp-red)' }}>Karnataka State Police</p>
@@ -54,92 +59,47 @@ export function Sidebar() {
       {/* Divider */}
       <div className="h-[2px] mx-4" style={{ background: 'linear-gradient(to right, rgba(0,0,0,0), #b10000, rgba(0,0,0,0))' }} />
 
-      {/* Navigation */}
-      <nav className="space-y-1">
-        {/* Daily Status Report Section */}
-        <p className="px-4 pt-2 pb-2 text-sm font-extrabold uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>Daily Status Report</p>
-        <NavLink to="/cases/new" className={linkClass}>
-          <FilePlus className="w-4 h-4" /> New Case
+      {/* Home link — always visible except on the home page itself. */}
+      {currentModule && (
+        <NavLink to="/" className={linkClass} end>
+          <Home className="w-4 h-4" /> Home
         </NavLink>
-        <NavLink to="/cases/update" className={linkClass}>
-          <Search className="w-4 h-4" /> Update Case
-        </NavLink>
-        <NavLink to="/petitions/new" className={linkClass}>
-          <FileText className="w-4 h-4" /> New Petition
-        </NavLink>
-        <NavLink to="/petitions/update" className={linkClass}>
-          <Search className="w-4 h-4" /> Update Petition
-        </NavLink>
+      )}
 
-        {/* Divider between sections */}
-        <div className="h-[1px] mx-4 my-2" style={{ background: 'rgba(11,44,74,0.15)' }} />
+      {/* Contextual navigation — module-specific links only. */}
+      {currentModule && (
+        <nav className="space-y-1">
+          <p className="px-4 pt-2 pb-2 text-sm font-extrabold uppercase tracking-wide flex items-center gap-2"
+             style={{ color: currentModule.accent }}>
+            <currentModule.icon className="w-4 h-4" />
+            {currentModule.label}
+          </p>
+          {currentModule.links.map((l) => {
+            if (l.requiresAdmin && !isAdmin) return null;
+            if (l.requiresChat && !chatEnabled) return null;
+            const Icon = l.icon;
+            return (
+              <NavLink key={l.to} to={l.to} className={linkClass}>
+                <Icon className="w-4 h-4" /> {l.label}
+              </NavLink>
+            );
+          })}
+          {/* NIL button — only in the Cases & Petitions module. */}
+          {currentModule.hasNilButton && <NilDayButton />}
+        </nav>
+      )}
 
-        {/* NCRP Data Section (renamed from Mule Accounts Data 2026-07-18 —
-             underlying URLs / API endpoints / DB tables still say "mule"
-             to avoid a breaking rename in production; only the display
-             label changes). */}
-        <p className="px-4 pt-1 pb-2 text-sm font-extrabold uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>NCRP Data</p>
-        <NavLink to="/mule/new" className={linkClass}>
-          <FilePlus className="w-4 h-4" /> New Report
-        </NavLink>
-        <NavLink to="/mule/update" className={linkClass}>
-          <Search className="w-4 h-4" /> Update Report
-        </NavLink>
-        <NavLink to="/mule/upload" className={linkClass}>
-          <Upload className="w-4 h-4" /> Upload Bulk Data
-        </NavLink>
+      {/* When on the home page itself, the tiles ARE the navigation. */}
+      {!currentModule && (
+        <div className="px-4 py-3 text-xs opacity-70 italic text-center">
+          Choose a module from the tiles →
+        </div>
+      )}
 
-        {/* Divider between sections */}
-        <div className="h-[1px] mx-4 my-2" style={{ background: 'rgba(11,44,74,0.15)' }} />
-
-        {/* All Accounts Section (2026-07-18) — victim + mule accounts
-             tracked in one place, with the dedicated Account Details
-             Dashboard rendered separately below. */}
-        <p className="px-4 pt-1 pb-2 text-sm font-extrabold uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>All Accounts</p>
-        <NavLink to="/all-accounts/new" className={linkClass}>
-          <FilePlus className="w-4 h-4" /> New Account
-        </NavLink>
-        <NavLink to="/all-accounts/update" className={linkClass}>
-          <Search className="w-4 h-4" /> Update Account
-        </NavLink>
-
-        <div className="h-[1px] mx-4 my-2" style={{ background: 'rgba(11,44,74,0.15)' }} />
-        <NavLink to="/reports" className={linkClass}>
-          <FileDown className="w-4 h-4" /> Reports
-        </NavLink>
-
-        {isAdmin && (
-          <>
-            <NavLink to="/dashboard" className={linkClass}>
-              <BarChart3 className="w-4 h-4" /> DSR Dashboard
-            </NavLink>
-            <NavLink to="/accounts-dashboard" className={linkClass}>
-              <Wallet className="w-4 h-4" /> Account Details Dashboard
-            </NavLink>
-          </>
-        )}
-
-        {chatEnabled && (
-          <NavLink to="/chat" className={linkClass}>
-            <MessageSquare className="w-4 h-4" /> Ask the Data
-          </NavLink>
-        )}
-
-        <NilDayButton />
-
-        {isPsAdmin && (
-          <>
-            <div className="h-[1px] mx-4 my-2" style={{ background: 'rgba(11,44,74,0.15)' }} />
-            <p className="px-4 pt-1 pb-2 text-sm font-extrabold uppercase tracking-wide" style={{ color: 'var(--ksp-red)' }}>Administration</p>
-            <NavLink to="/users" className={linkClass}>
-              <Users className="w-4 h-4" /> User Management
-            </NavLink>
-          </>
-        )}
-      </nav>
-
-      {/* Divider */}
-      <div className="h-[2px] mx-4" style={{ background: 'linear-gradient(to right, rgba(0,0,0,0), #b10000, rgba(0,0,0,0))' }} />
+      {/* Divider — sits right below the last nav link so there's no
+           big empty gap in the middle when the contextual sidebar is
+           short (which it usually is). */}
+      <div className="h-[2px] mx-4 mt-2" style={{ background: 'linear-gradient(to right, rgba(0,0,0,0), #b10000, rgba(0,0,0,0))' }} />
 
       {/* User info */}
       <div className="px-2">
@@ -161,10 +121,9 @@ export function Sidebar() {
 }
 
 
-/** Sidebar nav row that lets the operator declare today as NIL for their
- *  PS. Renders the button + the modal that opens on click. The button
- *  becomes a green "✓ NIL declared today" pill once the API returns a
- *  row for today, so re-clicks are obviously redundant. */
+/** Sidebar nav row that lets the operator declare today as NIL for
+ *  their PS. Renders the button + the modal that opens on click. Only
+ *  shown inside the Cases & Petitions module (see modules.ts). */
 function NilDayButton() {
   const [open, setOpen] = useState(false);
   const [existing, setExisting] = useState<NilDeclaration | null>(null);
@@ -209,9 +168,7 @@ function NilDayButton() {
   );
 }
 
-/** Modal body — gathers an optional reason and calls the API. Re-declaring
- *  is idempotent server-side so even a duplicate click on "Confirm" is
- *  safe. */
+/** Modal body — gathers an optional reason and calls the API. */
 function NilModal({ existing, onClose, onDeclared }: {
   existing: NilDeclaration | null;
   onClose: () => void;

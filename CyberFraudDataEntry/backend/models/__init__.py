@@ -24,6 +24,7 @@ from models.dsr_entry import DsrEntry
 from models.mule_entry import MuleEntry
 from models.all_account import AllAccount
 from models.all_account_mule_herder import AllAccountMuleHerder
+from models.portals_dsr_entry import PortalsDsrEntry
 
 __all__ = [
     "Unit", "User", "Case", "Arrest", "Accomplice", "AccusedDetail",
@@ -33,4 +34,5 @@ __all__ = [
     "PoliceStation", "RevokedToken", "ChatMessage", "NilDeclaration",
     "DsrEntry", "MuleEntry",
     "AllAccount", "AllAccountMuleHerder",
+    "PortalsDsrEntry",
 ]

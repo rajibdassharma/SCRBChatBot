@@ -91,8 +91,10 @@ export function LoginForm() {
       if (res.must_change_password) {
         navigate('/change-password');
       } else {
-        // admin + super_admin land on the dashboard, unit_user goes to cases.
-        navigate(res.role === 'unit_user' ? '/cases' : '/dashboard');
+        // Everyone lands on the tile-grid home page — same for admin,
+        // super_admin, and unit_user. Role-based visibility (e.g. the
+        // Admin tile) is handled inside the HomePage itself.
+        navigate('/');
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Login failed');

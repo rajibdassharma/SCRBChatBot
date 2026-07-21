@@ -20,6 +20,10 @@ import { ChatPage } from './pages/ChatPage';
 import { AllAccountEntryPage } from './pages/AllAccountEntryPage';
 import { AllAccountUpdatePage } from './pages/AllAccountUpdatePage';
 import { AccountsDashboardPage } from './pages/AccountsDashboardPage';
+import { PortalsDsrEntryPage } from './pages/PortalsDsrEntryPage';
+import { PortalsDsrUpdatePage } from './pages/PortalsDsrUpdatePage';
+import { PortalsDsrDashboardPage } from './pages/PortalsDsrDashboardPage';
+import { HomePage } from './pages/HomePage';
 
 function App() {
   const { logout } = useAuthStore();
@@ -43,6 +47,11 @@ function App() {
           </ProtectedRoute>
         }
       >
+        {/* Post-login landing — tile grid picker. Each tile navigates
+             to its module's landingUrl; the Sidebar then switches to
+             that module's contextual link list. */}
+        <Route path="/" element={<HomePage />} />
+
         <Route path="/cases/new" element={<CaseEntryPage />} />
         <Route path="/cases/update" element={<CaseUpdatePage />} />
         <Route path="/cases/:id" element={<CaseEntryPage />} />
@@ -59,6 +68,18 @@ function App() {
         <Route path="/all-accounts/new" element={<AllAccountEntryPage />} />
         <Route path="/all-accounts/update" element={<AllAccountUpdatePage />} />
         <Route path="/all-accounts/:id" element={<AllAccountEntryPage />} />
+
+        <Route path="/portals-dsr/new" element={<PortalsDsrEntryPage />} />
+        <Route path="/portals-dsr/update" element={<PortalsDsrUpdatePage />} />
+        <Route path="/portals-dsr/:id" element={<PortalsDsrEntryPage />} />
+        <Route
+          path="/portals-dsr/dashboard"
+          element={
+            <ProtectedRoute requireAdmin>
+              <PortalsDsrDashboardPage />
+            </ProtectedRoute>
+          }
+        />
 
         <Route
           path="/dashboard"
@@ -92,7 +113,8 @@ function App() {
         <Route path="/reports" element={<ReportsPage />} />
       </Route>
 
-      <Route path="*" element={<Navigate to="/cases/new" replace />} />
+      {/* Unknown URL → land on the tile grid, not deep-linked entry. */}
+      <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </>
   );

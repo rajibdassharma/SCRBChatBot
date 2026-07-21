@@ -720,3 +720,90 @@ export interface AccountsBankConcentration {
   mules: number;
   non_mules: number;
 }
+
+// ── Portals DSR ────────────────────────────────────────────
+
+export type PortalsDsrStatus = 'draft' | 'submitted';
+
+/** Every metric column on the portals_dsr_entries table.
+ *  Keep in sync with schemas.portals_dsr on the backend. */
+export interface PortalsDsrMetrics {
+  // NCRP (3)
+  ncrp_received: number;
+  ncrp_disposed: number;
+  ncrp_pending: number;
+
+  // Samanvaya (6)
+  samanvaya_request_received: number;
+  samanvaya_actions: number;
+  samanvaya_action_pending: number;
+  samanvaya_request_sent: number;
+  samanvaya_reply_received: number;
+  samanvaya_replies_pending: number;
+
+  // Sahayog (3)
+  sahayog_unlawful_content_removal: number;
+  sahayog_intermediary_requests: number;
+  sahayog_crypto_requests: number;
+
+  // GRM (3)
+  grm_request_received: number;
+  grm_action: number;
+  grm_pending: number;
+
+  // MRM (3)
+  mrm_request_received: number;
+  mrm_action: number;
+  mrm_pending: number;
+
+  // Bharatpol (1)
+  bharatpol_request_received: number;
+
+  // OCWC (3)
+  ocwc_received: number;
+  ocwc_disposed: number;
+  ocwc_pending: number;
+
+  // NCMEC Tipline (3)
+  ncmec_received: number;
+  ncmec_disposed: number;
+  ncmec_pending: number;
+}
+
+export interface PortalsDsrWritePayload extends PortalsDsrMetrics {
+  report_date: string;   // YYYY-MM-DD
+  status: PortalsDsrStatus;
+}
+
+export interface PortalsDsrEntry extends PortalsDsrWritePayload {
+  id: string;
+  unit_id: number;
+  ps_id: number;
+  submitted_by: number | null;
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface PortalsDsrListItem {
+  id: string;
+  report_date: string;
+  status: PortalsDsrStatus;
+  total: number;
+  submitted_by: number | null;
+  created_at: string;
+}
+
+export interface PortalsDsrKpiSummary extends PortalsDsrMetrics {
+  total_entries: number;
+  units_submitted: number;
+  units_total: number;
+}
+
+export interface PortalsDsrPsComparison {
+  unit_id: number;
+  unit_name: string;
+  ps_id: number;
+  ps_name: string;
+  entries: number;
+  total: number;
+}

@@ -31,6 +31,7 @@ from api.routes_reports import router as reports_router
 from api.routes_chat import router as chat_router
 from api.routes_nil import router as nil_router
 from api.routes_all_accounts import router as all_accounts_router
+from api.routes_portals_dsr import router as portals_dsr_router
 
 logger = logging.getLogger(__name__)
 
@@ -156,6 +157,7 @@ if settings.CHAT_ENABLED:
     app.include_router(chat_router)
 app.include_router(nil_router)
 app.include_router(all_accounts_router)
+app.include_router(portals_dsr_router)
 
 
 @app.get("/health")

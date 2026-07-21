@@ -1,0 +1,134 @@
+import {
+  BarChart3, Briefcase, Building2, FileDown, FilePlus, FileText, Globe,
+  MessageSquare, Search, Settings, Upload, Users, Wallet,
+} from 'lucide-react';
+import type { LucideIcon } from 'lucide-react';
+
+/** Central definition of the 5 top-level modules and every sidebar
+ *  link inside each. Drives BOTH the tile-grid landing page and the
+ *  contextual sidebar (which shows only the current module's links).
+ *
+ *  Adding a new module = one entry here. The sidebar + HomePage pick
+ *  it up automatically, so we never end up with sidebar sprawl again. */
+
+export type ModuleKey = 'cases' | 'ncrp' | 'accounts' | 'portals' | 'admin';
+
+export type ModuleLink = {
+  to: string;
+  label: string;
+  icon: LucideIcon;
+  /** Show this link only to admin / super_admin. */
+  requiresAdmin?: boolean;
+  /** Show this link only if the server's chat feature flag is on. */
+  requiresChat?: boolean;
+};
+
+export type ModuleDef = {
+  key: ModuleKey;
+  label: string;
+  /** One-line description shown under the tile title on the landing page. */
+  tagline: string;
+  /** Icon shown BIG on the tile + small next to sidebar title. */
+  icon: LucideIcon;
+  /** Accent colour for tile + sidebar highlight. */
+  accent: string;
+  /** URL prefixes that "belong" to this module — the sidebar uses these
+   *  to decide which module the current URL falls in. Both exact matches
+   *  and `<prefix>/rest` matches count. */
+  urlPrefixes: string[];
+  /** Gate the tile itself. e.g. only admins see the Admin tile. */
+  requiresPsAdmin?: boolean;
+  /** Should this module's sidebar include the "Mark NIL Today" button? */
+  hasNilButton?: boolean;
+  /** URL to land on when the tile is clicked (usually the first link). */
+  landingUrl: string;
+  links: ModuleLink[];
+};
+
+export const MODULES: ModuleDef[] = [
+  {
+    key: 'cases',
+    label: 'Cases & Petitions',
+    tagline: 'Daily case + petition entry, NIL declaration, DSR reports and dashboard.',
+    icon: Briefcase,
+    accent: '#0b2c4a',   // navy
+    urlPrefixes: ['/cases', '/petitions', '/dashboard', '/reports'],
+    hasNilButton: true,
+    landingUrl: '/cases/new',
+    links: [
+      { to: '/cases/new',        label: 'New Case',        icon: FilePlus },
+      { to: '/cases/update',     label: 'Update Case',     icon: Search },
+      { to: '/petitions/new',    label: 'New Petition',    icon: FileText },
+      { to: '/petitions/update', label: 'Update Petition', icon: Search },
+      { to: '/reports',          label: 'Reports',         icon: FileDown },
+      { to: '/dashboard',        label: 'DSR Dashboard',   icon: BarChart3, requiresAdmin: true },
+    ],
+  },
+  {
+    key: 'ncrp',
+    label: 'NCRP Data',
+    tagline: 'Mule report entry, bulk Excel upload, and NCRP investigation records.',
+    icon: Building2,
+    accent: '#8b1919',   // red
+    urlPrefixes: ['/mule'],
+    landingUrl: '/mule/new',
+    links: [
+      { to: '/mule/new',    label: 'New Report',       icon: FilePlus },
+      { to: '/mule/update', label: 'Update Report',    icon: Search },
+      { to: '/mule/upload', label: 'Upload Bulk Data', icon: Upload },
+    ],
+  },
+  {
+    key: 'accounts',
+    label: 'All Accounts',
+    tagline: 'Victim, Mule, and Non-Mule account records with drill-down dashboard.',
+    icon: Wallet,
+    accent: '#0a6b28',   // green
+    urlPrefixes: ['/all-accounts', '/accounts-dashboard'],
+    landingUrl: '/all-accounts/new',
+    links: [
+      { to: '/all-accounts/new',    label: 'New Account',    icon: FilePlus },
+      { to: '/all-accounts/update', label: 'Update Account', icon: Search },
+      { to: '/accounts-dashboard',  label: 'Account Details Dashboard', icon: BarChart3, requiresAdmin: true },
+    ],
+  },
+  {
+    key: 'portals',
+    label: 'Portals DSR',
+    tagline: 'Daily counters for NCRP, Samanvaya, Sahayog, GRM, MRM, Bharatpol, OCWC, NCMEC.',
+    icon: Globe,
+    accent: '#6a1b9a',   // purple
+    urlPrefixes: ['/portals-dsr'],
+    landingUrl: '/portals-dsr/new',
+    links: [
+      { to: '/portals-dsr/new',       label: 'New Entry',             icon: FilePlus },
+      { to: '/portals-dsr/update',    label: 'Update / History',      icon: Search },
+      { to: '/portals-dsr/dashboard', label: 'Portals DSR Dashboard', icon: BarChart3, requiresAdmin: true },
+    ],
+  },
+  {
+    key: 'admin',
+    label: 'Admin',
+    tagline: 'User management and "Ask the Data" chat interface.',
+    icon: Settings,
+    accent: '#5b6b7a',   // slate
+    urlPrefixes: ['/users', '/chat'],
+    requiresPsAdmin: true,
+    landingUrl: '/users',
+    links: [
+      { to: '/users', label: 'User Management', icon: Users },
+      { to: '/chat',  label: 'Ask the Data',    icon: MessageSquare, requiresChat: true },
+    ],
+  },
+];
+
+/** Return the module the given pathname belongs to, or null if it's
+ *  the home page / an unrecognised URL. */
+export function getCurrentModule(pathname: string): ModuleDef | null {
+  for (const m of MODULES) {
+    if (m.urlPrefixes.some((p) => pathname === p || pathname.startsWith(p + '/'))) {
+      return m;
+    }
+  }
+  return null;
+}

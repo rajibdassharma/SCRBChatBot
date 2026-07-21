@@ -72,7 +72,7 @@ sudo bash "$SOURCE/deploy/backup-uploads.sh"
 
 # ── 4. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 4. Run additive DB migrations 001 → 004, 006 → 012 (idempotent) ==="
+echo "=== 4. Run additive DB migrations 001 → 004, 006 → 013 (idempotent) ==="
 # Migration 005 (chat_messages) is deliberately skipped until the GPU box
 # is in place for the chat feature — there's no point provisioning an
 # empty audit table for an endpoint the prod app does not yet expose.
@@ -94,6 +94,7 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.010_add_branch_district_to_all_accounts
     venv/bin/python -m migrations.011_add_account_statement_path_to_all_accounts
     venv/bin/python -m migrations.012_add_layer_and_state_to_all_accounts
+    venv/bin/python -m migrations.013_add_portals_dsr_entries
 "
 
 # ── 5. Build the frontend ────────────────────────────────────────────
@@ -339,6 +340,20 @@ else
     exit 1
 fi
 
+# Portals DSR endpoints must be mounted (401/403 fine — no session).
+if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "https://localhost/api/v1/portals-dsr" | grep -qE '^(401|403)$'; then
+    echo "    ✓ /api/v1/portals-dsr mounted"
+else
+    echo "    ✗ /api/v1/portals-dsr not responding correctly"
+    exit 1
+fi
+if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "https://localhost/api/v1/dashboard/portals-summary?from=2026-01-01&to=2026-01-31" | grep -qE '^(401|403)$'; then
+    echo "    ✓ /api/v1/dashboard/portals-summary mounted"
+else
+    echo "    ✗ /api/v1/dashboard/portals-summary not responding correctly"
+    exit 1
+fi
+
 # Top-banks dashboard endpoint must be mounted (401/403 fine — no session).
 if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "https://localhost/api/v1/dashboard/accounts-top-banks?date=2026-01-01&limit=10" | grep -qE '^(401|403)$'; then
     echo "    ✓ /api/v1/dashboard/accounts-top-banks mounted"
@@ -363,6 +378,27 @@ if [ "$BRANCH_DISTRICT_COL" = "1" ]; then
     echo "    ✓ all_accounts.branch_district column present"
 else
     echo "    ✗ all_accounts.branch_district column missing — migration 010 did not complete"
+    exit 1
+fi
+
+# Migration 013 schema sanity check — portals_dsr_entries table
+# with 25 metric columns and its (unit_id, ps_id, report_date) index.
+PORTALS_TABLE=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='portals_dsr_entries'" 2>/dev/null || echo "ERROR")
+if [ "$PORTALS_TABLE" = "1" ]; then
+    echo "    ✓ portals_dsr_entries table present"
+else
+    echo "    ✗ portals_dsr_entries table missing — migration 013 did not complete"
+    exit 1
+fi
+PORTALS_COLS=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS \
+        WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='portals_dsr_entries' \
+          AND COLUMN_NAME REGEXP '^(ncrp|samanvaya|sahayog|grm|mrm|bharatpol|ocwc|ncmec)_'" 2>/dev/null || echo "ERROR")
+if [ "$PORTALS_COLS" = "25" ]; then
+    echo "    ✓ portals_dsr_entries has all 25 metric columns"
+else
+    echo "    ✗ portals_dsr_entries metric column count = $PORTALS_COLS (expected 25)"
     exit 1
 fi
 
@@ -449,6 +485,13 @@ echo "  Dashboard Overview: 7 colour-accented KPI cards, Top-10 PS"
 echo "  bar chart, account-type pie, Top-10 Banks bar chart, and"
 echo "  reporting-coverage banner. Drill-down + Excel/PDF export"
 echo "  reachable from the same PS comparison table."
+echo
+echo "  NEW: Portals DSR feature (2026-07-21) — per-PS daily counters"
+echo "  for 8 external portals (NCRP / Samanvaya / Sahayog / GRM / MRM"
+echo "  / Bharatpol / OCWC / NCMEC Tipline). Tabbed entry form with"
+echo "  save-draft per tab, submit on the last; multiple entries per"
+echo "  PS per day are legal (shift-based). Admin dashboard SUM-"
+echo "  aggregates across the window with per-portal tiles + Top-10 PS."
 echo
 echo "  /uploads/* is no longer public — every file URL now carries an"
 echo "  HMAC-signed 1-hour expiry. Leaked URLs (in exports, screenshots)"
