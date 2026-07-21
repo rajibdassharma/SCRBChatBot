@@ -382,28 +382,37 @@ async def create_case(
     _validate_submitted_case(body)
     _check_arrest_duplicates(body)
 
+    # Petitions may not have an FIR number — the PetitionEntryPage sends
+    # fir_no='' in that case. MySQL treats '' as a distinct value in the
+    # uq_case_unit_ps_fir unique index (unlike NULL, which is allowed to
+    # repeat), so a second FIR-less petition per PS would collide with
+    # the first with a raw IntegrityError. Coerce '' → None here so the
+    # column stores NULL and multiple petitions coexist cleanly. Any
+    # other client sending an accidental empty string benefits too.
+    fir_no = (body.fir_no or "").strip() or None
+
     # Pre-check the (unit_id, ps_id, fir_no) UNIQUE constraint and return a
     # clean 409 instead of letting the DB IntegrityError surface as 500
     # (Innspark VAPT exec summary, 2026-05-05). Scope is per-PS — FIRs are
     # independently numbered per PS in police operations (see migration 002).
-    if body.fir_no:
+    if fir_no:
         existing = (await db.execute(
             select(Case).where(
                 Case.unit_id == unit_id,
                 Case.ps_id == ps_id,
-                Case.fir_no == body.fir_no,
+                Case.fir_no == fir_no,
             )
         )).scalar_one_or_none()
         if existing:
             raise HTTPException(
                 status_code=409,
-                detail=f"A case with FIR No '{body.fir_no}' already exists in this PS.",
+                detail=f"A case with FIR No '{fir_no}' already exists in this PS.",
             )
 
     case = Case(
         unit_id=unit_id,
         ps_id=ps_id,
-        fir_no=body.fir_no,
+        fir_no=fir_no,
         petition_no=body.petition_no,
         registration_date=body.registration_date,
         case_type=body.case_type,
