@@ -194,7 +194,7 @@ export function AccountsDashboardPage() {
                         <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
                         <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
                         <YAxis type="category" dataKey="ps_name" tick={{ fontSize: 11 }} width={140} />
-                        <Tooltip formatter={(v: number, key: string) => [formatNumber(v), key]}
+                        <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]}
                           labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
                         <Legend wrapperStyle={{ fontSize: 11 }} />
                         <Bar dataKey="victims"   stackId="a" name="Victim"   fill={COLOR_VICTIM} />
@@ -225,7 +225,7 @@ export function AccountsDashboardPage() {
                       >
                         {typePie.map((d) => <Cell key={d.name} fill={d.fill} />)}
                       </Pie>
-                      <Tooltip formatter={(v: number) => formatNumber(v)} />
+                      <Tooltip formatter={(v) => formatNumber(Number(v ?? 0))} />
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
@@ -248,7 +248,7 @@ export function AccountsDashboardPage() {
                     <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
                     <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
                     <YAxis type="category" dataKey="bank_name" tick={{ fontSize: 11 }} width={160} />
-                    <Tooltip formatter={(v: number, key: string) => [formatNumber(v), key]}
+                    <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]}
                       labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
                     <Legend wrapperStyle={{ fontSize: 11 }} />
                     <Bar dataKey="victims"   stackId="b" name="Victim"   fill={COLOR_VICTIM} />
