@@ -7,6 +7,7 @@ import {
 } from '../lib/api/all-accounts';
 import { getDistrictsPublic } from '../lib/api/auth';
 import { useAuthStore } from '../lib/stores/auth-store';
+import { INDIAN_STATES, KARNATAKA } from '../lib/utils/indian-states';
 import type { AllAccount, AllAccountWritePayload, MuleHerder } from '../types';
 
 const BASE = import.meta.env.VITE_API_BASE ?? '';
@@ -47,13 +48,17 @@ function validateMobile(v: string | null | undefined, label: string): string | n
 
 const emptyForm = (): AllAccountWritePayload => ({
   fir_no: null, ncrp_ack_no: null,
-  account_no: '', bank_name: '', branch_name: null, branch_district: null, ifsc_code: null,
+  account_no: '', bank_name: '', branch_name: null,
+  branch_district: null, branch_state: null, layer: null,
+  ifsc_code: null,
   account_holder_name: '', kyc_address: null, kyc_mobile: null,
   id_photo_path: null,
   account_statement_path: null,
   account_type: 'Victim',
   mule_herders: [],
 });
+
+const LAYERS: number[] = Array.from({ length: 15 }, (_, i) => i + 1);   // 1..15
 
 /* --- Reusable field components (same shape as CaseEntryPage's) --- */
 
@@ -235,6 +240,8 @@ export function AllAccountEntryPage() {
           bank_name: data.bank_name,
           branch_name: data.branch_name,
           branch_district: data.branch_district,
+          branch_state: data.branch_state,
+          layer: data.layer,
           ifsc_code: data.ifsc_code,
           account_holder_name: data.account_holder_name,
           kyc_address: data.kyc_address,
@@ -335,7 +342,14 @@ export function AllAccountEntryPage() {
         fir_no: f.fir_no?.trim() || null,
         ncrp_ack_no: f.ncrp_ack_no?.trim() || null,
         branch_name: f.branch_name?.trim() || null,
-        branch_district: f.branch_district?.trim() || null,
+        // District only meaningful when state is Karnataka — clear
+        // it on save if the operator switched states without touching
+        // the district dropdown (defence against stale state).
+        branch_district: f.branch_state === KARNATAKA
+          ? (f.branch_district?.trim() || null)
+          : null,
+        branch_state: f.branch_state?.trim() || null,
+        layer: f.layer,
         ifsc_code: f.ifsc_code?.trim() || null,
         kyc_address: f.kyc_address?.trim() || null,
         kyc_mobile: f.kyc_mobile?.trim() || null,
@@ -424,14 +438,42 @@ export function AllAccountEntryPage() {
             onChange={(v) => upd('bank_name', v)} />
           <TextField label="Branch Name" value={f.branch_name ?? ''}
             onChange={(v) => upd('branch_name', v)} />
-          <SelectField label="Branch District" value={f.branch_district ?? ''}
+          <SelectField label="Branch State" value={f.branch_state ?? ''}
+            onChange={(v) => {
+              // Switching away from Karnataka must also clear the
+              // (now-inapplicable) District selection.
+              const next = v || null;
+              setF((p) => ({
+                ...p,
+                branch_state: next,
+                branch_district: next === KARNATAKA ? p.branch_district : null,
+              }));
+            }}
+            options={INDIAN_STATES}
+            placeholder="— Select State —" />
+          <SelectField label="Branch District"
+            value={f.branch_district ?? ''}
             onChange={(v) => upd('branch_district', v || null)}
             options={districts}
-            placeholder={districts.length ? '— Select District —' : 'Loading…'}
-            disabled={districts.length === 0} />
+            placeholder={
+              f.branch_state && f.branch_state !== KARNATAKA
+                ? 'Disabled (state is not Karnataka)'
+                : (districts.length ? '— Select District —' : 'Loading…')
+            }
+            disabled={
+              // Disabled when state is anything OTHER than Karnataka;
+              // enabled when state is Karnataka OR still unset (default).
+              (!!f.branch_state && f.branch_state !== KARNATAKA)
+              || districts.length === 0
+            } />
           <TextField label="IFSC Code" value={f.ifsc_code ?? ''}
             onChange={(v) => upd('ifsc_code', v.toUpperCase())}
             maxLength={11} placeholder="e.g. HDFC0001234" />
+          <SelectField label="Layer"
+            value={f.layer != null ? String(f.layer) : ''}
+            onChange={(v) => upd('layer', v ? Number(v) : null)}
+            options={LAYERS.map(String)}
+            placeholder="— Select Layer (1-15) —" />
 
           {/* Account statement upload — PDF or Excel, one per account, 5MB cap.
               Sits inside the Account Details grid as a full-width row. */}

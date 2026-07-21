@@ -59,6 +59,14 @@ class AllAccount(Base):
     # existing rows predate the field; the entry form treats it as
     # optional so operators can save a draft before confirming.
     branch_district = Column(String(100), nullable=True)
+    # Indian state the branch is in. When != 'Karnataka' the entry
+    # form disables the branch_district dropdown (the districts list
+    # is KA-only). Free-text VARCHAR; frontend enforces the picklist.
+    branch_state = Column(String(100), nullable=True)
+    # Money-trail layer this account sits at (1..15). Same semantics
+    # as lien_accounts.layer / money_transfers.layer. Range enforced
+    # in Pydantic, not the DB, so widening later is a one-liner.
+    layer = Column(Integer, nullable=True)
     ifsc_code = Column(String(20), nullable=True)
 
     # Account holder identity.

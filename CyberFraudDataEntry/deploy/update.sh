@@ -72,7 +72,7 @@ sudo bash "$SOURCE/deploy/backup-uploads.sh"
 
 # ── 4. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 4. Run additive DB migrations 001 → 004, 006 → 011 (idempotent) ==="
+echo "=== 4. Run additive DB migrations 001 → 004, 006 → 012 (idempotent) ==="
 # Migration 005 (chat_messages) is deliberately skipped until the GPU box
 # is in place for the chat feature — there's no point provisioning an
 # empty audit table for an endpoint the prod app does not yet expose.
@@ -93,6 +93,7 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.009_add_all_accounts_tables
     venv/bin/python -m migrations.010_add_branch_district_to_all_accounts
     venv/bin/python -m migrations.011_add_account_statement_path_to_all_accounts
+    venv/bin/python -m migrations.012_add_layer_and_state_to_all_accounts
 "
 
 # ── 5. Build the frontend ────────────────────────────────────────────
@@ -338,6 +339,14 @@ else
     exit 1
 fi
 
+# Top-banks dashboard endpoint must be mounted (401/403 fine — no session).
+if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "https://localhost/api/v1/dashboard/accounts-top-banks?date=2026-01-01&limit=10" | grep -qE '^(401|403)$'; then
+    echo "    ✓ /api/v1/dashboard/accounts-top-banks mounted"
+else
+    echo "    ✗ /api/v1/dashboard/accounts-top-banks not responding correctly"
+    exit 1
+fi
+
 # /api/v1/dashboard/accounts-summary must be mounted too.
 if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" "https://localhost/api/v1/dashboard/accounts-summary?date=2026-01-01" | grep -qE '^(401|403)$'; then
     echo "    ✓ /api/v1/dashboard/accounts-summary mounted"
@@ -354,6 +363,19 @@ if [ "$BRANCH_DISTRICT_COL" = "1" ]; then
     echo "    ✓ all_accounts.branch_district column present"
 else
     echo "    ✗ all_accounts.branch_district column missing — migration 010 did not complete"
+    exit 1
+fi
+
+# Migration 012 schema sanity check — layer + branch_state columns
+# on all_accounts. Both nullable, so presence is enough.
+LAYER_COL=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='all_accounts' AND COLUMN_NAME='layer'" 2>/dev/null || echo "ERROR")
+STATE_COL=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='all_accounts' AND COLUMN_NAME='branch_state'" 2>/dev/null || echo "ERROR")
+if [ "$LAYER_COL" = "1" ] && [ "$STATE_COL" = "1" ]; then
+    echo "    ✓ all_accounts.layer + branch_state columns present"
+else
+    echo "    ✗ layer=$LAYER_COL branch_state=$STATE_COL — migration 012 did not complete"
     exit 1
 fi
 
@@ -414,12 +436,19 @@ echo "  section (New Account / Update Account) + Account Details"
 echo "  Dashboard, now with click-through drill-down per Police"
 echo "  Station and Excel / PDF export of the detail grid. Third"
 echo "  account type 'Non-Mule' now available alongside Victim + Mule."
-echo "  Entry form now captures 'Branch District' (dropdown of KA"
-echo "  districts) alongside Branch Name, plus an 'Account Statement'"
-echo "  upload widget (PDF / Excel, 5MB cap) — both surface in the"
-echo "  drill-down grid + Excel/PDF export. FIR No is now format-"
-echo "  validated (XXXX/XXXX, e.g. 0001/2026) and Account No / Mobile"
-echo "  are numeric-only with length checks."
+echo "  Entry form now captures 'Branch State' (dropdown of Indian"
+echo "  states — if not Karnataka, the District dropdown disables),"
+echo "  'Branch District' (KA-only dropdown), 'Layer' (1-15 dropdown),"
+echo "  plus an 'Account Statement' upload widget (PDF / Excel, 5MB)."
+echo "  All new fields surface in the drill-down grid + Excel/PDF"
+echo "  export. FIR No is now format-validated (XXXX/XXXX, e.g."
+echo "  0001/2026) and Account No / Mobile are numeric-only with"
+echo "  length checks. Update list now shows Serial No ascending."
+echo
+echo "  Dashboard Overview: 7 colour-accented KPI cards, Top-10 PS"
+echo "  bar chart, account-type pie, Top-10 Banks bar chart, and"
+echo "  reporting-coverage banner. Drill-down + Excel/PDF export"
+echo "  reachable from the same PS comparison table."
 echo
 echo "  /uploads/* is no longer public — every file URL now carries an"
 echo "  HMAC-signed 1-hour expiry. Leaked URLs (in exports, screenshots)"

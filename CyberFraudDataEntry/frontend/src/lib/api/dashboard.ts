@@ -5,7 +5,7 @@ import type {
   RecurringAccount, BankConcentration, AtmHotspot, LayerBucket, LienAccountAtLayer,
   AccountCaseDetail, CaseDetailFull,
   DisposalSummary, TrialSummary, PendingByYearRow,
-  AccountsKpiSummary, AccountsPsComparison,
+  AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
   AllAccount,
 } from '../../types';
 
@@ -16,6 +16,15 @@ export async function getAccountsSummary(date: string): Promise<AccountsKpiSumma
 
 export async function getAccountsComparison(date: string): Promise<AccountsPsComparison[]> {
   return apiFetch<AccountsPsComparison[]>(`/api/v1/dashboard/accounts-comparison?date=${date}`);
+}
+
+/** Top N banks by account-count for the Dashboard Overview insight panel. */
+export async function getAccountsTopBanks(
+  date: string, limit = 10,
+): Promise<AccountsBankConcentration[]> {
+  return apiFetch<AccountsBankConcentration[]>(
+    `/api/v1/dashboard/accounts-top-banks?date=${date}&limit=${limit}`,
+  );
 }
 
 /** Drill-down: full account-detail rows (with mule herders eager-loaded)

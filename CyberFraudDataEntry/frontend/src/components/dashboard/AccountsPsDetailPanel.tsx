@@ -47,8 +47,10 @@ const COLUMNS: Array<{
   { key: 'account_no',          label: 'Account No',  export: (r) => r.account_no },
   { key: 'bank_name',           label: 'Bank',        export: (r) => r.bank_name },
   { key: 'branch_name',         label: 'Branch',      export: (r) => r.branch_name ?? '' },
+  { key: 'branch_state',        label: 'Branch State', export: (r) => r.branch_state ?? '' },
   { key: 'branch_district',     label: 'Branch District', export: (r) => r.branch_district ?? '' },
   { key: 'ifsc_code',           label: 'IFSC',        export: (r) => r.ifsc_code ?? '' },
+  { key: 'layer',               label: 'Layer',       export: (r) => r.layer != null ? String(r.layer) : '' },
   { key: 'account_holder_name', label: 'Holder Name', export: (r) => r.account_holder_name },
   { key: 'kyc_address',         label: 'KYC Address', export: (r) => r.kyc_address ?? '' },
   { key: 'kyc_mobile',          label: 'KYC Mobile',  export: (r) => r.kyc_mobile ?? '' },
@@ -149,9 +151,9 @@ export function AccountsPsDetailPanel({ ps, asOfDate, onBack }: Props) {
       headStyles: { fillColor: [11, 44, 74] },   // ksp-navy
       alternateRowStyles: { fillColor: [245, 245, 247] },
       columnStyles: {
-        10: { cellWidth: 90 },   // KYC Address — wider
-        13: { cellWidth: 60 },   // Statement — path is long
-        14: { cellWidth: 120 },  // Mule Herders — widest
+        12: { cellWidth: 90 },   // KYC Address — wider
+        15: { cellWidth: 60 },   // Statement — path is long
+        16: { cellWidth: 120 },  // Mule Herders — widest
       },
     });
     const filename = `account-details_${slug(ps.unit_name)}_${slug(ps.ps_name)}_${asOfDate}.pdf`;
@@ -253,8 +255,10 @@ export function AccountsPsDetailPanel({ ps, asOfDate, onBack }: Props) {
                         <td className="px-3 py-2 font-mono">{r.account_no}</td>
                         <td className="px-3 py-2">{r.bank_name}</td>
                         <td className="px-3 py-2">{r.branch_name ?? '—'}</td>
+                        <td className="px-3 py-2">{r.branch_state ?? '—'}</td>
                         <td className="px-3 py-2">{r.branch_district ?? '—'}</td>
                         <td className="px-3 py-2 font-mono">{r.ifsc_code ?? '—'}</td>
+                        <td className="px-3 py-2 font-mono text-center">{r.layer != null ? r.layer : '—'}</td>
                         <td className="px-3 py-2">{r.account_holder_name}</td>
                         <td className="px-3 py-2 max-w-[240px] truncate" title={r.kyc_address ?? ''}>
                           {r.kyc_address ?? '—'}

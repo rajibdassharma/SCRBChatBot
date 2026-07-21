@@ -34,7 +34,7 @@ from schemas.dashboard import (
     AccountCaseDetail, CaseDetailFull,
     ArrestSummary, LienSummary, PetitionSummary, RefundSummary,
     DisposalSummary, TrialSummary, PendingByYearRow,
-    AccountsKpiSummary, AccountsPsComparison,
+    AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
 )
 from schemas.all_account import AllAccountResponse, MuleHerderOut
 from auth.upload_signing import sign_path
@@ -1515,6 +1515,47 @@ async def get_accounts_comparison(
     ]
 
 
+@router.get("/accounts-top-banks", response_model=List[AccountsBankConcentration])
+async def get_accounts_top_banks(
+    target_date: date = Query(..., alias="date", description="Cumulative cutoff — include accounts created on or before this date"),
+    limit: int = Query(default=10, ge=1, le=50, description="Max rows to return"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Top N banks by account-count on the Dashboard Overview.
+    Scoped like /accounts-comparison — super_admin sees all PSes,
+    admin only their own."""
+    q = (
+        select(
+            AllAccount.bank_name,
+            func.count(AllAccount.id).label("total"),
+            func.sum(case((AllAccount.account_type == "Victim", 1), else_=0)).label("victims"),
+            func.sum(case((AllAccount.account_type == "Mule", 1), else_=0)).label("mules"),
+            func.sum(case((AllAccount.account_type == "Non-Mule", 1), else_=0)).label("non_mules"),
+        )
+        .where(func.date(AllAccount.created_at) <= target_date)
+        .group_by(AllAccount.bank_name)
+        .order_by(func.count(AllAccount.id).desc())
+        .limit(limit)
+    )
+    if admin.role != "super_admin":
+        if not admin.unit_id or not admin.ps_id:
+            raise HTTPException(status_code=403, detail="Admin account is not assigned to a Police Station.")
+        q = q.where(AllAccount.unit_id == admin.unit_id, AllAccount.ps_id == admin.ps_id)
+
+    rows = (await db.execute(q)).all()
+    return [
+        AccountsBankConcentration(
+            bank_name=r.bank_name,
+            total=int(r.total or 0),
+            victims=int(r.victims or 0),
+            mules=int(r.mules or 0),
+            non_mules=int(r.non_mules or 0),
+        )
+        for r in rows
+    ]
+
+
 @router.get("/accounts-details-by-ps", response_model=List[AllAccountResponse])
 async def get_accounts_details_by_ps(
     unit_id: int = Query(..., description="Unit id (from the PS-comparison row on the dashboard)"),
@@ -1559,6 +1600,8 @@ async def get_accounts_details_by_ps(
             bank_name=r.bank_name,
             branch_name=r.branch_name,
             branch_district=r.branch_district,
+            branch_state=r.branch_state,
+            layer=r.layer,
             ifsc_code=r.ifsc_code,
             account_holder_name=r.account_holder_name,
             kyc_address=r.kyc_address,

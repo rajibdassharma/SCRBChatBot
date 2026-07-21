@@ -635,6 +635,8 @@ export interface AllAccount {
   bank_name: string;
   branch_name: string | null;
   branch_district: string | null;
+  branch_state: string | null;
+  layer: number | null;
   ifsc_code: string | null;
 
   account_holder_name: string;
@@ -672,6 +674,8 @@ export interface AllAccountWritePayload {
   bank_name: string;
   branch_name: string | null;
   branch_district: string | null;
+  branch_state: string | null;
+  layer: number | null;
   ifsc_code: string | null;
 
   account_holder_name: string;
@@ -703,6 +707,14 @@ export interface AccountsPsComparison {
   unit_name: string;
   ps_id: number;
   ps_name: string;
+  total: number;
+  victims: number;
+  mules: number;
+  non_mules: number;
+}
+
+export interface AccountsBankConcentration {
+  bank_name: string;
   total: number;
   victims: number;
   mules: number;

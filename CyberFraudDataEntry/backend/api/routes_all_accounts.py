@@ -122,6 +122,8 @@ def _to_response(row: AllAccount) -> AllAccountResponse:
         bank_name=row.bank_name,
         branch_name=row.branch_name,
         branch_district=row.branch_district,
+        branch_state=row.branch_state,
+        layer=row.layer,
         ifsc_code=row.ifsc_code,
         account_holder_name=row.account_holder_name,
         kyc_address=row.kyc_address,
@@ -178,6 +180,8 @@ async def create_account(
             bank_name=body.bank_name,
             branch_name=body.branch_name,
             branch_district=body.branch_district,
+            branch_state=body.branch_state,
+            layer=body.layer,
             ifsc_code=body.ifsc_code,
             account_holder_name=body.account_holder_name,
             kyc_address=body.kyc_address,
@@ -231,7 +235,9 @@ async def list_accounts(
     """PS-scoped inbox. Optional free-text search across the fields
     the operator is most likely to remember (account, holder, FIR,
     NCRP ack)."""
-    query = select(AllAccount).order_by(AllAccount.serial_no.desc())
+    # Ascending — operators asked for Serial No to read left-to-right
+    # top-to-bottom in the order they were entered (2026-07-21).
+    query = select(AllAccount).order_by(AllAccount.serial_no.asc())
     query = _scope_to_ps(query, current)
     if q:
         needle = f"%{q.strip()}%"
@@ -302,6 +308,8 @@ async def update_account(
     row.bank_name = body.bank_name
     row.branch_name = body.branch_name
     row.branch_district = body.branch_district
+    row.branch_state = body.branch_state
+    row.layer = body.layer
     row.ifsc_code = body.ifsc_code
     row.account_holder_name = body.account_holder_name
     row.kyc_address = body.kyc_address

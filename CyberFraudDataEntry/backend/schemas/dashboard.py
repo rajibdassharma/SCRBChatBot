@@ -56,6 +56,16 @@ class AccountsPsComparison(BaseModel):
     non_mules: int = 0
 
 
+class AccountsBankConcentration(BaseModel):
+    """One row on the Top Banks chart — how many All Accounts records
+    reference this bank. Powers the Dashboard Overview insight panel."""
+    bank_name: str
+    total: int = 0
+    victims: int = 0
+    mules: int = 0
+    non_mules: int = 0
+
+
 class PsComparison(BaseModel):
     ps_name: str
     cases: int = 0

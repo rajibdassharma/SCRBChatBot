@@ -28,6 +28,16 @@ _NUMERIC = re.compile(r"^\d+$")
 _FIR_NO = re.compile(r"^\d{4}/\d{4}$")
 
 
+def _validate_layer(v: Optional[int]) -> Optional[int]:
+    """Money-trail layer must be between 1 and 15 inclusive if set.
+    None / unset is allowed (optional field)."""
+    if v is None:
+        return None
+    if not isinstance(v, int) or v < 1 or v > 15:
+        raise ValueError("Layer must be an integer between 1 and 15.")
+    return v
+
+
 def _validate_fir_no(v: Optional[str]) -> Optional[str]:
     """FIR No must be XXXX/XXXX (4 numeric digits, slash, 4 numeric
     digits) so operators enter 0001/2026, not 1/2026. Blank/None is
@@ -122,6 +132,8 @@ class AllAccountCreate(BaseModel):
     bank_name: str = Field(min_length=1, max_length=200)
     branch_name: Optional[str] = Field(default=None, max_length=200)
     branch_district: Optional[str] = Field(default=None, max_length=100)
+    branch_state: Optional[str] = Field(default=None, max_length=100)
+    layer: Optional[int] = Field(default=None, ge=1, le=15)
     ifsc_code: Optional[str] = Field(default=None, max_length=20)
 
     account_holder_name: str = Field(min_length=1, max_length=200)
@@ -158,6 +170,11 @@ class AllAccountCreate(BaseModel):
     def _v_fir_no(cls, v):
         return _validate_fir_no(v)
 
+    @field_validator("layer")
+    @classmethod
+    def _v_layer(cls, v):
+        return _validate_layer(v)
+
 
 class AllAccountUpdate(AllAccountCreate):
     """PUT body — same shape as create. serial_no is not editable."""
@@ -179,6 +196,8 @@ class AllAccountResponse(BaseModel):
     bank_name: str
     branch_name: Optional[str] = None
     branch_district: Optional[str] = None
+    branch_state: Optional[str] = None
+    layer: Optional[int] = None
     ifsc_code: Optional[str] = None
 
     account_holder_name: str
