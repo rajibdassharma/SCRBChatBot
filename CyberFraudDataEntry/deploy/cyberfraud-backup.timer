@@ -1,17 +1,17 @@
 [Unit]
-Description=Daily MySQL backup of cyber_fraud_dsr at 02:00 IST
+Description=Nightly backup of cyber_fraud_dsr + uploads/ at 00:00 IST
 
 [Timer]
-# 02:00 IST (= 20:30 UTC the previous day). Explicit Asia/Kolkata makes
+# 00:00 IST (= 18:30 UTC the previous day). Explicit Asia/Kolkata makes
 # this safe regardless of whether the server's local timezone is UTC,
 # IST, or something else.
-OnCalendar=*-*-* 02:00:00 Asia/Kolkata
+OnCalendar=*-*-* 00:00:00 Asia/Kolkata
 
 # If the server was off at the trigger time, fire on next boot.
 Persistent=true
 
 # Up to 5 minutes of randomised delay to spread load if other timers
-# also fire at 02:00.
+# also fire at 00:00.
 RandomizedDelaySec=5min
 
 Unit=cyberfraud-backup.service

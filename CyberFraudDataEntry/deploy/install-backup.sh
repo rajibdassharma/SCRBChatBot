@@ -1,10 +1,14 @@
 #!/usr/bin/env bash
 # ============================================================================
-# CyberFraud Data Entry — one-time install of the nightly MySQL backup.
+# CyberFraud Data Entry — install / update the nightly backup automation.
 #
-# Wraps every step that used to be in the deploy/README.md "One-time backup
-# install" section. Idempotent — safe to re-run if a step failed or you
-# tweaked the unit files.
+# Nightly backup now covers BOTH the MySQL database AND the uploads/ tree
+# (ID photos + bank statements). Runs at 00:00 IST via
+# cyberfraud-backup.timer → cyberfraud-backup.service → backup-all.sh
+# (which chains backup-db.sh + backup-uploads.sh).
+#
+# Idempotent — re-run any time you tweak the unit files or change the
+# schedule; systemctl daemon-reload + enable --now picks up the changes.
 #
 # Usage on the server:
 #   sudo bash /opt/scrb/CyberFraudDataEntry/deploy/install-backup.sh
@@ -13,9 +17,9 @@
 #   1. git pull on /opt/scrb to grab the latest backup files.
 #   2. Sync deploy/ from /opt/scrb/CyberFraudDataEntry/ → /opt/cyberfraud/.
 #   3. Create /opt/cyberfraud/backups/ owned by the `cyberfraud` user.
-#   4. Make backup-db.sh executable.
+#   4. Make backup-{all,db,uploads}.sh executable.
 #   5. Install the systemd .service + .timer unit files.
-#   6. Reload systemd, enable + start the .timer.
+#   6. Reload systemd, enable + (re)start the .timer.
 #   7. Verify the timer is scheduled.
 #   8. Trigger one manual backup run as a smoke test.
 #   9. Show the journal output + list backup files.
@@ -32,7 +36,9 @@ SERVICE=cyberfraud-backup.service
 TIMER=cyberfraud-backup.timer
 
 echo "============================================================"
-echo "  CyberFraud — install nightly MySQL backup automation"
+echo "  CyberFraud — install/refresh nightly backup automation"
+echo "  Scope  : DB + uploads/  (via backup-all.sh)"
+echo "  Time   : 00:00 IST daily"
 echo "  Source : $SOURCE_DEPLOY"
 echo "  Runtime: $RUNTIME_DEPLOY"
 echo "  Backups: $BACKUP_DIR"
@@ -46,7 +52,7 @@ sudo git pull
 echo "    HEAD: $(git log -1 --oneline)"
 
 # Fail early if the new files aren't actually present after the pull
-for f in backup-db.sh cyberfraud-backup.service cyberfraud-backup.timer; do
+for f in backup-all.sh backup-db.sh backup-uploads.sh cyberfraud-backup.service cyberfraud-backup.timer; do
     if [ ! -f "$SOURCE_DEPLOY/$f" ]; then
         echo "ERROR: $SOURCE_DEPLOY/$f missing after git pull" >&2
         exit 1
@@ -68,11 +74,13 @@ sudo chown cyberfraud:cyberfraud "$BACKUP_DIR"
 sudo chmod 750 "$BACKUP_DIR"
 echo "    $BACKUP_DIR  $(stat -c '%U:%G  %a' "$BACKUP_DIR")"
 
-# ── 4. Make backup script executable ─────────────────────────────────
+# ── 4. Make backup scripts executable ────────────────────────────────
 echo
-echo "=== 4. Make backup-db.sh executable ==="
-sudo chmod +x "$RUNTIME_DEPLOY/backup-db.sh"
-ls -l "$RUNTIME_DEPLOY/backup-db.sh"
+echo "=== 4. Make backup-{all,db,uploads}.sh executable ==="
+sudo chmod +x "$RUNTIME_DEPLOY/backup-all.sh" \
+              "$RUNTIME_DEPLOY/backup-db.sh" \
+              "$RUNTIME_DEPLOY/backup-uploads.sh"
+ls -l "$RUNTIME_DEPLOY/backup-all.sh" "$RUNTIME_DEPLOY/backup-db.sh" "$RUNTIME_DEPLOY/backup-uploads.sh"
 
 # ── 5. Install systemd unit files ────────────────────────────────────
 echo
@@ -82,11 +90,15 @@ sudo cp "$RUNTIME_DEPLOY/cyberfraud-backup.timer"   /etc/systemd/system/
 echo "    Installed /etc/systemd/system/$SERVICE"
 echo "    Installed /etc/systemd/system/$TIMER"
 
-# ── 6. Reload + enable + start timer ─────────────────────────────────
+# ── 6. Reload + enable + (re)start timer ─────────────────────────────
+# daemon-reload picks up unit-file changes (e.g. new OnCalendar).
+# restart guarantees the timer re-reads its schedule immediately —
+# needed when this is a re-install with a changed .timer/.service.
 echo
-echo "=== 6. systemctl daemon-reload + enable --now $TIMER ==="
+echo "=== 6. systemctl daemon-reload + enable + restart $TIMER ==="
 sudo systemctl daemon-reload
-sudo systemctl enable --now "$TIMER"
+sudo systemctl enable "$TIMER"
+sudo systemctl restart "$TIMER"
 
 # ── 7. Verify schedule ───────────────────────────────────────────────
 echo

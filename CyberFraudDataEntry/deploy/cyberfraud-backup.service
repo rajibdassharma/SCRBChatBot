@@ -1,5 +1,5 @@
 [Unit]
-Description=CyberFraud Data Entry — daily MySQL backup
+Description=CyberFraud Data Entry — nightly backup (DB + uploads)
 After=mysql.service
 Requires=mysql.service
 
@@ -8,9 +8,16 @@ Type=oneshot
 User=cyberfraud
 Group=cyberfraud
 WorkingDirectory=/opt/cyberfraud
-ExecStart=/opt/cyberfraud/deploy/backup-db.sh
+# backup-all.sh is the one-shot wrapper that runs backup-db.sh then
+# backup-uploads.sh in sequence. Fails loudly if either step fails so
+# the service unit records failure and the journal shows which half
+# broke.
+ExecStart=/opt/cyberfraud/deploy/backup-all.sh
 
-# Hardening — backup only needs to read .env, write backups, and talk to MySQL
+# Hardening — backup reads .env + uploads/, writes backups/, talks to MySQL.
+# /opt is still readable under ProtectSystem=strict; only writes need
+# to be whitelisted, so ReadWritePaths=/opt/cyberfraud/backups is enough
+# for both the DB dump and the uploads tar.
 NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
