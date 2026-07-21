@@ -5,7 +5,7 @@
 # Fires backup-db.sh and backup-uploads.sh in sequence. Fails loudly
 # if either step fails (so cron / a systemd timer can alert on it).
 # Safe to run any time — both underlying scripts timestamp their
-# output files and prune anything older than 14 days.
+# output files and prune anything older than 7 days.
 #
 # Manual usage on the server:
 #     sudo bash /opt/scrb/CyberFraudDataEntry/deploy/backup-all.sh
@@ -20,7 +20,7 @@
 # Outputs land in /opt/cyberfraud/backups/ :
 #   - cyber_fraud_dsr_YYYY-MM-DD_HHMM.sql.gz   (from backup-db.sh)
 #   - uploads_YYYY-MM-DD_HHMM.tar.gz           (from backup-uploads.sh)
-# Both keep 14 days of history and auto-prune older files.
+# Both keep 7 days of history and auto-prune older files.
 #
 # Restore reminders:
 #   DB      : zcat /opt/cyberfraud/backups/cyber_fraud_dsr_<ts>.sql.gz \
@@ -53,6 +53,6 @@ echo
 echo "================================================================"
 echo "  ✓ Backup complete — started $START, finished $(date -Iseconds)"
 echo
-echo "  Files retained in /opt/cyberfraud/backups/ (14-day rolling):"
+echo "  Files retained in /opt/cyberfraud/backups/ (7-day rolling):"
 ls -lh /opt/cyberfraud/backups/ 2>/dev/null | tail -n +2 | sort -k9 || true
 echo "================================================================"

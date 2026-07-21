@@ -4,7 +4,7 @@
 #
 # Fires every night at 02:00 IST via systemd timer `cyberfraud-backup.timer`.
 # Writes a gzipped mysqldump of `cyber_fraud_dsr` into /opt/cyberfraud/backups/
-# and prunes anything older than 14 days. Output goes to journal:
+# and prunes anything older than 7 days. Output goes to journal:
 #     sudo journalctl -u cyberfraud-backup.service -n 50 --no-pager
 #
 # Runs as the `cyberfraud` user (matches the backend service), so DB
@@ -19,7 +19,7 @@ set -o pipefail
 
 ENV_FILE=/opt/cyberfraud/backend/.env
 BACKUP_DIR=/opt/cyberfraud/backups
-RETENTION_DAYS=14
+RETENTION_DAYS=7
 
 # ── Read DB credentials from .env ────────────────────────────────────
 if [ ! -r "$ENV_FILE" ]; then

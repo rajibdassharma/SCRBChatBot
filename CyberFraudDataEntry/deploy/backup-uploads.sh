@@ -12,14 +12,14 @@
 # be pointed at from a nightly systemd timer alongside the DB backup.
 #
 # Writes a gzipped tar into /opt/cyberfraud/backups/uploads_<ts>.tar.gz
-# and prunes anything older than 14 days.
+# and prunes anything older than 7 days.
 # ============================================================================
 
 set -euo pipefail
 
 UPLOAD_DIR=/opt/cyberfraud/backend/uploads
 BACKUP_DIR=/opt/cyberfraud/backups
-RETENTION_DAYS=14
+RETENTION_DAYS=7
 
 # ── No uploads directory yet? Nothing to back up — that's fine. ─────
 if [ ! -d "$UPLOAD_DIR" ]; then
