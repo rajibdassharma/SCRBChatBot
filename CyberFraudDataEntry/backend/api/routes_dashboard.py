@@ -35,6 +35,7 @@ from schemas.dashboard import (
     ArrestSummary, LienSummary, PetitionSummary, RefundSummary,
     DisposalSummary, TrialSummary, PendingByYearRow,
     AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
+    FirPsPerformanceRow,
 )
 from schemas.all_account import AllAccountResponse, MuleHerderOut
 from schemas.portals_dsr import PortalsDsrKpiSummary, PortalsDsrPsComparison
@@ -1768,3 +1769,111 @@ async def get_portals_comparison(
         )
         for r in rows
     ]
+
+
+# ── FIR Dashboard (DSR module) — PS-performance table ──────────────────
+# Per-PS FIR-count rollup for a date window. Registration date drives
+# the window (not created_at) — matches operator mental model of "FIRs
+# registered this week / month". Includes every active (district, PS)
+# pair with at least one user assigned so under-performing PSes surface
+# as zero-count rows rather than being silently omitted.
+#
+# Scoping (same VAPT 7.7 / 7.8 rule as every other admin dashboard):
+#   - admin       → own (unit_id, ps_id) only, single row
+#   - super_admin → every active PS, leaderboard shape
+
+
+def _resolve_fir_perf_window(
+    date_from: date | None,
+    date_to: date | None,
+) -> tuple[date, date]:
+    """Fill in default window (trailing 30 days) and validate ordering.
+    Extracted so JSON + PDF + Excel routes share the same defaults."""
+    if date_to is None:
+        date_to = date.today()
+    if date_from is None:
+        date_from = date_to - timedelta(days=29)
+    if date_from > date_to:
+        raise HTTPException(status_code=400, detail="`from` must be on or before `to`.")
+    return date_from, date_to
+
+
+async def compute_fir_ps_performance(
+    db: AsyncSession,
+    *,
+    date_from: date,
+    date_to: date,
+    admin: CurrentUser,
+) -> List[FirPsPerformanceRow]:
+    """Per-PS FIR count in [date_from, date_to] inclusive. Ordered by
+    fir_count DESC then district ASC, PS name ASC for stable tiebreaks.
+
+    Shared by the JSON /fir-ps-performance route and the PDF + XLSX
+    report routes so all three reflect identical numbers."""
+    # Enumerate the (unit, PS) pairs in scope. Same pattern the DSR
+    # Submission Status table uses — PSes without any active user
+    # can't submit anything, so hiding them prevents noise.
+    ps_q = (
+        select(
+            Unit.id.label("unit_id"),
+            Unit.name.label("unit_name"),
+            PoliceStation.id.label("ps_id"),
+            PoliceStation.station_name.label("ps_name"),
+        )
+        .select_from(User)
+        .join(Unit, Unit.id == User.unit_id)
+        .join(PoliceStation, PoliceStation.id == User.ps_id)
+        .where(Unit.is_active == True)  # noqa: E712
+        .where(User.is_active == True)  # noqa: E712
+        .where(User.unit_id.is_not(None))
+        .where(User.ps_id.is_not(None))
+        .distinct()
+    )
+    if admin.role != "super_admin":
+        ps_q = ps_q.where(Unit.id == admin.unit_id).where(PoliceStation.id == admin.ps_id)
+    ps_rows = (await db.execute(ps_q)).all()
+
+    # Case counts per (unit_id, ps_id) in the window. cases.ps_id is
+    # canonical since migration 002, so we group by it directly.
+    count_q = (
+        select(Case.unit_id, Case.ps_id, func.count(Case.id))
+        .where(Case.registration_date.is_not(None))
+        .where(Case.registration_date >= date_from)
+        .where(Case.registration_date <= date_to)
+        .group_by(Case.unit_id, Case.ps_id)
+    )
+    if admin.role != "super_admin":
+        count_q = count_q.where(Case.unit_id == admin.unit_id).where(Case.ps_id == admin.ps_id)
+    count_rows = (await db.execute(count_q)).all()
+    counts: dict[tuple[int, int], int] = {
+        (int(uid), int(pid)): int(n or 0)
+        for uid, pid, n in count_rows
+        if pid is not None
+    }
+
+    rows = [
+        FirPsPerformanceRow(
+            unit_id=int(uid),
+            district=uname,
+            ps_id=int(pid),
+            ps_name=pname or "",
+            fir_count=counts.get((int(uid), int(pid)), 0),
+        )
+        for uid, uname, pid, pname in ps_rows
+    ]
+    rows.sort(key=lambda r: (-r.fir_count, r.district, r.ps_name))
+    return rows
+
+
+@router.get("/fir-ps-performance", response_model=List[FirPsPerformanceRow])
+async def get_fir_ps_performance(
+    date_from: date = Query(None, alias="from"),
+    date_to: date = Query(None, alias="to"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """JSON route for the FIR Dashboard PS-performance table."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+    date_from, date_to = _resolve_fir_perf_window(date_from, date_to)
+    return await compute_fir_ps_performance(db, date_from=date_from, date_to=date_to, admin=admin)

@@ -7,6 +7,7 @@ import {
 } from '../lib/api/all-accounts';
 import { getDistrictsPublic } from '../lib/api/auth';
 import { useAuthStore } from '../lib/stores/auth-store';
+import { validateFirNo } from '../lib/utils/fir-no';
 import { INDIAN_STATES, KARNATAKA } from '../lib/utils/indian-states';
 import type { AllAccount, AllAccountWritePayload, MuleHerder } from '../types';
 
@@ -27,13 +28,6 @@ function validateAccountNo(v: string): string | null {
   if (t.length < 11 || t.length > 18) return 'Account No must be between 11 and 18 digits';
   if (/^0+$/.test(t)) return 'Account No cannot be all zeros';
   if (/^9+$/.test(t)) return 'Account No cannot be all nines';
-  return null;
-}
-
-function validateFirNo(v: string | null | undefined): string | null {
-  const t = (v ?? '').trim();
-  if (!t) return null;   // optional field — blank is fine
-  if (!/^\d{4}\/\d{4}$/.test(t)) return 'FIR No must be in the format XXXX/XXXX (e.g. 0001/2026)';
   return null;
 }
 
@@ -316,7 +310,9 @@ export function AllAccountEntryPage() {
   };
 
   const handleSave = async () => {
-    const firErr = validateFirNo(f.fir_no);
+    // Shared util expects string; AllAccount's fir_no is nullable so
+    // coalesce first. Empty string is treated as "not typed" and passes.
+    const firErr = validateFirNo(f.fir_no ?? '');
     if (firErr) { toast.error(firErr); return; }
     const acctErr = validateAccountNo(f.account_no);
     if (acctErr) { toast.error(acctErr); return; }

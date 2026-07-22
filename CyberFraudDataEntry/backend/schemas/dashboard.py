@@ -267,4 +267,21 @@ class PendingByYearRow(BaseModel):
     y2023: int = 0
     y2024: int = 0
     y2025: int = 0
+
     y2026: int = 0
+
+
+# ── FIR Dashboard (DSR module) ─────────────────────────────────────
+# Per-PS performance rollup. One row per active (district, PS) pair
+# with the count of FIRs whose registration_date falls in the window.
+# Sourced entirely from `cases` — no derived metrics from arrest /
+# petition / lien tables, per the 2026-07-22 spec ("Select only from
+# the fields that are there in the Case Detail entry").
+
+
+class FirPsPerformanceRow(BaseModel):
+    unit_id: int
+    district: str
+    ps_id: int
+    ps_name: str
+    fir_count: int = 0

@@ -1,6 +1,6 @@
 import {
-  BarChart3, Briefcase, Building2, FileDown, FilePlus, FileText, Globe,
-  MessageSquare, Search, Settings, Upload, Users, Wallet,
+  BarChart3, Briefcase, Building2, ClipboardList, FileDown, FilePlus,
+  FileText, Globe, MessageSquare, Search, Settings, Upload, Users, Wallet,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 
@@ -11,7 +11,7 @@ import type { LucideIcon } from 'lucide-react';
  *  Adding a new module = one entry here. The sidebar + HomePage pick
  *  it up automatically, so we never end up with sidebar sprawl again. */
 
-export type ModuleKey = 'cases' | 'ncrp' | 'accounts' | 'portals' | 'admin';
+export type ModuleKey = 'cases' | 'ncrp' | 'accounts' | 'dsr' | 'admin';
 
 export type ModuleLink = {
   to: string;
@@ -93,17 +93,27 @@ export const MODULES: ModuleDef[] = [
     ],
   },
   {
-    key: 'portals',
-    label: 'Portals DSR',
-    tagline: 'Daily counters for NCRP, Samanvaya, Sahayog, GRM, MRM, Bharatpol, OCWC, NCMEC.',
-    icon: Globe,
-    accent: '#6a1b9a',   // purple
-    urlPrefixes: ['/portals-dsr'],
-    landingUrl: '/portals-dsr/new',
+    key: 'dsr',
+    label: 'DSR',
+    tagline: 'Daily reporting — new FIR, per-FIR investigation activity, and portal counters.',
+    icon: ClipboardList,
+    accent: '#6a1b9a',   // purple — inherited from the retired Portals module.
+    // /dsr owns the "New FIR" link that mounts CaseEntryPage under this
+    // module. /daily-work + /portals-dsr keep their existing URLs so the
+    // rest of the app + deep links keep working; the sidebar just treats
+    // them all as part of this single module.
+    urlPrefixes: ['/dsr', '/daily-work', '/portals-dsr'],
+    landingUrl: '/dsr/new-fir',
     links: [
-      { to: '/portals-dsr/new',       label: 'New Entry',             icon: FilePlus },
-      { to: '/portals-dsr/update',    label: 'Update / History',      icon: Search },
-      { to: '/portals-dsr/dashboard', label: 'Portals DSR Dashboard', icon: BarChart3, requiresAdmin: true },
+      // 3 primary entry points (New FIR, Investigation, Portals) as spec'd
+      // 2026-07-22. Update / History links were dropped from the sidebar
+      // per the same spec — pages remain reachable at their old URLs.
+      { to: '/dsr/new-fir',           label: 'New FIR',                    icon: FilePlus },
+      { to: '/daily-work/new',        label: 'Investigation',              icon: ClipboardList },
+      { to: '/portals-dsr/new',       label: 'Portals',                    icon: Globe },
+      { to: '/dsr/fir-dashboard',     label: 'FIR Dashboard',              icon: BarChart3, requiresAdmin: true },
+      { to: '/portals-dsr/dashboard', label: 'Portals DSR Dashboard',      icon: BarChart3, requiresAdmin: true },
+      { to: '/daily-work/dashboard',  label: 'Daily Work Done Dashboard',  icon: BarChart3, requiresAdmin: true },
     ],
   },
   {

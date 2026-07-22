@@ -167,7 +167,20 @@ export interface CaseEntry {
   petition_no?: string;
   registration_date: string;
   case_type: 'NCRP' | 'Walk-In' | 'Petition';
-  crime_type: 'Internet' | 'Digital' | 'Crypto';
+  /** Open-string since migration 016 (2026-07-22) — one of the 31
+   *  entries in `CYBER_CRIME_TYPES`, OR a legacy value from the pre-
+   *  migration-016 dropdown ({Internet, Digital, Crypto}) that the
+   *  frontend surfaces defensively so old cases stay editable. */
+  crime_type: string;
+  /** Populated only when `crime_type === "Others"`. The operator's
+   *  free-text description of the crime, e.g. "Fake job offer via
+   *  Facebook Marketplace". Cleared by the backend if crime_type is
+   *  anything else. */
+  crime_type_other?: string | null;
+  /** Free-text list of BNS / BNSS / IT-Act sections, e.g.
+   *  "318(4), 319, 340". Nullable — legacy cases pre-migration-015
+   *  have no sections. */
+  sections?: string | null;
   /** Financial cases include Lien / Unfreeze / Refund tabs and the
    *  victim's bank section. Non-financial cases hide those.
    *  Default true for backwards compatibility with legacy rows. */
@@ -195,6 +208,8 @@ export interface CaseListItem {
   registration_date: string;
   case_type: string;
   crime_type: string;
+  crime_type_other?: string | null;
+  sections?: string | null;
   arrest_count: number;
   created_at: string | null;
   status: string;
@@ -806,4 +821,96 @@ export interface PortalsDsrPsComparison {
   ps_name: string;
   entries: number;
   total: number;
+}
+
+// -- Daily Work Done (Investigation Log) --
+// Mirrors backend/schemas/daily_work.py. One row per (PS, FIR, date).
+
+export type DailyWorkFinalReport = 'A' | 'B' | 'C';
+
+export interface DailyWorkWritePayload {
+  report_date: string;
+  fir_no: string;
+  // Red — Notices
+  notices_35_41a_count: number;
+  notices_91_92_94_banks: number;
+  notices_91_92_94_intermediary: number;
+  notices_91_92_94_account_holder: number;
+  notices_91_92_94_cdr_ipdr: number;
+  // Yellow — Lien / Unlien
+  lien_requests_count: number;
+  freeze_requests_count: number;
+  total_lien_amount: number;
+  unlien_requests_count: number;
+  defreeze_requests_count: number;
+  total_unlien_amount: number;
+  // Green — Outcomes
+  arrests_count: number;
+  statements_count: number;
+  final_report: DailyWorkFinalReport | null;
+}
+
+export interface DailyWorkEntry extends DailyWorkWritePayload {
+  id: number;
+  unit_id: number;
+  ps_id: number;
+  unit_name?: string | null;
+  submitted_by?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+// Dashboard aggregation shape — mirrors backend/api/routes_daily_work.py
+// `daily_work_dashboard` response.
+
+export interface DailyWorkDashboardTotals {
+  entries: number;
+  unique_firs: number;
+  notices_35_41a: number;
+  notices_91_92_94_total: number;
+  notices_91_92_94_banks: number;
+  notices_91_92_94_intermediary: number;
+  notices_91_92_94_account_holder: number;
+  notices_91_92_94_cdr_ipdr: number;
+  lien_requests_total: number;
+  freeze_requests_total: number;
+  total_lien_amount: number;
+  unlien_requests_total: number;
+  defreeze_requests_total: number;
+  total_unlien_amount: number;
+  arrests: number;
+  statements: number;
+}
+
+export interface DailyWorkFinalReportSplit {
+  a: number;
+  b: number;
+  c: number;
+  open: number;
+}
+
+export interface DailyWorkDailyPoint {
+  day: string;
+  notices: number;
+  arrests: number;
+  statements: number;
+}
+
+export interface DailyWorkDashboard {
+  date_from: string;
+  date_to: string;
+  totals: DailyWorkDashboardTotals;
+  final_report_split: DailyWorkFinalReportSplit;
+  daily: DailyWorkDailyPoint[];
+}
+
+// -- FIR Dashboard (DSR module) — per-PS performance table --
+// Mirrors backend/schemas/dashboard.py FirPsPerformanceRow.
+
+export interface FirPsPerformanceRow {
+  unit_id: number;
+  district: string;
+  ps_id: number;
+  ps_name: string;
+  fir_count: number;
 }

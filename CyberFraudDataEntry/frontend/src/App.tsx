@@ -24,6 +24,11 @@ import { PortalsDsrEntryPage } from './pages/PortalsDsrEntryPage';
 import { PortalsDsrUpdatePage } from './pages/PortalsDsrUpdatePage';
 import { PortalsDsrDashboardPage } from './pages/PortalsDsrDashboardPage';
 import { HomePage } from './pages/HomePage';
+import { DailyWorkEntryPage } from './pages/DailyWorkEntryPage';
+import { DailyWorkUpdatePage } from './pages/DailyWorkUpdatePage';
+import { DailyWorkDashboardPage } from './pages/DailyWorkDashboardPage';
+import { DsrNewFirPage } from './pages/DsrNewFirPage';
+import { DsrFirDashboardPage } from './pages/DsrFirDashboardPage';
 
 function App() {
   const { logout } = useAuthStore();
@@ -72,6 +77,32 @@ function App() {
         <Route path="/portals-dsr/new" element={<PortalsDsrEntryPage />} />
         <Route path="/portals-dsr/update" element={<PortalsDsrUpdatePage />} />
         <Route path="/portals-dsr/:id" element={<PortalsDsrEntryPage />} />
+
+        <Route path="/daily-work/new" element={<DailyWorkEntryPage />} />
+        <Route path="/daily-work/update" element={<DailyWorkUpdatePage />} />
+        <Route
+          path="/daily-work/dashboard"
+          element={
+            <ProtectedRoute requireAdmin>
+              <DailyWorkDashboardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route path="/daily-work/:id" element={<DailyWorkEntryPage />} />
+
+        {/* DSR → New FIR is a LIGHT variant of the Case entry — captures
+             only the FIR record (no arrests / petitions / lien-accounts
+             / unfreeze / refunds / victim). Cases → Update Case is the
+             place to fill in those child records later. */}
+        <Route path="/dsr/new-fir" element={<DsrNewFirPage />} />
+        <Route
+          path="/dsr/fir-dashboard"
+          element={
+            <ProtectedRoute requireAdmin>
+              <DsrFirDashboardPage />
+            </ProtectedRoute>
+          }
+        />
         <Route
           path="/portals-dsr/dashboard"
           element={

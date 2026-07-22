@@ -25,7 +25,13 @@ from reports.dsr_pdf import render_dsr_pdf
 from reports.mule_pdf import render_mule_pdf
 from reports.case_pdf import render_case_pdf
 from reports.submission_status_pdf import render_submission_status_pdf
-from api.routes_dashboard import compute_submission_status
+from reports.fir_ps_performance_pdf import render_fir_ps_performance_pdf
+from reports.fir_ps_performance_xlsx import render_fir_ps_performance_xlsx
+from api.routes_dashboard import (
+    compute_submission_status,
+    compute_fir_ps_performance,
+    _resolve_fir_perf_window,
+)
 from api.deps import require_admin
 from models.mule_report import MuleReport
 from models.case import Case
@@ -41,6 +47,14 @@ def _pdf_response(content: bytes, filename: str) -> StreamingResponse:
     return StreamingResponse(
         io.BytesIO(content),
         media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
+def _xlsx_response(content: bytes, filename: str) -> StreamingResponse:
+    return StreamingResponse(
+        io.BytesIO(content),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
@@ -324,3 +338,46 @@ async def get_submission_status_pdf(
     pdf_bytes = render_submission_status_pdf(rows, target_date=target_date)
     filename = f"SubmissionStatus_{target_date.isoformat()}.pdf"
     return _pdf_response(pdf_bytes, filename)
+
+
+# ── FIR Dashboard exports ────────────────────────────────────────────
+# Both routes share the same aggregation + scoping as the JSON
+# /dashboard/fir-ps-performance endpoint so the download always
+# matches what's on screen (before any client-side re-sort).
+
+def _fir_perf_filename(ext: str, date_from: date, date_to: date) -> str:
+    if date_from == date_to:
+        return f"FIR_PS_Performance_{date_from.isoformat()}.{ext}"
+    return f"FIR_PS_Performance_{date_from.isoformat()}_to_{date_to.isoformat()}.{ext}"
+
+
+@router.get("/fir-ps-performance.pdf")
+async def get_fir_ps_performance_pdf(
+    date_from: date | None = Query(None, alias="from"),
+    date_to: date | None = Query(None, alias="to"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """PDF export of the FIR Dashboard PS-performance table."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+    date_from, date_to = _resolve_fir_perf_window(date_from, date_to)
+    rows = await compute_fir_ps_performance(db, date_from=date_from, date_to=date_to, admin=admin)
+    pdf_bytes = render_fir_ps_performance_pdf(rows, date_from=date_from, date_to=date_to)
+    return _pdf_response(pdf_bytes, _fir_perf_filename("pdf", date_from, date_to))
+
+
+@router.get("/fir-ps-performance.xlsx")
+async def get_fir_ps_performance_xlsx(
+    date_from: date | None = Query(None, alias="from"),
+    date_to: date | None = Query(None, alias="to"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Excel export of the FIR Dashboard PS-performance table."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+    date_from, date_to = _resolve_fir_perf_window(date_from, date_to)
+    rows = await compute_fir_ps_performance(db, date_from=date_from, date_to=date_to, admin=admin)
+    xlsx_bytes = render_fir_ps_performance_xlsx(rows, date_from=date_from, date_to=date_to)
+    return _xlsx_response(xlsx_bytes, _fir_perf_filename("xlsx", date_from, date_to))

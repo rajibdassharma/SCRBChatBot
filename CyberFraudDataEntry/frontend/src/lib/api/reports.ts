@@ -10,6 +10,10 @@
 const BASE = import.meta.env.VITE_API_BASE ?? '';
 
 
+/** Fetches a binary attachment, honours Content-Disposition for the
+ *  filename, and triggers a browser save. Name is `downloadPdf` for
+ *  history but it works for any content-type (used by the FIR
+ *  performance .xlsx export too). */
 async function downloadPdf(path: string, fallbackName: string): Promise<void> {
   const token = localStorage.getItem('token');
   const res = await fetch(`${BASE}${path}`, {
@@ -114,5 +118,36 @@ export function downloadSubmissionStatusPdf(date: string): Promise<void> {
   return downloadPdf(
     `/api/v1/reports/submission-status.pdf?date=${encodeURIComponent(date)}`,
     `SubmissionStatus_${date}.pdf`,
+  );
+}
+
+
+/**
+ * FIR Dashboard PS-performance table — PDF or Excel export. Uses the
+ * same aggregation as the on-screen JSON endpoint so the file always
+ * matches what the operator sees before any client-side re-sort.
+ *
+ * Admin scoping applies server-side: admin sees own PS only,
+ * super_admin sees every active PS.
+ */
+export function downloadFirPsPerformancePdf(
+  from: string,
+  to: string,
+): Promise<void> {
+  const qs = new URLSearchParams({ from, to });
+  return downloadPdf(
+    `/api/v1/reports/fir-ps-performance.pdf?${qs.toString()}`,
+    `FIR_PS_Performance_${from}_to_${to}.pdf`,
+  );
+}
+
+export function downloadFirPsPerformanceExcel(
+  from: string,
+  to: string,
+): Promise<void> {
+  const qs = new URLSearchParams({ from, to });
+  return downloadPdf(
+    `/api/v1/reports/fir-ps-performance.xlsx?${qs.toString()}`,
+    `FIR_PS_Performance_${from}_to_${to}.xlsx`,
   );
 }

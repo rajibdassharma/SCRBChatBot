@@ -16,7 +16,18 @@ class Case(Base):
     petition_no = Column(String(50), nullable=True)
     registration_date = Column(Date, nullable=True)
     case_type = Column(String(20), nullable=False)  # NCRP, Walk-In
-    crime_type = Column(String(30), nullable=False)  # Internet, Digital, Crypto
+    # 31-entry KSP Cyber Crime classification since migration 016
+    # (2026-07-22). Widened from VARCHAR(30) — longest sub-head is
+    # the ~105-char "Ransomware Attacks..." entry. Legacy rows keep
+    # their {Internet, Digital, Crypto} values.
+    crime_type = Column(String(200), nullable=False)
+    # Free-text captured when crime_type == "Others". Kept separate
+    # so aggregation still buckets under "Others" while the specific
+    # text remains queryable. Added by migration 016.
+    crime_type_other = Column(String(500), nullable=True)
+    # Free-text list of BNS / BNSS / IT-Act sections the FIR is
+    # registered under. Added by migration 015 (2026-07-22).
+    sections = Column(String(500), nullable=True)
     # Financial vs Non-Financial. Non-financial cases skip the Lien /
     # Unfreeze / Refund flows and the victim's banking section.
     # Added by migration 006.

@@ -4,6 +4,8 @@ import { toast } from 'sonner';
 import { Save, ChevronRight, ChevronLeft, Plus, Trash2, X, Upload } from 'lucide-react';
 import { createCase, updateCase, getCase, deleteCase } from '../lib/api/cases';
 import { useAuthStore } from '../lib/stores/auth-store';
+import { CRIME_TYPE_OTHERS, CYBER_CRIME_TYPES } from '../lib/utils/crime-types';
+import { FIR_NO_PLACEHOLDER, validateFirNo } from '../lib/utils/fir-no';
 import type { CaseEntry, Arrest, Accomplice, Petition, LienAccount, UnfreezeDetail, Refund, Victim } from '../types';
 
 const BASE = import.meta.env.VITE_API_BASE ?? '';
@@ -60,8 +62,32 @@ const INDIAN_STATES: string[] = [
   'Other',
 ].sort((a, b) => a === 'Other' ? 1 : b === 'Other' ? -1 : a.localeCompare(b));
 
+/** Build the Crime Type dropdown options — the 31-entry classification
+ *  list prefixed by a "— Select —" placeholder. If the case currently
+ *  holds a legacy value ({Internet, Digital, Crypto} from before
+ *  migration 016, or any other value that's since been removed), the
+ *  value is surfaced as a "(legacy)" option so the row can save without
+ *  losing its category. Unknown value never mutates the underlying
+ *  constant. */
+function crimeTypeOptions(current: string): { value: string; label: string }[] {
+  const opts = [
+    { value: '', label: '— Select —' },
+    ...CYBER_CRIME_TYPES.map((v) => ({ value: v, label: v })),
+  ];
+  if (current && !CYBER_CRIME_TYPES.includes(current)) {
+    opts.push({ value: current, label: `${current} (legacy)` });
+  }
+  return opts;
+}
+
 const initialForm = (): CaseEntry => ({
-  fir_no: '', registration_date: '', case_type: 'NCRP', crime_type: 'Internet',
+  // Since migration 016 (2026-07-22), crime_type is an open string
+  // sourced from CYBER_CRIME_TYPES. Start empty so operators explicitly
+  // pick — no misleading default. Legacy values on existing rows are
+  // preserved by the dropdown's fallback below.
+  fir_no: '', registration_date: '', case_type: 'NCRP', crime_type: '',
+  crime_type_other: '',
+  sections: '',
   is_financial: true,
   facts: '',
   arrests: [], petitions: [], lien_accounts: [], unfreeze_details: [], refunds: [],
@@ -339,8 +365,15 @@ export function CaseEntryPage() {
     };
   };
 
+  // Format check — non-empty invalid FIR shows a red hint under the
+  // field AND blocks Save. `isEdit` cases are read-only on this
+  // field (fir_no is immutable-after-create per the update route), so
+  // the check only matters for the create path.
+  const firNoError = !isEdit ? validateFirNo(f.fir_no) : null;
+
   /* --- Save Draft --- */
   const handleSaveDraft = async () => {
+    if (firNoError) { toast.error(firNoError); setTab(0); return; }
     setSaving(true);
     try {
       const payload = buildPayload('draft');
@@ -364,6 +397,7 @@ export function CaseEntryPage() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!f.fir_no.trim()) { toast.error('FIR No is required'); setTab(0); return; }
+    if (firNoError) { toast.error(firNoError); setTab(0); return; }
     if (!f.registration_date) { toast.error('Registration Date is required'); setTab(0); return; }
     setSaving(true);
     try {
@@ -445,14 +479,36 @@ export function CaseEntryPage() {
           <div className="space-y-5">
             <FinancialRadio value={f.is_financial} onChange={(v) => setF(p => ({ ...p, is_financial: v }))} />
             <Section title="Case Information">
-              <TextField label="FIR No" value={f.fir_no} onChange={(v) => setF(p => ({ ...p, fir_no: v }))} placeholder="e.g. 123/2026" readOnly={isEdit} hint={isEdit ? "FIR number cannot be changed after creation" : undefined} />
+              <div>
+                <TextField label="FIR No" value={f.fir_no} onChange={(v) => setF(p => ({ ...p, fir_no: v }))} placeholder={FIR_NO_PLACEHOLDER} readOnly={isEdit} hint={isEdit ? "FIR number cannot be changed after creation" : undefined} />
+                {firNoError && (
+                  <p className="text-xs mt-1" style={{ color: 'var(--ksp-red)' }}>{firNoError}</p>
+                )}
+              </div>
               <TextField label="Registration Date" value={f.registration_date} onChange={(v) => setF(p => ({ ...p, registration_date: v }))} type="date" />
               <SelectField label="Case Type" value={f.case_type}
                 onChange={(v) => setF(p => ({ ...p, case_type: v as CaseEntry['case_type'] }))}
                 options={[{ value: 'NCRP', label: 'NCRP' }, { value: 'Walk-In', label: 'Walk-In' }]} />
               <SelectField label="Crime Type" value={f.crime_type}
-                onChange={(v) => setF(p => ({ ...p, crime_type: v as CaseEntry['crime_type'] }))}
-                options={[{ value: 'Internet', label: 'Internet' }, { value: 'Digital', label: 'Digital' }, { value: 'Crypto', label: 'Crypto' }]} />
+                onChange={(v) => setF(p => ({
+                  ...p,
+                  crime_type: v,
+                  // Clear the free-text when leaving Others so the
+                  // stale value never round-trips back to the API.
+                  // (Backend also enforces this; belt + braces.)
+                  crime_type_other: v === CRIME_TYPE_OTHERS ? (p.crime_type_other ?? '') : '',
+                }))}
+                options={crimeTypeOptions(f.crime_type)} />
+              <TextField label="Sections" value={f.sections ?? ''}
+                onChange={(v) => setF(p => ({ ...p, sections: v }))}
+                placeholder="e.g. 318(4), 319, 340" />
+              {f.crime_type === CRIME_TYPE_OTHERS && (
+                <TextField label="Other — describe the crime type"
+                  wrapperClassName="lg:col-span-3"
+                  value={f.crime_type_other ?? ''}
+                  onChange={(v) => setF(p => ({ ...p, crime_type_other: v }))}
+                  placeholder="Describe the classification that doesn't fit any of the listed sub-heads" />
+              )}
             </Section>
 
             <Section title="Victim Details" cols={6}>
@@ -785,7 +841,9 @@ export function CaseEntryPage() {
             <ChevronLeft className="w-4 h-4" /> Previous
           </button>
           <div className="flex items-center gap-3">
-            <button type="button" onClick={handleSaveDraft} disabled={saving}
+            <button type="button" onClick={handleSaveDraft}
+              disabled={saving || !!firNoError}
+              title={firNoError ?? undefined}
               className="flex items-center gap-1.5 px-4 py-2 text-sm font-semibold rounded-xl transition disabled:opacity-50"
               style={{ background: '#fff', color: 'var(--ksp-navy)', border: '2px solid var(--ksp-navy)' }}>
               <Save className="w-4 h-4" /> {saving ? 'Saving...' : 'Save Draft'}
@@ -798,7 +856,9 @@ export function CaseEntryPage() {
               </button>
             ) : (
               <>
-                <button type="submit" disabled={saving}
+                <button type="submit"
+                  disabled={saving || !!firNoError}
+                  title={firNoError ?? undefined}
                   className="flex items-center gap-2 px-6 py-2.5 font-bold rounded-xl transition disabled:opacity-50"
                   style={{ background: 'var(--ksp-yellow)', color: '#000', border: '2px solid rgba(0,0,0,0.25)' }}>
                   <Save className="w-4 h-4" /> {saving ? 'Saving...' : 'Submit Case'}

@@ -25,6 +25,7 @@ from models.mule_entry import MuleEntry
 from models.all_account import AllAccount
 from models.all_account_mule_herder import AllAccountMuleHerder
 from models.portals_dsr_entry import PortalsDsrEntry
+from models.daily_work_entry import DailyWorkEntry
 
 __all__ = [
     "Unit", "User", "Case", "Arrest", "Accomplice", "AccusedDetail",
@@ -35,4 +36,5 @@ __all__ = [
     "DsrEntry", "MuleEntry",
     "AllAccount", "AllAccountMuleHerder",
     "PortalsDsrEntry",
+    "DailyWorkEntry",
 ]

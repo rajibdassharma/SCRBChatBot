@@ -123,6 +123,8 @@ def _case_to_response(c: Case) -> dict:
         "petition_no": c.petition_no,
         "case_type": c.case_type,
         "crime_type": c.crime_type,
+        "crime_type_other": c.crime_type_other,
+        "sections": c.sections,
         "is_financial": bool(c.is_financial) if c.is_financial is not None else True,
         "facts": c.facts,
         "status": c.status,
@@ -256,6 +258,8 @@ def _case_to_list_item(c: Case) -> dict:
         "petition_no": c.petition_no,
         "case_type": c.case_type,
         "crime_type": c.crime_type,
+        "crime_type_other": c.crime_type_other,
+        "sections": c.sections,
         "facts": c.facts,
         "status": c.status,
         "submitted_by": c.submitted_by,
@@ -417,6 +421,11 @@ async def create_case(
         registration_date=body.registration_date,
         case_type=body.case_type,
         crime_type=body.crime_type,
+        # Only persist the free-text when the operator actually picked
+        # "Others" — otherwise clear it so switching from Others → a
+        # concrete category doesn't leave stale text behind.
+        crime_type_other=body.crime_type_other if body.crime_type == "Others" else None,
+        sections=body.sections,
         is_financial=1 if body.is_financial else 0,
         facts=body.facts,
         status=body.status,
@@ -629,6 +638,10 @@ async def update_case(
     case.registration_date = body.registration_date
     case.case_type = body.case_type
     case.crime_type = body.crime_type
+    # Mirror the create-time rule: keep crime_type_other only while
+    # crime_type == "Others"; switching to a concrete category wipes it.
+    case.crime_type_other = body.crime_type_other if body.crime_type == "Others" else None
+    case.sections = body.sections
     case.is_financial = 1 if body.is_financial else 0
     case.facts = body.facts
     case.status = body.status

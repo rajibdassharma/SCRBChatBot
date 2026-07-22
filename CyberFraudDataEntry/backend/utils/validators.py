@@ -7,7 +7,41 @@ place so a future re-tune doesn't drift between case.py and mule.py.
 """
 from __future__ import annotations
 
+import re
 from decimal import Decimal
+
+
+# XXXX/YYYY — exactly 4 digits, slash, 4-digit year. Standard KSP
+# convention (leading zeros expected — e.g. `0001/2026`). Matches the
+# regex already established on AllAccountEntryPage before this shared
+# validator existed. Enforced at every entry point (Cases, Daily
+# Work, All Accounts) so cross-app reconciliation doesn't fragment on
+# format drift. Search boxes stay permissive — that's a UX call, not
+# a validator concern.
+_FIR_NO_RE = re.compile(r"^\d{4}/\d{4}$")
+
+
+def validate_fir_no(cls, v):  # noqa: N805 — Pydantic v2 validator signature
+    """Enforce the FIR-number format `XXXX/YYYY` (e.g. `0001/2026`).
+
+    - Passes empty / None through unchanged so schemas can still accept
+      draft submissions where the field is optional (e.g. Case draft
+      status). Enforce non-emptiness at the caller if you need it.
+    - Trims surrounding whitespace before validating.
+
+    Use with `field_validator(...)`:
+
+        _check_fir_no = field_validator("fir_no")(validate_fir_no)
+    """
+    if v is None or v == "":
+        return v
+    s = str(v).strip()
+    if not _FIR_NO_RE.fullmatch(s):
+        raise ValueError(
+            "FIR No must be in XXXX/YYYY format (e.g. 0001/2026). "
+            "Received: " + repr(s)
+        )
+    return s
 
 
 # A single bank-hold / refund / petition / mule-transfer above ₹100 crore is

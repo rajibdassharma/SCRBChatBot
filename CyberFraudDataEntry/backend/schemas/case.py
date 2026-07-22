@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from utils.sanitize import strip_html
 from utils.validators import validate_amount as _validate_amount
+from utils.validators import validate_fir_no as _validate_fir_no
 
 
 # Indian-format pattern checks for victim fields. Each accepts None / empty
@@ -213,7 +214,17 @@ class CaseCreate(BaseModel):
     petition_no: Optional[str] = None
     registration_date: date | None = None
     case_type: str = "NCRP"
-    crime_type: str = "Internet"
+    # 31-entry Cyber Crime classification since 2026-07-22 (migration
+    # 016). Default kept as legacy "Internet" for backwards compat
+    # with any client not yet updated to send the new value.
+    crime_type: str = Field(default="Internet", max_length=200)
+    # Free-text captured when crime_type == "Others". Ignored (and
+    # cleared on the model) for any other classification value —
+    # frontend enforces this too.
+    crime_type_other: Optional[str] = Field(default=None, max_length=500)
+    # Free-text list of BNS / BNSS / IT-Act sections, e.g.
+    # "318(4), 319, 340". Added 2026-07-22 (migration 015).
+    sections: Optional[str] = Field(default=None, max_length=500)
     facts: Optional[str] = None
     status: str = "draft"  # draft, submitted
 
@@ -229,7 +240,12 @@ class CaseCreate(BaseModel):
     # with the 645 existing cases (all assumed Financial pre-2026-06-22).
     is_financial: bool = True
 
-    _sanitize_text = field_validator("fir_no", "petition_no", "facts")(_sanitize)
+    _sanitize_text = field_validator("fir_no", "petition_no", "facts", "sections", "crime_type_other")(_sanitize)
+    # Format-check runs AFTER _sanitize (Pydantic v2 chains validators
+    # in declaration order). Draft cases with empty fir_no pass — only
+    # a NON-empty value has to match NNN/YYYY. See feedback memory
+    # `fir-no-format-nnn-yyyy` for the project-wide rule.
+    _check_fir_no = field_validator("fir_no")(_validate_fir_no)
 
 
 # ── Child Response schemas ────────────────────────────────────────
@@ -368,6 +384,8 @@ class CaseResponse(BaseModel):
     registration_date: date | None = None
     case_type: str
     crime_type: str
+    crime_type_other: Optional[str] = None
+    sections: Optional[str] = None
     facts: Optional[str] = None
     status: str = "draft"
     submitted_by: Optional[int] = None
@@ -395,6 +413,8 @@ class CaseListItem(BaseModel):
     registration_date: date | None = None
     case_type: str
     crime_type: str
+    crime_type_other: Optional[str] = None
+    sections: Optional[str] = None
     facts: Optional[str] = None
     status: str = "draft"
     submitted_by: Optional[int] = None

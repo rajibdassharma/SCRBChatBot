@@ -8,6 +8,7 @@ import type {
   AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
   AllAccount,
   PortalsDsrKpiSummary, PortalsDsrPsComparison,
+  FirPsPerformanceRow,
 } from '../../types';
 
 /** All Accounts dashboard — KPI cards + per-PS comparison. */
@@ -126,4 +127,17 @@ export async function getTrialSummary(date: string): Promise<TrialSummary> {
 
 export async function getPendingByYear(date: string): Promise<PendingByYearRow[]> {
   return apiFetch<PendingByYearRow[]>(`/api/v1/dashboard/pending-by-year?date=${date}`);
+}
+
+/** FIR Dashboard — per-PS FIR-count leaderboard for a date window.
+ *  Registration date drives the window. Admin scoping applies. */
+export async function getFirPsPerformance(
+  from?: string,
+  to?: string,
+): Promise<FirPsPerformanceRow[]> {
+  const qs = new URLSearchParams();
+  if (from) qs.set('from', from);
+  if (to) qs.set('to', to);
+  const suffix = qs.toString() ? `?${qs.toString()}` : '';
+  return apiFetch<FirPsPerformanceRow[]>(`/api/v1/dashboard/fir-ps-performance${suffix}`);
 }
