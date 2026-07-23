@@ -151,3 +151,26 @@ export function downloadFirPsPerformanceExcel(
     `FIR_PS_Performance_${from}_to_${to}.xlsx`,
   );
 }
+
+
+/**
+ * Account Details PS-comparison table — PDF or Excel export. The
+ * request's `date` (ISO YYYY-MM-DD) is the cumulative cut-off and
+ * also drives the file's "Yesterday" column (= date − 1 day).
+ *
+ * Admin scoping applies server-side: admin sees own PS only,
+ * super_admin sees every active PS.
+ */
+export function downloadAccountsPsComparisonPdf(date: string): Promise<void> {
+  return downloadPdf(
+    `/api/v1/reports/accounts-ps-comparison.pdf?date=${encodeURIComponent(date)}`,
+    `Accounts_PS_Comparison_${date}.pdf`,
+  );
+}
+
+export function downloadAccountsPsComparisonExcel(date: string): Promise<void> {
+  return downloadPdf(
+    `/api/v1/reports/accounts-ps-comparison.xlsx?date=${encodeURIComponent(date)}`,
+    `Accounts_PS_Comparison_${date}.xlsx`,
+  );
+}

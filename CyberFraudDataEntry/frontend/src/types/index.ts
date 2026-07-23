@@ -723,6 +723,9 @@ export interface AccountsPsComparison {
   ps_id: number;
   ps_name: string;
   total: number;
+  /** New accounts created yesterday (relative to the dashboard's
+   *  "as of" date). Added 2026-07-24. */
+  yesterday_count: number;
   victims: number;
   mules: number;
   non_mules: number;
@@ -734,6 +737,12 @@ export interface AccountsBankConcentration {
   victims: number;
   mules: number;
   non_mules: number;
+}
+
+/** One point on the Account Details daily-growth line chart. */
+export interface AccountsDailyPoint {
+  day: string;
+  count: number;
 }
 
 // ── Portals DSR ────────────────────────────────────────────

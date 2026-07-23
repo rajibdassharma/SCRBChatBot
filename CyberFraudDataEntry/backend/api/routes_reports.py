@@ -27,10 +27,13 @@ from reports.case_pdf import render_case_pdf
 from reports.submission_status_pdf import render_submission_status_pdf
 from reports.fir_ps_performance_pdf import render_fir_ps_performance_pdf
 from reports.fir_ps_performance_xlsx import render_fir_ps_performance_xlsx
+from reports.accounts_ps_comparison_pdf import render_accounts_ps_comparison_pdf
+from reports.accounts_ps_comparison_xlsx import render_accounts_ps_comparison_xlsx
 from api.routes_dashboard import (
     compute_submission_status,
     compute_fir_ps_performance,
     _resolve_fir_perf_window,
+    compute_accounts_comparison,
 )
 from api.deps import require_admin
 from models.mule_report import MuleReport
@@ -381,3 +384,40 @@ async def get_fir_ps_performance_xlsx(
     rows = await compute_fir_ps_performance(db, date_from=date_from, date_to=date_to, admin=admin)
     xlsx_bytes = render_fir_ps_performance_xlsx(rows, date_from=date_from, date_to=date_to)
     return _xlsx_response(xlsx_bytes, _fir_perf_filename("xlsx", date_from, date_to))
+
+
+# ── Account Details PS-comparison exports ────────────────────────────
+# Both routes share the same aggregation as the JSON
+# /dashboard/accounts-comparison endpoint so the download always
+# matches what's on screen.
+
+def _accounts_ps_filename(ext: str, target_date: date) -> str:
+    return f"Accounts_PS_Comparison_{target_date.isoformat()}.{ext}"
+
+
+@router.get("/accounts-ps-comparison.pdf")
+async def get_accounts_ps_comparison_pdf(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """PDF export of the Account Details Dashboard PS-comparison table."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+    rows = await compute_accounts_comparison(db, target_date=target_date, admin=admin)
+    pdf_bytes = render_accounts_ps_comparison_pdf(rows, target_date=target_date)
+    return _pdf_response(pdf_bytes, _accounts_ps_filename("pdf", target_date))
+
+
+@router.get("/accounts-ps-comparison.xlsx")
+async def get_accounts_ps_comparison_xlsx(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Excel export of the Account Details Dashboard PS-comparison table."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+    rows = await compute_accounts_comparison(db, target_date=target_date, admin=admin)
+    xlsx_bytes = render_accounts_ps_comparison_xlsx(rows, target_date=target_date)
+    return _xlsx_response(xlsx_bytes, _accounts_ps_filename("xlsx", target_date))

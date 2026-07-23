@@ -1,3 +1,5 @@
+from datetime import date
+
 from pydantic import BaseModel
 
 
@@ -45,12 +47,17 @@ class AccountsKpiSummary(BaseModel):
 class AccountsPsComparison(BaseModel):
     """One row per PS on the accounts comparison table. Mirrors the
     shape of DSR's UnitComparison — a PS scope is finer than a unit
-    scope (Bangalore City has many PSes), so we group by PS directly."""
+    scope (Bangalore City has many PSes), so we group by PS directly.
+
+    `yesterday_count` is the number of accounts created on the calendar
+    day BEFORE the request's `date` — surfaces the last 24-hour drip
+    beside the cumulative Total (2026-07-24)."""
     unit_id: int
     unit_name: str
     ps_id: int
     ps_name: str
     total: int = 0
+    yesterday_count: int = 0
     victims: int = 0
     mules: int = 0
     non_mules: int = 0
@@ -64,6 +71,14 @@ class AccountsBankConcentration(BaseModel):
     victims: int = 0
     mules: int = 0
     non_mules: int = 0
+
+
+class AccountsDailyPoint(BaseModel):
+    """One point on the Accounts daily-growth line chart. `count` is the
+    number of accounts created on that day (per-day new rows, not
+    cumulative — the chart draws deltas, not the running total)."""
+    day: date
+    count: int = 0
 
 
 class PsComparison(BaseModel):

@@ -35,6 +35,7 @@ from schemas.dashboard import (
     ArrestSummary, LienSummary, PetitionSummary, RefundSummary,
     DisposalSummary, TrialSummary, PendingByYearRow,
     AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
+    AccountsDailyPoint,
     FirPsPerformanceRow,
 )
 from schemas.all_account import AllAccountResponse, MuleHerderOut
@@ -1468,14 +1469,23 @@ async def get_accounts_summary(
     )
 
 
-@router.get("/accounts-comparison", response_model=List[AccountsPsComparison])
-async def get_accounts_comparison(
-    target_date: date = Query(..., alias="date", description="Cumulative cutoff — include accounts created on or before this date"),
-    admin: CurrentUser = Depends(require_admin),
-    db: AsyncSession = Depends(get_db),
-):
-    """One row per PS. admin sees just their own PS; super_admin sees
-    every PS that has at least one account."""
+async def compute_accounts_comparison(
+    db: AsyncSession,
+    *,
+    target_date: date,
+    admin: CurrentUser,
+) -> List[AccountsPsComparison]:
+    """Per-PS rollup for the Account Details dashboard.
+
+    Sourced from `all_accounts`, cumulative as of `target_date`
+    (inclusive). Adds a `yesterday_count` per row = accounts created
+    on the calendar day BEFORE `target_date`, so the on-screen table
+    can show a "last 24 hours" column alongside the cumulative Total.
+
+    Shared by the JSON /accounts-comparison route and the PDF + XLSX
+    report routes so all three reflect identical numbers."""
+    yesterday = target_date - timedelta(days=1)
+
     q = (
         select(
             AllAccount.unit_id,
@@ -1483,6 +1493,9 @@ async def get_accounts_comparison(
             AllAccount.ps_id,
             PoliceStation.station_name.label("ps_name"),
             func.count(AllAccount.id).label("total"),
+            func.sum(
+                case((func.date(AllAccount.created_at) == yesterday, 1), else_=0)
+            ).label("yesterday_count"),
             func.sum(
                 case((AllAccount.account_type == "Victim", 1), else_=0)
             ).label("victims"),
@@ -1510,12 +1523,75 @@ async def get_accounts_comparison(
             ps_id=r.ps_id,
             ps_name=r.ps_name,
             total=int(r.total or 0),
+            yesterday_count=int(r.yesterday_count or 0),
             victims=int(r.victims or 0),
             mules=int(r.mules or 0),
             non_mules=int(r.non_mules or 0),
         )
         for r in rows
     ]
+
+
+@router.get("/accounts-comparison", response_model=List[AccountsPsComparison])
+async def get_accounts_comparison(
+    target_date: date = Query(..., alias="date", description="Cumulative cutoff — include accounts created on or before this date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """One row per PS. admin sees just their own PS; super_admin sees
+    every PS that has at least one account."""
+    return await compute_accounts_comparison(db, target_date=target_date, admin=admin)
+
+
+@router.get("/accounts-daily-growth", response_model=List[AccountsDailyPoint])
+async def get_accounts_daily_growth(
+    target_date: date = Query(..., alias="date", description="Cutoff — last day in the returned series"),
+    days: int = Query(default=30, ge=1, le=365, description="Trailing days to include (inclusive of target_date)"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-day count of new All-Accounts rows over the trailing
+    `days`-day window ending on `target_date` inclusive.
+
+    Missing days (no rows created) are returned with `count = 0` so
+    the frontend line chart draws a continuous axis rather than
+    skipping days. Scoping matches the rest of the dashboard —
+    admin: own PS; super_admin: cross-PS."""
+    date_from = target_date - timedelta(days=days - 1)
+
+    q = (
+        select(
+            func.date(AllAccount.created_at).label("day"),
+            func.count(AllAccount.id).label("count"),
+        )
+        .where(func.date(AllAccount.created_at) >= date_from)
+        .where(func.date(AllAccount.created_at) <= target_date)
+        .group_by(func.date(AllAccount.created_at))
+    )
+    if admin.role != "super_admin":
+        if not admin.unit_id or not admin.ps_id:
+            raise HTTPException(status_code=403, detail="Admin account is not assigned to a Police Station.")
+        q = q.where(AllAccount.unit_id == admin.unit_id, AllAccount.ps_id == admin.ps_id)
+
+    rows = (await db.execute(q)).all()
+    # MySQL returns func.date(...) as a Python `date` when the driver
+    # is asyncmy; belt+braces coerce to `date` in case of surprises.
+    counts: dict[date, int] = {}
+    for r in rows:
+        d = r.day
+        if not isinstance(d, date):
+            # asyncmy sometimes returns str for DATE()
+            from datetime import datetime as _dt
+            d = _dt.strptime(str(d), "%Y-%m-%d").date()
+        counts[d] = int(r.count or 0)
+
+    # Zero-fill missing days so the chart line is continuous.
+    out: List[AccountsDailyPoint] = []
+    cur = date_from
+    while cur <= target_date:
+        out.append(AccountsDailyPoint(day=cur, count=counts.get(cur, 0)))
+        cur = cur + timedelta(days=1)
+    return out
 
 
 @router.get("/accounts-top-banks", response_model=List[AccountsBankConcentration])

@@ -1,19 +1,25 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  BarChart3, Users, ShieldAlert, HelpCircle, Landmark, UserPlus, Camera, Trophy,
+  BarChart3, Users, ShieldAlert, HelpCircle, Landmark, UserPlus, Camera,
+  Trophy, FileDown, FileSpreadsheet,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  PieChart, Pie, Cell, ResponsiveContainer,
+  LineChart, Line, PieChart, Pie, Cell, ResponsiveContainer,
 } from 'recharts';
 import {
   getAccountsSummary, getAccountsComparison, getAccountsTopBanks,
+  getAccountsDailyGrowth,
 } from '../lib/api/dashboard';
+import {
+  downloadAccountsPsComparisonExcel, downloadAccountsPsComparisonPdf,
+} from '../lib/api/reports';
 import { formatNumber, todayISO } from '../lib/utils/format';
 import { AccountsPsDetailPanel } from '../components/dashboard/AccountsPsDetailPanel';
 import type {
   AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
+  AccountsDailyPoint,
 } from '../types';
 
 /** Account Details Dashboard — mirrors the shell + feel of the DSR
@@ -78,13 +84,28 @@ function ChartCard({
   );
 }
 
+/** Compute yesterday's date (relative to the "as of" picker), both
+ *  the ISO string and a short human label like "22 Jul". */
+function yesterdayOf(dateISO: string): { iso: string; label: string; header: string } {
+  // Parse as local — the picker gives us a bare YYYY-MM-DD.
+  const [y, m, d] = dateISO.split('-').map(Number);
+  const dt = new Date(y, (m || 1) - 1, d || 1);
+  dt.setDate(dt.getDate() - 1);
+  const iso = dt.toISOString().slice(0, 10);
+  const label = dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
+  const header = dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' });
+  return { iso, label, header };
+}
+
 export function AccountsDashboardPage() {
   const [date, setDate] = useState(todayISO());
   const [summary, setSummary] = useState<AccountsKpiSummary | null>(null);
   const [rows, setRows] = useState<AccountsPsComparison[]>([]);
   const [topBanks, setTopBanks] = useState<AccountsBankConcentration[]>([]);
+  const [dailyGrowth, setDailyGrowth] = useState<AccountsDailyPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [drilldown, setDrilldown] = useState<AccountsPsComparison | null>(null);
+  const [dl, setDl] = useState<'pdf' | 'xlsx' | null>(null);
 
   useEffect(() => {
     setLoading(true);
@@ -92,18 +113,37 @@ export function AccountsDashboardPage() {
       getAccountsSummary(date),
       getAccountsComparison(date),
       getAccountsTopBanks(date, 10),
-    ]).then(([s, u, b]) => {
+      getAccountsDailyGrowth(date, 30),
+    ]).then(([s, u, b, g]) => {
       if (s.status === 'fulfilled') setSummary(s.value);
       else { setSummary(null); toast.error(`Summary: ${(s as any).reason?.message ?? 'failed'}`); }
       if (u.status === 'fulfilled') setRows(u.value);
       else { setRows([]); toast.error(`Per-PS: ${(u as any).reason?.message ?? 'failed'}`); }
       if (b.status === 'fulfilled') setTopBanks(b.value);
       else { setTopBanks([]); toast.error(`Top banks: ${(b as any).reason?.message ?? 'failed'}`); }
+      if (g.status === 'fulfilled') setDailyGrowth(g.value);
+      else { setDailyGrowth([]); toast.error(`Growth: ${(g as any).reason?.message ?? 'failed'}`); }
     }).finally(() => setLoading(false));
   }, [date]);
 
   // Top 10 PSes by total — sorted desc so the tallest bar is on top.
   const top10Ps = useMemo(() => rows.slice(0, 10), [rows]);
+
+  // Yesterday date derived from the "as of" picker — drives both the
+  // Yesterday column header and the tooltip inside the table.
+  const yday = useMemo(() => yesterdayOf(date), [date]);
+
+  const handleDownload = async (kind: 'pdf' | 'xlsx') => {
+    setDl(kind);
+    try {
+      if (kind === 'pdf') await downloadAccountsPsComparisonPdf(date);
+      else await downloadAccountsPsComparisonExcel(date);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : `Failed to download ${kind.toUpperCase()}`);
+    } finally {
+      setDl(null);
+    }
+  };
 
   // Pie of account types — pulled from summary counters.
   const typePie = useMemo(() => ([
@@ -176,31 +216,34 @@ export function AccountsDashboardPage() {
             </div>
           </div>
 
-          {/* Row: Top 10 PS bar (wide) + Type Distribution pie (narrow) */}
+          {/* Row 1 — Daily growth (2/3) + Type distribution pie (1/3).
+               Growth replaces the old Top-10-PS position per the
+               2026-07-24 dashboard reshape. */}
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <ChartCard
-                title={`Top ${Math.min(10, top10Ps.length)} Police Stations by Account Count`}
-                hint="Click a row in the table below to drill into any PS."
+                title="Daily Growth — Accounts"
+                hint="New accounts created per day, trailing 30 days. Zero days shown so the trendline stays continuous."
                 accent={COLOR_NAVY}
               >
-                {top10Ps.length === 0 ? (
-                  <div className="py-10 text-center italic opacity-60 text-sm">No PS data yet.</div>
+                {dailyGrowth.length === 0 ? (
+                  <div className="py-10 text-center italic opacity-60 text-sm">No growth data yet.</div>
                 ) : (
-                  <div style={{ width: '100%', height: 40 + top10Ps.length * 34 }}>
+                  <div style={{ width: '100%', height: 260 }}>
                     <ResponsiveContainer>
-                      <BarChart data={top10Ps} layout="vertical"
-                                margin={{ top: 6, right: 30, left: 10, bottom: 6 }}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
-                        <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-                        <YAxis type="category" dataKey="ps_name" tick={{ fontSize: 11 }} width={140} />
-                        <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]}
+                      <LineChart data={dailyGrowth}
+                                margin={{ top: 8, right: 24, left: 10, bottom: 6 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                        <XAxis dataKey="day" tick={{ fontSize: 10 }}
+                          tickFormatter={(v: string) => v.slice(5)} /* MM-DD */ />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                        <Tooltip
+                          formatter={(v) => [formatNumber(Number(v ?? 0)), 'New accounts']}
                           labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
-                        <Legend wrapperStyle={{ fontSize: 11 }} />
-                        <Bar dataKey="victims"   stackId="a" name="Victim"   fill={COLOR_VICTIM} />
-                        <Bar dataKey="mules"     stackId="a" name="Mule"     fill={COLOR_MULE} />
-                        <Bar dataKey="non_mules" stackId="a" name="Non-Mule" fill={COLOR_NONMULE} />
-                      </BarChart>
+                        <Line type="monotone" dataKey="count" name="New accounts"
+                          stroke={COLOR_NAVY} strokeWidth={2}
+                          dot={{ r: 2 }} activeDot={{ r: 5 }} />
+                      </LineChart>
                     </ResponsiveContainer>
                   </div>
                 )}
@@ -233,32 +276,89 @@ export function AccountsDashboardPage() {
             </ChartCard>
           </div>
 
-          {/* Top Banks — horizontal bar chart, stacked by type. */}
-          <ChartCard title={`Top ${Math.min(10, topBanks.length)} Banks by Account Count`}
-            hint="Banks that appear most often across the account records in scope. Stacked bars show the type mix."
-            accent={COLOR_PURPLE}
-          >
-            {topBanks.length === 0 ? (
-              <div className="py-10 text-center italic opacity-60 text-sm">No bank data yet.</div>
-            ) : (
-              <div style={{ width: '100%', height: 40 + topBanks.length * 34 }}>
-                <ResponsiveContainer>
-                  <BarChart data={topBanks} layout="vertical"
-                            margin={{ top: 6, right: 30, left: 10, bottom: 6 }}>
-                    <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
-                    <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-                    <YAxis type="category" dataKey="bank_name" tick={{ fontSize: 11 }} width={160} />
-                    <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]}
-                      labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
-                    <Legend wrapperStyle={{ fontSize: 11 }} />
-                    <Bar dataKey="victims"   stackId="b" name="Victim"   fill={COLOR_VICTIM} />
-                    <Bar dataKey="mules"     stackId="b" name="Mule"     fill={COLOR_MULE} />
-                    <Bar dataKey="non_mules" stackId="b" name="Non-Mule" fill={COLOR_NONMULE} />
-                  </BarChart>
-                </ResponsiveContainer>
-              </div>
-            )}
-          </ChartCard>
+          {/* Row 2 — Top 10 Banks + Top 10 PS side by side (both
+               horizontal bars, stacked by type). Halved from full-
+               width so they sit alongside each other per the
+               2026-07-24 reshape. */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <ChartCard title={`Top ${Math.min(10, topBanks.length)} Banks by Account Count`}
+              hint="Banks that appear most often across the account records in scope."
+              accent={COLOR_PURPLE}
+            >
+              {topBanks.length === 0 ? (
+                <div className="py-10 text-center italic opacity-60 text-sm">No bank data yet.</div>
+              ) : (
+                <div style={{ width: '100%', height: 40 + topBanks.length * 30 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={topBanks} layout="vertical"
+                              margin={{ top: 6, right: 24, left: 6, bottom: 6 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
+                      <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <YAxis type="category" dataKey="bank_name" tick={{ fontSize: 10 }} width={130} />
+                      <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]}
+                        labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar dataKey="victims"   stackId="b" name="Victim"   fill={COLOR_VICTIM} />
+                      <Bar dataKey="mules"     stackId="b" name="Mule"     fill={COLOR_MULE} />
+                      <Bar dataKey="non_mules" stackId="b" name="Non-Mule" fill={COLOR_NONMULE} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </ChartCard>
+
+            <ChartCard
+              title={`Top ${Math.min(10, top10Ps.length)} Police Stations by Account Count`}
+              hint="Click a row in the table below to drill into any PS."
+              accent={COLOR_NAVY}
+            >
+              {top10Ps.length === 0 ? (
+                <div className="py-10 text-center italic opacity-60 text-sm">No PS data yet.</div>
+              ) : (
+                <div style={{ width: '100%', height: 40 + top10Ps.length * 30 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={top10Ps} layout="vertical"
+                              margin={{ top: 6, right: 24, left: 6, bottom: 6 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
+                      <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <YAxis type="category" dataKey="ps_name" tick={{ fontSize: 10 }} width={130} />
+                      <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]}
+                        labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar dataKey="victims"   stackId="a" name="Victim"   fill={COLOR_VICTIM} />
+                      <Bar dataKey="mules"     stackId="a" name="Mule"     fill={COLOR_MULE} />
+                      <Bar dataKey="non_mules" stackId="a" name="Non-Mule" fill={COLOR_NONMULE} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </ChartCard>
+          </div>
+
+          {/* Download toolbar — sits above the Per-PS table, right-
+               aligned. Excel = openpyxl, PDF = reportlab. Both share
+               the /reports/accounts-ps-comparison endpoint aggregation
+               so the file mirrors what's on screen. */}
+          <div className="flex justify-end gap-2">
+            <button type="button"
+              onClick={() => handleDownload('xlsx')}
+              disabled={dl !== null || loading || rows.length === 0}
+              title="Download the Per-PS Comparison as an Excel (.xlsx) file"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition disabled:opacity-50"
+              style={{ background: '#0a5c2a', color: '#fff' }}>
+              <FileSpreadsheet className="w-3.5 h-3.5" />
+              {dl === 'xlsx' ? 'Generating…' : 'Excel'}
+            </button>
+            <button type="button"
+              onClick={() => handleDownload('pdf')}
+              disabled={dl !== null || loading || rows.length === 0}
+              title="Download the Per-PS Comparison as a PDF file"
+              className="flex items-center gap-1.5 px-3 py-2 rounded-xl text-xs font-bold transition disabled:opacity-50"
+              style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)' }}>
+              <FileDown className="w-3.5 h-3.5" />
+              {dl === 'pdf' ? 'Generating…' : 'PDF'}
+            </button>
+          </div>
 
           {/* Per-PS comparison table — clickable rows open the detail grid. */}
           <div className="rounded-2xl overflow-hidden" style={cardStyle}>
@@ -267,7 +367,9 @@ export function AccountsDashboardPage() {
                 <Trophy className="w-4 h-4" style={{ color: COLOR_ORANGE }} /> Per-PS Account Comparison
               </h3>
               <p className="text-xs opacity-60">
-                Descending by total account count. Click any Police Station to see the full account list with Excel / PDF download.
+                Descending by total account count. Click any Police Station to see the full
+                account list with Excel / PDF download. "Yesterday" column = accounts created
+                on {yday.header} (the day before the "as of" cut-off).
               </p>
             </div>
             <table className="w-full text-sm">
@@ -277,6 +379,10 @@ export function AccountsDashboardPage() {
                   <th className="px-3 py-2 text-left">District</th>
                   <th className="px-3 py-2 text-left">Police Station</th>
                   <th className="px-3 py-2 text-right">Total</th>
+                  <th className="px-3 py-2 text-right whitespace-nowrap"
+                    title={`Accounts created on ${yday.header}`}>
+                    {yday.label}
+                  </th>
                   <th className="px-3 py-2 text-right">Victim</th>
                   <th className="px-3 py-2 text-right">Mule</th>
                   <th className="px-3 py-2 text-right">Non-Mule</th>
@@ -285,7 +391,7 @@ export function AccountsDashboardPage() {
               <tbody>
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-3 py-8 text-center italic opacity-60">
+                    <td colSpan={8} className="px-3 py-8 text-center italic opacity-60">
                       No account records yet for this cut-off date.
                     </td>
                   </tr>
@@ -303,6 +409,11 @@ export function AccountsDashboardPage() {
                       {r.ps_name}
                     </td>
                     <td className="px-3 py-2 text-right font-mono font-bold">{formatNumber(r.total)}</td>
+                    <td className="px-3 py-2 text-right font-mono">
+                      <span style={{ color: r.yesterday_count > 0 ? COLOR_VICTIM : 'rgba(0,0,0,0.35)', fontWeight: r.yesterday_count > 0 ? 700 : 400 }}>
+                        {r.yesterday_count > 0 ? formatNumber(r.yesterday_count) : '—'}
+                      </span>
+                    </td>
                     <td className="px-3 py-2 text-right font-mono">
                       <span style={{ color: COLOR_VICTIM }}>{formatNumber(r.victims)}</span>
                     </td>

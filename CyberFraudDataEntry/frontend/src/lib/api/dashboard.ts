@@ -9,6 +9,7 @@ import type {
   AllAccount,
   PortalsDsrKpiSummary, PortalsDsrPsComparison,
   FirPsPerformanceRow,
+  AccountsDailyPoint,
 } from '../../types';
 
 /** All Accounts dashboard — KPI cards + per-PS comparison. */
@@ -140,4 +141,17 @@ export async function getFirPsPerformance(
   if (to) qs.set('to', to);
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
   return apiFetch<FirPsPerformanceRow[]>(`/api/v1/dashboard/fir-ps-performance${suffix}`);
+}
+
+/** Per-day new-account counts for the Account Details dashboard's
+ *  daily-growth line chart. `days` sets the trailing window (default
+ *  30). Missing days are zero-filled so the line stays continuous. */
+export async function getAccountsDailyGrowth(
+  date: string,
+  days = 30,
+): Promise<AccountsDailyPoint[]> {
+  const qs = new URLSearchParams({ date, days: String(days) });
+  return apiFetch<AccountsDailyPoint[]>(
+    `/api/v1/dashboard/accounts-daily-growth?${qs.toString()}`,
+  );
 }
