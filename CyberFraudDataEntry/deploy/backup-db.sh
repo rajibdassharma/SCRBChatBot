@@ -4,7 +4,9 @@
 #
 # Fires every night at 02:00 IST via systemd timer `cyberfraud-backup.timer`.
 # Writes a gzipped mysqldump of `cyber_fraud_dsr` into /opt/cyberfraud/backups/
-# and prunes anything older than 7 days. Output goes to journal:
+# and RETAINS ONLY THE NEWEST BACKUP — every prior file matching the same
+# pattern is deleted after the current write succeeds (2026-07-24). Restore
+# window is therefore always exactly one night. Output goes to journal:
 #     sudo journalctl -u cyberfraud-backup.service -n 50 --no-pager
 #
 # Runs as the `cyberfraud` user (matches the backend service), so DB
@@ -19,7 +21,6 @@ set -o pipefail
 
 ENV_FILE=/opt/cyberfraud/backend/.env
 BACKUP_DIR=/opt/cyberfraud/backups
-RETENTION_DAYS=7
 
 # ── Read DB credentials from .env ────────────────────────────────────
 if [ ! -r "$ENV_FILE" ]; then
@@ -90,9 +91,15 @@ if [ "$SIZE" -lt 1024 ]; then
 fi
 echo "[backup-db] OK — wrote $OUTFILE ($SIZE bytes)"
 
-# ── Prune anything older than RETENTION_DAYS ─────────────────────────
-PRUNED=$(find "$BACKUP_DIR" -maxdepth 1 -type f -name "${DB_NAME}_*.sql.gz" -mtime +${RETENTION_DAYS} -print -delete | wc -l)
-echo "[backup-db] pruned $PRUNED file(s) older than ${RETENTION_DAYS} days"
+# ── Retain only the file we just wrote ──────────────────────────────
+# Explicit name-exclusion (not mtime-based) so the boundary is
+# deterministic: at the end of this script exactly one backup file
+# exists on disk regardless of when previous runs happened. Safe —
+# we only reach this line if the size check above passed, so OUTFILE
+# is real and populated.
+CURRENT_NAME=$(basename "$OUTFILE")
+PRUNED=$(find "$BACKUP_DIR" -maxdepth 1 -type f -name "${DB_NAME}_*.sql.gz" ! -name "$CURRENT_NAME" -print -delete | wc -l)
+echo "[backup-db] pruned $PRUNED prior backup(s); retaining only $CURRENT_NAME"
 
 # ── Show what's currently retained ───────────────────────────────────
 echo "[backup-db] current backups:"

@@ -12,14 +12,14 @@
 # be pointed at from a nightly systemd timer alongside the DB backup.
 #
 # Writes a gzipped tar into /opt/cyberfraud/backups/uploads_<ts>.tar.gz
-# and prunes anything older than 7 days.
+# and RETAINS ONLY THE NEWEST BACKUP — every prior uploads_*.tar.gz is
+# deleted after the current write succeeds (2026-07-24).
 # ============================================================================
 
 set -euo pipefail
 
 UPLOAD_DIR=/opt/cyberfraud/backend/uploads
 BACKUP_DIR=/opt/cyberfraud/backups
-RETENTION_DAYS=7
 
 # ── No uploads directory yet? Nothing to back up — that's fine. ─────
 if [ ! -d "$UPLOAD_DIR" ]; then
@@ -58,9 +58,14 @@ SIZE=$(stat -c '%s' "$OUTFILE")
 FILE_COUNT=$(find "$UPLOAD_DIR" -type f | wc -l)
 echo "[backup-uploads] OK — wrote $OUTFILE ($SIZE bytes, $FILE_COUNT source file(s))"
 
-# ── Prune anything older than RETENTION_DAYS ─────────────────────────
-PRUNED=$(find "$BACKUP_DIR" -maxdepth 1 -type f -name "uploads_*.tar.gz" -mtime +${RETENTION_DAYS} -print -delete | wc -l)
-echo "[backup-uploads] pruned $PRUNED file(s) older than ${RETENTION_DAYS} days"
+# ── Retain only the file we just wrote ──────────────────────────────
+# Explicit name-exclusion (not mtime-based) so the boundary is
+# deterministic: at the end of this script exactly one archive
+# exists on disk. Safe — we only reach this line after the tar +
+# stat + chown succeeded, so OUTFILE is real and populated.
+CURRENT_NAME=$(basename "$OUTFILE")
+PRUNED=$(find "$BACKUP_DIR" -maxdepth 1 -type f -name "uploads_*.tar.gz" ! -name "$CURRENT_NAME" -print -delete | wc -l)
+echo "[backup-uploads] pruned $PRUNED prior archive(s); retaining only $CURRENT_NAME"
 
 # ── Show what's currently retained ───────────────────────────────────
 echo "[backup-uploads] current backups:"
