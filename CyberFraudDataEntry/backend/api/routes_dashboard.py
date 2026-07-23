@@ -1543,6 +1543,13 @@ async def get_accounts_comparison(
     return await compute_accounts_comparison(db, target_date=target_date, admin=admin)
 
 
+# All Accounts data entry began in production on 2026-07-20. Any
+# earlier date on the daily-growth chart is pre-launch noise (zeros),
+# so we clamp the trailing window to start no earlier than this.
+# Move to config.py if we ever need a different cutoff per environment.
+_ACCOUNTS_DATA_ENTRY_START = date(2026, 7, 20)
+
+
 @router.get("/accounts-daily-growth", response_model=List[AccountsDailyPoint])
 async def get_accounts_daily_growth(
     target_date: date = Query(..., alias="date", description="Cutoff — last day in the returned series"),
@@ -1555,9 +1562,20 @@ async def get_accounts_daily_growth(
 
     Missing days (no rows created) are returned with `count = 0` so
     the frontend line chart draws a continuous axis rather than
-    skipping days. Scoping matches the rest of the dashboard —
-    admin: own PS; super_admin: cross-PS."""
-    date_from = target_date - timedelta(days=days - 1)
+    skipping days.
+
+    Start date is floored at 2026-07-20 (data entry launch) so the
+    chart doesn't lead with a run of zeros from pre-launch dates.
+
+    Scoping matches the rest of the dashboard — admin: own PS;
+    super_admin: cross-PS."""
+    # Return an empty series if the cutoff pre-dates data entry launch
+    # — nothing to chart yet.
+    if target_date < _ACCOUNTS_DATA_ENTRY_START:
+        return []
+
+    requested_from = target_date - timedelta(days=days - 1)
+    date_from = max(requested_from, _ACCOUNTS_DATA_ENTRY_START)
 
     q = (
         select(

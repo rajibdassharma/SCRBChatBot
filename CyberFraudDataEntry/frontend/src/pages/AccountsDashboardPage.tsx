@@ -223,7 +223,7 @@ export function AccountsDashboardPage() {
             <div className="lg:col-span-2">
               <ChartCard
                 title="Daily Growth — Accounts"
-                hint="New accounts created per day, trailing 30 days. Zero days shown so the trendline stays continuous."
+                hint="New accounts created per day. Series starts on 20 Jul 2026 (data entry launch); zero days shown so the trendline stays continuous."
                 accent={COLOR_NAVY}
               >
                 {dailyGrowth.length === 0 ? (
