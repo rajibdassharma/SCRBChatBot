@@ -2,13 +2,15 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router';
 import { listCases, deleteCase } from '../lib/api/cases';
 import { useAuthStore } from '../lib/stores/auth-store';
+import { isSuperAdmin } from '../lib/utils/roles';
 import type { CaseListItem } from '../types';
 import { toast } from 'sonner';
-import { Briefcase, Plus, Pencil, Trash2 } from 'lucide-react';
+import { Briefcase, Eye, Plus, Pencil, Trash2 } from 'lucide-react';
 
 export function CaseListPage() {
   const navigate = useNavigate();
   const { user } = useAuthStore();
+  const readOnly = isSuperAdmin(user);
   const [cases, setCases] = useState<CaseListItem[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -49,13 +51,17 @@ export function CaseListPage() {
         <h1 className="text-[22px] font-bold flex items-center gap-2" style={{ color: 'var(--ksp-navy)' }}>
           <Briefcase className="w-6 h-6" /> Cases
         </h1>
-        <button
-          onClick={() => navigate('/cases/new')}
-          className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold transition"
-          style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)', border: '2px solid rgba(0,0,0,0.2)' }}
-        >
-          <Plus className="w-4 h-4" /> New Case
-        </button>
+        {/* Senior Officer (super_admin) is view-only for cases — the
+             New Case button never renders for that role (2026-07-23). */}
+        {!readOnly && (
+          <button
+            onClick={() => navigate('/cases/new')}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-xl text-sm font-semibold transition"
+            style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)', border: '2px solid rgba(0,0,0,0.2)' }}
+          >
+            <Plus className="w-4 h-4" /> New Case
+          </button>
+        )}
       </div>
       <p className="text-sm font-medium mb-6" style={{ color: 'var(--ksp-red)' }}>Manage cases for your unit</p>
 
@@ -102,20 +108,27 @@ export function CaseListPage() {
                   <td className="px-4 py-3">{c.arrest_count}</td>
                   <td className="px-4 py-3 text-center">
                     <div className="flex items-center justify-center gap-2">
+                      {/* Read-only role: eye icon that opens the case
+                           in the (also read-only) editor. Regular roles
+                           get the pencil edit + trash delete. */}
                       <button
                         onClick={() => navigate(`/cases/${c.id}`)}
                         className="p-1.5 rounded-lg transition hover:bg-[#0b2c4a]/10"
-                        title="Edit"
+                        title={readOnly ? 'View' : 'Edit'}
                       >
-                        <Pencil className="w-4 h-4" style={{ color: 'var(--ksp-navy)' }} />
+                        {readOnly
+                          ? <Eye    className="w-4 h-4" style={{ color: 'var(--ksp-navy)' }} />
+                          : <Pencil className="w-4 h-4" style={{ color: 'var(--ksp-navy)' }} />}
                       </button>
-                      <button
-                        onClick={() => handleDelete(c.id, c.fir_no)}
-                        className="p-1.5 rounded-lg transition hover:bg-red-50"
-                        title="Delete"
-                      >
-                        <Trash2 className="w-4 h-4" style={{ color: 'var(--ksp-red)' }} />
-                      </button>
+                      {!readOnly && (
+                        <button
+                          onClick={() => handleDelete(c.id, c.fir_no)}
+                          className="p-1.5 rounded-lg transition hover:bg-red-50"
+                          title="Delete"
+                        >
+                          <Trash2 className="w-4 h-4" style={{ color: 'var(--ksp-red)' }} />
+                        </button>
+                      )}
                     </div>
                   </td>
                 </tr>

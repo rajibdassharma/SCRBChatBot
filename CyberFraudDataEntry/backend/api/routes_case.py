@@ -23,6 +23,24 @@ from api.deps import get_current_user, require_admin, CurrentUser, check_record_
 router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 
 
+# ── super_admin (Senior Officer) is view-only for cases (2026-07-23) ──
+# The role is defined for cross-PS oversight — a Senior Officer needs
+# to inspect what every PS is doing, but must never mutate anyone's
+# records. Every mutating endpoint below calls this gate first; every
+# read endpoint bypasses the per-PS scope check when the caller is
+# super_admin so the leaderboard-style visibility works.
+
+def _reject_super_admin_mutation(current_user: CurrentUser) -> None:
+    """Raise 403 if the caller is super_admin — they cannot create,
+    update, or delete cases. Regular admin / unit_user pass through."""
+    if current_user.role == "super_admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Senior Officer accounts are view-only for FIRs. "
+                   "Create / edit / delete must be done by a PS admin.",
+        )
+
+
 # -- helpers ---------------------------------------------------------------
 
 def _eager_options():
@@ -376,6 +394,7 @@ async def create_case(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    _reject_super_admin_mutation(current_user)
     unit_id = current_user.unit_id
     ps_id = current_user.ps_id
     if not unit_id:
@@ -455,19 +474,21 @@ async def list_all_cases(
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Admin view of all cases in the admin's PS (NOT cross-PS - VAPT 7.8).
+    """Admin view of all cases in the admin's PS.
 
-    There is no global admin role - PS admins are scoped to their own unit_id.
-    Equivalent to GET /cases/ when called by an admin; kept for backward
-    compatibility with any frontend code that still hits /all.
+    - super_admin : cross-PS (all cases, every PS) — 2026-07-23
+    - admin       : same district only (unit-scoped; not per-PS on this
+                    route for backward compatibility)
     """
-    if not admin.unit_id:
-        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+    if admin.role == "super_admin":
+        q = select(Case)
+    else:
+        if not admin.unit_id:
+            raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+        q = select(Case).where(Case.unit_id == admin.unit_id)
 
     cases = (await db.execute(
-        select(Case)
-        .where(Case.unit_id == admin.unit_id)
-        .options(selectinload(Case.arrests))
+        q.options(selectinload(Case.arrests))
         .order_by(Case.created_at.desc())
         .limit(limit)
         .offset(offset)
@@ -490,19 +511,24 @@ async def list_cases(
     Scope is (unit_id, ps_id) since migration 002. Before that change, a
     single unit_id could represent multiple PSes within Bangalore City etc.
 
-    - admin     : all cases in their PS
-    - unit_user : only cases they personally submitted, in their PS
+    - super_admin : all cases across every PS (view-only role, 2026-07-23)
+    - admin       : all cases in their PS
+    - unit_user   : only cases they personally submitted, in their PS
     """
-    unit_id = current_user.unit_id
-    ps_id = current_user.ps_id
-    if not unit_id:
-        raise HTTPException(status_code=403, detail="No unit assigned to this account.")
-    if not ps_id:
-        raise HTTPException(status_code=403, detail="No police station assigned to this account.")
-
-    q = select(Case).where(Case.unit_id == unit_id, Case.ps_id == ps_id)
-    if current_user.role not in ("admin", "super_admin"):
-        q = q.where(Case.submitted_by == current_user.user_id)
+    if current_user.role == "super_admin":
+        # Senior Officer sees every PS — cross-PS oversight. No mutations
+        # allowed (see _reject_super_admin_mutation on POST/PUT/DELETE).
+        q = select(Case)
+    else:
+        unit_id = current_user.unit_id
+        ps_id = current_user.ps_id
+        if not unit_id:
+            raise HTTPException(status_code=403, detail="No unit assigned to this account.")
+        if not ps_id:
+            raise HTTPException(status_code=403, detail="No police station assigned to this account.")
+        q = select(Case).where(Case.unit_id == unit_id, Case.ps_id == ps_id)
+        if current_user.role != "admin":
+            q = q.where(Case.submitted_by == current_user.user_id)
 
     cases = (await db.execute(
         q.options(selectinload(Case.arrests))
@@ -523,29 +549,40 @@ async def search_case_by_fir(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Search for a case by FIR number within the caller's scope (VAPT 7.7+7.8).
+    """Search for a case by FIR number within the caller's scope.
 
-    Scope is (unit_id, ps_id) — required for correctness now that the same
-    FIR can legitimately exist for multiple PSes within one district
-    (Bangalore City etc). See migration 002."""
-    unit_id = current_user.unit_id
-    ps_id = current_user.ps_id
-    if not unit_id:
-        raise HTTPException(status_code=403, detail="No unit assigned to this account.")
-    if not ps_id:
-        raise HTTPException(status_code=403, detail="No police station assigned to this account.")
+    - super_admin : cross-PS (any FIR, any PS) — 2026-07-23
+    - admin       : own (unit_id, ps_id)
+    - unit_user   : own (unit_id, ps_id) AND own submission
 
-    q = (
-        select(Case)
-        .where(
-            Case.fir_no == fir_no,
-            Case.unit_id == unit_id,
-            Case.ps_id == ps_id,
+    The same FIR can legitimately exist for multiple PSes within one
+    district (Bangalore City etc). For super_admin, if the same FIR
+    number exists in multiple PSes we return the first match — the
+    scope UI should also expose PS + district on the response so the
+    Senior Officer knows which PS's record they're looking at.
+    """
+    if current_user.role == "super_admin":
+        q = select(Case).where(Case.fir_no == fir_no).options(*_eager_options())
+    else:
+        unit_id = current_user.unit_id
+        ps_id = current_user.ps_id
+        if not unit_id:
+            raise HTTPException(status_code=403, detail="No unit assigned to this account.")
+        if not ps_id:
+            raise HTTPException(status_code=403, detail="No police station assigned to this account.")
+
+        q = (
+            select(Case)
+            .where(
+                Case.fir_no == fir_no,
+                Case.unit_id == unit_id,
+                Case.ps_id == ps_id,
+            )
+            .options(*_eager_options())
         )
-        .options(*_eager_options())
-    )
-    if current_user.role not in ("admin", "super_admin"):
-        q = q.where(Case.submitted_by == current_user.user_id)
+        if current_user.role != "admin":
+            q = q.where(Case.submitted_by == current_user.user_id)
+
     case = (await db.execute(q)).scalar_one_or_none()
     if not case:
         return None
@@ -560,27 +597,38 @@ async def search_case_by_petition(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """Search for a case by petition number within the caller's scope (VAPT 7.7+7.8).
+    """Search for a case by petition number within the caller's scope.
 
-    Scope is (unit_id, ps_id) — see migration 002."""
-    unit_id = current_user.unit_id
-    ps_id = current_user.ps_id
-    if not unit_id:
-        raise HTTPException(status_code=403, detail="No unit assigned to this account.")
-    if not ps_id:
-        raise HTTPException(status_code=403, detail="No police station assigned to this account.")
-
-    q = (
-        select(Case)
-        .where(
-            Case.petition_no == petition_no,
-            Case.unit_id == unit_id,
-            Case.ps_id == ps_id,
+    - super_admin : cross-PS — 2026-07-23
+    - admin       : own (unit_id, ps_id)
+    - unit_user   : own (unit_id, ps_id) AND own submission
+    """
+    if current_user.role == "super_admin":
+        q = (
+            select(Case)
+            .where(Case.petition_no == petition_no)
+            .options(*_eager_options())
         )
-        .options(*_eager_options())
-    )
-    if current_user.role not in ("admin", "super_admin"):
-        q = q.where(Case.submitted_by == current_user.user_id)
+    else:
+        unit_id = current_user.unit_id
+        ps_id = current_user.ps_id
+        if not unit_id:
+            raise HTTPException(status_code=403, detail="No unit assigned to this account.")
+        if not ps_id:
+            raise HTTPException(status_code=403, detail="No police station assigned to this account.")
+
+        q = (
+            select(Case)
+            .where(
+                Case.petition_no == petition_no,
+                Case.unit_id == unit_id,
+                Case.ps_id == ps_id,
+            )
+            .options(*_eager_options())
+        )
+        if current_user.role != "admin":
+            q = q.where(Case.submitted_by == current_user.user_id)
+
     case = (await db.execute(q)).scalar_one_or_none()
     if not case:
         return None
@@ -602,8 +650,11 @@ async def get_case(
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    # VAPT 7.7 + 7.8: enforce per-record + per-PS authorization.
-    check_record_access(case, current_user)
+    # Senior Officer (super_admin) has cross-PS read visibility for
+    # oversight. Regular admin / unit_user must satisfy the per-record
+    # + per-PS check.
+    if current_user.role != "super_admin":
+        check_record_access(case, current_user)
 
     return _case_to_response(case)
 
@@ -617,6 +668,7 @@ async def update_case(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    _reject_super_admin_mutation(current_user)
     case = (await db.execute(
         select(Case).where(Case.id == case_id).options(*_eager_options())
     )).scalar_one_or_none()
@@ -685,6 +737,7 @@ async def delete_case(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
+    _reject_super_admin_mutation(current_user)
     case = (await db.execute(
         select(Case).where(Case.id == case_id)
     )).scalar_one_or_none()
