@@ -638,11 +638,9 @@ async def get_case(
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    # Senior Officer (super_admin) has cross-PS read visibility for
-    # oversight. Regular admin / unit_user must satisfy the per-record
-    # + per-PS check.
-    if current_user.role != "super_admin":
-        check_record_access(case, current_user)
+    # Per-record + per-PS authorization. check_record_access() itself
+    # bypasses super_admin (cross-PS oversight, 2026-07-23).
+    check_record_access(case, current_user)
 
     return _case_to_response(case)
 
@@ -663,11 +661,9 @@ async def update_case(
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    # VAPT 7.7 + 7.8: enforce per-record + per-PS authorization.
-    # super_admin (Senior Officer) has full cross-PS write access and
-    # bypasses this check (2026-07-23).
-    if current_user.role != "super_admin":
-        check_record_access(case, current_user)
+    # VAPT 7.7 + 7.8: per-record + per-PS authorization.
+    # check_record_access() bypasses super_admin (2026-07-23).
+    check_record_access(case, current_user)
 
     _validate_submitted_case(body)
     _check_arrest_duplicates(body)
@@ -734,10 +730,9 @@ async def delete_case(
     if not case:
         raise HTTPException(status_code=404, detail="Case not found")
 
-    # VAPT 7.7 + 7.8: enforce per-record + per-PS authorization.
-    # super_admin bypass — see PUT for the same rule (2026-07-23).
-    if current_user.role != "super_admin":
-        check_record_access(case, current_user)
+    # VAPT 7.7 + 7.8: per-record + per-PS authorization.
+    # check_record_access() bypasses super_admin (2026-07-23).
+    check_record_access(case, current_user)
 
     await db.delete(case)  # cascade deletes children
     await db.commit()
