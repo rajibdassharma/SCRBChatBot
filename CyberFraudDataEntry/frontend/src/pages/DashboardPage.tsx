@@ -847,7 +847,7 @@ function RecurringAccountsCard({ rows, date }: { rows: RecurringAccount[]; date:
                       <td className="px-4 py-2 font-semibold">
                         <button
                           onClick={() => setSelectedCase({ case_id: c.case_id, label })}
-                          style={{ color: 'var(--ksp-navy)', textDecoration: 'underline', background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit' }}
+                          style={{ color: 'var(--ksp-link-blue)', textDecoration: 'underline', background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit' }}
                           title="View key fields for this case"
                         >
                           {label}
@@ -900,7 +900,7 @@ function RecurringAccountsCard({ rows, date }: { rows: RecurringAccount[]; date:
                   <tr key={r.account_no} className="border-t hover:bg-[#fff3b0]/30" style={{ borderColor: 'rgba(0,0,0,0.06)' }}>
                     <td
                       className="px-4 py-2 font-mono text-xs"
-                      style={{ color: 'var(--ksp-navy)', cursor: 'pointer', textDecoration: 'underline' }}
+                      style={{ color: 'var(--ksp-link-blue)', cursor: 'pointer', textDecoration: 'underline' }}
                       onClick={() => setSelectedAccount({ account_no: r.account_no, bank: r.bank })}
                       title="Click to see all cases for this account"
                     >
@@ -1265,7 +1265,7 @@ function LayerDistributionCard({ rows, date }: { rows: LayerBucket[]; date: stri
                       <td className="px-4 py-2 font-mono text-xs">
                         <button
                           onClick={() => setSelectedAccount({ case_id: a.case_id, account_no: a.account_no, fir_label: firLabel })}
-                          style={{ color: 'var(--ksp-navy)', textDecoration: 'underline', background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit' }}
+                          style={{ color: 'var(--ksp-link-blue)', textDecoration: 'underline', background: 'none', border: 'none', padding: 0, cursor: 'pointer', font: 'inherit' }}
                           title="View this case's full money trail"
                         >
                           {a.account_no || '—'}

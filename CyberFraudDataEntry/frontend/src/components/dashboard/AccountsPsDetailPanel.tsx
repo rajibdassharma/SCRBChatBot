@@ -267,7 +267,7 @@ export function AccountsPsDetailPanel({ ps, asOfDate, onBack }: Props) {
                         <td className="px-3 py-2">
                           {r.id_photo_path
                             ? <a href={`${BASE}/${r.id_photo_path}`} target="_blank" rel="noreferrer"
-                                 className="hover:underline font-semibold" style={{ color: 'var(--ksp-navy)' }}>
+                                 className="hover:underline font-semibold" style={{ color: 'var(--ksp-link-blue)' }}>
                                 Yes
                               </a>
                             : '—'}
@@ -275,7 +275,7 @@ export function AccountsPsDetailPanel({ ps, asOfDate, onBack }: Props) {
                         <td className="px-3 py-2">
                           {r.account_statement_path
                             ? <a href={`${BASE}/${r.account_statement_path}`} target="_blank" rel="noreferrer"
-                                 className="hover:underline font-semibold" style={{ color: 'var(--ksp-navy)' }}>
+                                 className="hover:underline font-semibold" style={{ color: 'var(--ksp-link-blue)' }}>
                                 Yes
                               </a>
                             : '—'}

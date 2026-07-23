@@ -11,6 +11,22 @@
   --ksp-navy: #0b2c4a;
   --ksp-navy-deep: #061f33;
   --ksp-bg: #f6f8fb;
+  /* Standard hyperlink blue — used by the `a` rule below and any
+     inline / button-styled link that wants the same look. Distinct
+     from --ksp-navy (which is a design-system accent, not a link). */
+  --ksp-link-blue: #1a56db;
+  --ksp-link-blue-hover: #1e40af;
+}
+
+/* Every anchor / react-router Link inherits this by default. Elements
+   with an explicit `color` (inline style or Tailwind class) win — so
+   button-styled Links like the "New Case" button keep their yellow
+   text and this rule only kicks in on plain text-like hyperlinks. */
+a {
+  color: var(--ksp-link-blue);
+}
+a:hover {
+  color: var(--ksp-link-blue-hover);
 }
 
 body {
