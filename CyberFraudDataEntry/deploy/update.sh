@@ -72,7 +72,7 @@ sudo bash "$SOURCE/deploy/backup-uploads.sh"
 
 # ── 4. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 4. Run additive DB migrations 001 → 004, 006 → 013 (idempotent) ==="
+echo "=== 4. Run additive DB migrations 001 → 004, 006 → 016 (idempotent) ==="
 # Migration 005 (chat_messages) is deliberately skipped until the GPU box
 # is in place for the chat feature — there's no point provisioning an
 # empty audit table for an endpoint the prod app does not yet expose.
@@ -95,6 +95,9 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.011_add_account_statement_path_to_all_accounts
     venv/bin/python -m migrations.012_add_layer_and_state_to_all_accounts
     venv/bin/python -m migrations.013_add_portals_dsr_entries
+    venv/bin/python -m migrations.014_add_daily_work_entries
+    venv/bin/python -m migrations.015_add_sections_to_cases
+    venv/bin/python -m migrations.016_add_crime_type_expansion
 "
 
 # ── 5. Build the frontend ────────────────────────────────────────────
@@ -463,6 +466,97 @@ else
     exit 1
 fi
 
+# Migration 014 schema sanity check — daily_work_entries table
+# with its (unit_id, ps_id, fir_no, report_date) uniqueness in place.
+DW_TABLE=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='daily_work_entries'" 2>/dev/null || echo "ERROR")
+if [ "$DW_TABLE" = "1" ]; then
+    echo "    ✓ daily_work_entries table present"
+else
+    echo "    ✗ daily_work_entries table missing — migration 014 did not complete"
+    exit 1
+fi
+DW_UQ=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.STATISTICS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='daily_work_entries' AND INDEX_NAME='uq_daily_work_unit_ps_fir_date'" 2>/dev/null || echo "ERROR")
+if [ "$DW_UQ" != "0" ] && [ "$DW_UQ" != "ERROR" ]; then
+    echo "    ✓ uq_daily_work_unit_ps_fir_date unique index in place"
+else
+    echo "    ✗ uq_daily_work_unit_ps_fir_date unique index missing — migration 014 incomplete"
+    exit 1
+fi
+
+# Migration 015 schema sanity check — cases.sections column landed.
+# Nullable free-text (VARCHAR(500)); presence is enough.
+SECTIONS_COL=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='cases' AND COLUMN_NAME='sections'" 2>/dev/null || echo "ERROR")
+if [ "$SECTIONS_COL" = "1" ]; then
+    echo "    ✓ cases.sections column present"
+else
+    echo "    ✗ cases.sections column missing — migration 015 did not complete"
+    exit 1
+fi
+
+# Migration 016 schema sanity check — cases.crime_type widened
+# (VARCHAR(30) → 200) AND cases.crime_type_other column added.
+# The widen matters: without it the 31-entry classification list's
+# longer values fail to insert with a data-truncated error.
+CRIME_TYPE_LEN=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT CHARACTER_MAXIMUM_LENGTH FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='cases' AND COLUMN_NAME='crime_type'" 2>/dev/null || echo "ERROR")
+if [ "$CRIME_TYPE_LEN" -ge 200 ] 2>/dev/null; then
+    echo "    ✓ cases.crime_type widened to VARCHAR($CRIME_TYPE_LEN)"
+else
+    echo "    ✗ cases.crime_type is VARCHAR($CRIME_TYPE_LEN) — migration 016 widen incomplete (need ≥ 200)"
+    exit 1
+fi
+CRIME_OTHER_COL=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='cases' AND COLUMN_NAME='crime_type_other'" 2>/dev/null || echo "ERROR")
+if [ "$CRIME_OTHER_COL" = "1" ]; then
+    echo "    ✓ cases.crime_type_other column present"
+else
+    echo "    ✗ cases.crime_type_other column missing — migration 016 did not complete"
+    exit 1
+fi
+
+# Daily Work Done routes (mounted before /{entry_id} so /dashboard resolves).
+if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" https://localhost/api/v1/daily-work/history | grep -qE '^(401|403)$'; then
+    echo "    ✓ /api/v1/daily-work/history mounted"
+else
+    echo "    ✗ /api/v1/daily-work/history not responding correctly"
+    exit 1
+fi
+if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" https://localhost/api/v1/daily-work/dashboard | grep -qE '^(401|403)$'; then
+    echo "    ✓ /api/v1/daily-work/dashboard mounted (route order correct — not shadowed by /{entry_id})"
+else
+    echo "    ✗ /api/v1/daily-work/dashboard not responding correctly"
+    exit 1
+fi
+
+# FIR Dashboard endpoint + its PDF/Excel exports.
+if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" \
+        "https://localhost/api/v1/dashboard/fir-ps-performance?from=2026-01-01&to=2026-01-31" \
+        | grep -qE '^(401|403)$'; then
+    echo "    ✓ /api/v1/dashboard/fir-ps-performance mounted"
+else
+    echo "    ✗ /api/v1/dashboard/fir-ps-performance not responding correctly"
+    exit 1
+fi
+if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" \
+        "https://localhost/api/v1/reports/fir-ps-performance.pdf?from=2026-01-01&to=2026-01-31" \
+        | grep -qE '^(401|403)$'; then
+    echo "    ✓ /api/v1/reports/fir-ps-performance.pdf mounted"
+else
+    echo "    ✗ /api/v1/reports/fir-ps-performance.pdf not responding correctly"
+    exit 1
+fi
+if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" \
+        "https://localhost/api/v1/reports/fir-ps-performance.xlsx?from=2026-01-01&to=2026-01-31" \
+        | grep -qE '^(401|403)$'; then
+    echo "    ✓ /api/v1/reports/fir-ps-performance.xlsx mounted"
+else
+    echo "    ✗ /api/v1/reports/fir-ps-performance.xlsx not responding correctly"
+    exit 1
+fi
+
 echo
 echo "================================================================"
 echo "  ✓ Incremental update complete."
@@ -502,4 +596,22 @@ echo
 echo "  The former 'Dashboard' link is now 'DSR Dashboard' and the"
 echo "  'Mule Accounts Data' section header is renamed 'NCRP Data'"
 echo "  (URLs / API paths unchanged)."
+echo
+echo "  NEW (2026-07-22 — this deploy):"
+echo "  • DSR module tile — merges Portals DSR + Investigation Log +"
+echo "    a new 'New FIR' entry point under one sidebar."
+echo "  • FIR Dashboard (DSR) — per-PS performance table with"
+echo "    sortable columns, Today/7d/30d/90d chips, Excel + PDF"
+echo "    downloads served from the reports/ module."
+echo "  • Daily Work Done — full CRUD + admin KPI dashboard for"
+echo "    per-FIR-per-day activity (notices / lien / unlien /"
+echo "    arrests / statements / final report). Migration 014."
+echo "  • Cases: 'Sections' free-text field alongside FIR No + Crime"
+echo "    Type (migration 015). Crime Type is now the 31-entry KSP"
+echo "    Cyber Crime classification with 'Others → free text'"
+echo "    (migration 016; widens crime_type to VARCHAR(200) + adds"
+echo "    crime_type_other)."
+echo "  • FIR No format validation — shared XXXX/YYYY validator"
+echo "    wired into every FIR entry point (Cases, New FIR, Daily"
+echo "    Work, All Accounts). Retroactive rows exempt."
 echo "================================================================"
