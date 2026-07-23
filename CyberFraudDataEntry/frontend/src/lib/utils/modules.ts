@@ -21,11 +21,6 @@ export type ModuleLink = {
   requiresAdmin?: boolean;
   /** Show this link only if the server's chat feature flag is on. */
   requiresChat?: boolean;
-  /** Hide this link from super_admin (Senior Officer). Applied to
-   *  entry-point links that create / update FIRs / cases — the backend
-   *  rejects those mutations for super_admin (2026-07-23), so surfacing
-   *  the link would just land the user on a page they can't use. */
-  hideForSuperAdmin?: boolean;
 };
 
 export type ModuleDef = {
@@ -61,13 +56,10 @@ export const MODULES: ModuleDef[] = [
     hasNilButton: true,
     landingUrl: '/cases/new',
     links: [
-      // super_admin is view-only for FIRs/cases (2026-07-23) — hide the
-      // create + edit entry points from the sidebar so they don't land
-      // on pages the backend will 403.
-      { to: '/cases/new',        label: 'New Case',        icon: FilePlus,  hideForSuperAdmin: true },
-      { to: '/cases/update',     label: 'Update Case',     icon: Search,    hideForSuperAdmin: true },
-      { to: '/petitions/new',    label: 'New Petition',    icon: FileText,  hideForSuperAdmin: true },
-      { to: '/petitions/update', label: 'Update Petition', icon: Search,    hideForSuperAdmin: true },
+      { to: '/cases/new',        label: 'New Case',        icon: FilePlus },
+      { to: '/cases/update',     label: 'Update Case',     icon: Search },
+      { to: '/petitions/new',    label: 'New Petition',    icon: FileText },
+      { to: '/petitions/update', label: 'Update Petition', icon: Search },
       { to: '/reports',          label: 'Reports',         icon: FileDown },
       { to: '/dashboard',        label: 'DSR Dashboard',   icon: BarChart3, requiresAdmin: true },
     ],
@@ -116,11 +108,9 @@ export const MODULES: ModuleDef[] = [
       // 3 primary entry points (New FIR, Investigation, Portals) as spec'd
       // 2026-07-22. Update / History links were dropped from the sidebar
       // per the same spec — pages remain reachable at their old URLs.
-      // 2026-07-23: hide the three "New …" links from super_admin —
-      // Senior Officer is view-only across FIR-touching modules.
-      { to: '/dsr/new-fir',           label: 'New FIR',                    icon: FilePlus,       hideForSuperAdmin: true },
-      { to: '/daily-work/new',        label: 'Investigation',              icon: ClipboardList,  hideForSuperAdmin: true },
-      { to: '/portals-dsr/new',       label: 'Portals',                    icon: Globe,          hideForSuperAdmin: true },
+      { to: '/dsr/new-fir',           label: 'New FIR',                    icon: FilePlus },
+      { to: '/daily-work/new',        label: 'Investigation',              icon: ClipboardList },
+      { to: '/portals-dsr/new',       label: 'Portals',                    icon: Globe },
       { to: '/dsr/fir-dashboard',     label: 'FIR Dashboard',              icon: BarChart3, requiresAdmin: true },
       { to: '/portals-dsr/dashboard', label: 'Portals DSR Dashboard',      icon: BarChart3, requiresAdmin: true },
       { to: '/daily-work/dashboard',  label: 'Daily Work Done Dashboard',  icon: BarChart3, requiresAdmin: true },

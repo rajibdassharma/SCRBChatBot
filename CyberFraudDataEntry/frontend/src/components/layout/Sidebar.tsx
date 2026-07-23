@@ -77,9 +77,6 @@ export function Sidebar() {
           {currentModule.links.map((l) => {
             if (l.requiresAdmin && !isAdmin) return null;
             if (l.requiresChat && !chatEnabled) return null;
-            // Senior Officer (super_admin) is view-only for FIRs — hide
-            // any link that leads to a mutation entry point (2026-07-23).
-            if (l.hideForSuperAdmin && user?.role === 'super_admin') return null;
             const Icon = l.icon;
             return (
               <NavLink key={l.to} to={l.to} className={linkClass}>

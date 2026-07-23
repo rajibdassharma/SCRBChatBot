@@ -23,22 +23,11 @@ from api.deps import get_current_user, require_admin, CurrentUser, check_record_
 router = APIRouter(prefix="/api/v1/cases", tags=["cases"])
 
 
-# ── super_admin (Senior Officer) is view-only for cases (2026-07-23) ──
-# The role is defined for cross-PS oversight — a Senior Officer needs
-# to inspect what every PS is doing, but must never mutate anyone's
-# records. Every mutating endpoint below calls this gate first; every
-# read endpoint bypasses the per-PS scope check when the caller is
-# super_admin so the leaderboard-style visibility works.
-
-def _reject_super_admin_mutation(current_user: CurrentUser) -> None:
-    """Raise 403 if the caller is super_admin — they cannot create,
-    update, or delete cases. Regular admin / unit_user pass through."""
-    if current_user.role == "super_admin":
-        raise HTTPException(
-            status_code=403,
-            detail="Senior Officer accounts are view-only for FIRs. "
-                   "Create / edit / delete must be done by a PS admin.",
-        )
+# ── super_admin (Senior Officer) has cross-PS full access (2026-07-23) ──
+# Every read AND write endpoint below bypasses the per-PS scope check
+# when the caller is super_admin. Regular admin / unit_user keep their
+# (unit_id, ps_id) scope and, for unit_user, the "own submissions only"
+# check on top of that.
 
 
 # -- helpers ---------------------------------------------------------------
@@ -394,7 +383,6 @@ async def create_case(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    _reject_super_admin_mutation(current_user)
     unit_id = current_user.unit_id
     ps_id = current_user.ps_id
     if not unit_id:
@@ -668,7 +656,6 @@ async def update_case(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    _reject_super_admin_mutation(current_user)
     case = (await db.execute(
         select(Case).where(Case.id == case_id).options(*_eager_options())
     )).scalar_one_or_none()
@@ -677,7 +664,10 @@ async def update_case(
         raise HTTPException(status_code=404, detail="Case not found")
 
     # VAPT 7.7 + 7.8: enforce per-record + per-PS authorization.
-    check_record_access(case, current_user)
+    # super_admin (Senior Officer) has full cross-PS write access and
+    # bypasses this check (2026-07-23).
+    if current_user.role != "super_admin":
+        check_record_access(case, current_user)
 
     _validate_submitted_case(body)
     _check_arrest_duplicates(body)
@@ -737,7 +727,6 @@ async def delete_case(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    _reject_super_admin_mutation(current_user)
     case = (await db.execute(
         select(Case).where(Case.id == case_id)
     )).scalar_one_or_none()
@@ -746,7 +735,9 @@ async def delete_case(
         raise HTTPException(status_code=404, detail="Case not found")
 
     # VAPT 7.7 + 7.8: enforce per-record + per-PS authorization.
-    check_record_access(case, current_user)
+    # super_admin bypass — see PUT for the same rule (2026-07-23).
+    if current_user.role != "super_admin":
+        check_record_access(case, current_user)
 
     await db.delete(case)  # cascade deletes children
     await db.commit()

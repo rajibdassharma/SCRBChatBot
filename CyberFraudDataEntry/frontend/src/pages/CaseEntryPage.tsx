@@ -6,7 +6,6 @@ import { createCase, updateCase, getCase, deleteCase } from '../lib/api/cases';
 import { useAuthStore } from '../lib/stores/auth-store';
 import { CRIME_TYPE_OTHERS, CYBER_CRIME_TYPES } from '../lib/utils/crime-types';
 import { FIR_NO_PLACEHOLDER, validateFirNo } from '../lib/utils/fir-no';
-import { isSuperAdmin } from '../lib/utils/roles';
 import type { CaseEntry, Arrest, Accomplice, Petition, LienAccount, UnfreezeDetail, Refund, Victim } from '../types';
 
 const BASE = import.meta.env.VITE_API_BASE ?? '';
@@ -273,11 +272,6 @@ export function CaseEntryPage() {
   const navigate = useNavigate();
   const { user } = useAuthStore();
   const isEdit = !!id;
-  // Senior Officer (super_admin) is view-only across every FIR entry
-  // point (2026-07-23). Backend rejects the mutation itself; this flag
-  // hides Save / Save Draft / Submit / Delete + shows a banner so the
-  // reason is obvious.
-  const readOnly = isSuperAdmin(user);
 
   const [tab, setTab] = useState(0);
   const [saving, setSaving] = useState(false);
@@ -452,33 +446,13 @@ export function CaseEntryPage() {
       </div>
 
       <h1 className="text-[22px] font-bold mb-1" style={{ color: 'var(--ksp-navy)' }}>
-        {readOnly ? 'View Case' : (isEdit ? 'Edit Case' : 'New Case Entry')}
+        {isEdit ? 'Edit Case' : 'New Case Entry'}
       </h1>
       <p className="text-sm font-medium mb-6" style={{ color: 'var(--ksp-red)' }}>
-        {readOnly
-          ? `Viewing FIR ${f.fir_no} (read-only)`
-          : (isEdit ? `Editing FIR ${f.fir_no}` : 'Enter case details across all tabs')}
+        {isEdit ? `Editing FIR ${f.fir_no}` : 'Enter case details across all tabs'}
       </p>
 
-      {readOnly && (
-        <div className="rounded-2xl p-4 mb-4 max-w-5xl"
-          style={{ background: '#fff7d6', border: '2px dashed #c49500' }}>
-          <p className="text-sm font-semibold" style={{ color: '#8a5b00' }}>
-            Senior Officer accounts are view-only for FIRs.
-          </p>
-          <p className="text-xs mt-1 opacity-80">
-            The form below is disabled. Only PS admins can create / edit /
-            delete a case. This case belongs to {user?.unit_name ?? 'another district'}
-            {' '}— you have read access for oversight.
-          </p>
-        </div>
-      )}
-
       <form onSubmit={handleSubmit} className="space-y-5 max-w-5xl">
-      {/* fieldset disabled= toggles every native input / button INSIDE
-           it into a disabled state — one wrapper handles the entire
-           read-only mode for super_admin without touching every field. */}
-      <fieldset disabled={readOnly} className="space-y-5" style={{ border: 'none', padding: 0, margin: 0 }}>
         {/* Tab bar */}
         <div className="flex flex-wrap gap-2">
           {TABS.map((label, i) => (
@@ -898,7 +872,6 @@ export function CaseEntryPage() {
             )}
           </div>
         </div>
-      </fieldset>
       </form>
     </div>
   );

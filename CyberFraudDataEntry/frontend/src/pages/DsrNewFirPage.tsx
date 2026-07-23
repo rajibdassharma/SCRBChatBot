@@ -3,11 +3,9 @@ import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
 import { Save, ArrowRight } from 'lucide-react';
 import { createCase } from '../lib/api/cases';
-import { useAuthStore } from '../lib/stores/auth-store';
 import { CRIME_TYPE_OTHERS, CYBER_CRIME_TYPES } from '../lib/utils/crime-types';
 import { FIR_NO_PLACEHOLDER, validateFirNo } from '../lib/utils/fir-no';
 import { INDIAN_STATES } from '../lib/utils/indian-states';
-import { isSuperAdmin } from '../lib/utils/roles';
 import type { CaseEntry, Victim } from '../types';
 
 /** DSR → New FIR — lightweight daily-log entry for a fresh FIR.
@@ -193,36 +191,9 @@ function crimeTypeOptions(current: string): { value: string; label: string }[] {
 
 export function DsrNewFirPage() {
   const navigate = useNavigate();
-  const { user } = useAuthStore();
   const [f, setF] = useState<CaseEntry>(emptyForm());
   const [saving, setSaving] = useState(false);
   const [lastSavedId, setLastSavedId] = useState<string | null>(null);
-
-  // super_admin (Senior Officer) is view-only for FIRs (2026-07-23) —
-  // sidebar hides this link but a direct URL still lands here. Show a
-  // banner instead of the form so we never even offer the Save action.
-  if (isSuperAdmin(user)) {
-    return (
-      <div>
-        <h1 className="text-[22px] font-bold mb-1"
-          style={{ color: 'var(--ksp-navy)', letterSpacing: '-0.02em' }}>
-          DSR — New FIR
-        </h1>
-        <div className="rounded-2xl p-6 mt-6"
-          style={{ background: '#fff7d6', border: '2px dashed #c49500' }}>
-          <p className="text-sm font-semibold" style={{ color: '#8a5b00' }}>
-            Senior Officer accounts are view-only for FIRs.
-          </p>
-          <p className="text-xs mt-2 opacity-80">
-            Creating and editing FIRs is done by a PS admin. Use the FIR
-            Dashboard on this DSR tile to review activity across every PS,
-            or open Cases → Update Case (also view-only for your role) to
-            search a specific FIR.
-          </p>
-        </div>
-      </div>
-    );
-  }
 
   // Format-only error — surfaces once the operator starts typing.
   // Empty is not an error here (that's a required-check on Save).
