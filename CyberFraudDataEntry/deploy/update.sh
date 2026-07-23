@@ -209,10 +209,15 @@ fi
 # Migration 002 schema sanity check — confirms ps_id column + new
 # unique index landed. Reuses CFDSR_DB_* credentials from .env via
 # MYSQL_PWD so we don't echo the password.
+#
+# The `|| true` on each grep is CRITICAL: under `set -euo pipefail`,
+# a `grep` that finds no match returns 1 and kills the whole script
+# with no error message. If .env is missing a variable (or the file
+# itself is absent), we just fall back to the defaults below.
 ENV_FILE=/opt/cyberfraud/backend/.env
-DB_USER=$(grep -E '^CFDSR_DB_USER='     "$ENV_FILE" | tail -1 | cut -d'=' -f2-)
-DB_PASS=$(grep -E '^CFDSR_DB_PASSWORD=' "$ENV_FILE" | tail -1 | cut -d'=' -f2-)
-DB_NAME=$(grep -E '^CFDSR_DB_NAME='     "$ENV_FILE" | tail -1 | cut -d'=' -f2-)
+DB_USER=$( (grep -E '^CFDSR_DB_USER='     "$ENV_FILE" 2>/dev/null || true) | tail -1 | cut -d'=' -f2- )
+DB_PASS=$( (grep -E '^CFDSR_DB_PASSWORD=' "$ENV_FILE" 2>/dev/null || true) | tail -1 | cut -d'=' -f2- )
+DB_NAME=$( (grep -E '^CFDSR_DB_NAME='     "$ENV_FILE" 2>/dev/null || true) | tail -1 | cut -d'=' -f2- )
 : "${DB_USER:=root}"; : "${DB_NAME:=cyber_fraud_dsr}"
 
 # Count of cases rows with NULL ps_id MUST be 0 (column is NOT NULL after
