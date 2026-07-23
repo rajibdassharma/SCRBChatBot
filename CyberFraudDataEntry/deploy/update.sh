@@ -9,15 +9,19 @@
 # What it does (idempotent end-to-end):
 #   1. git pull on /opt/scrb to fetch the latest source
 #   2. Install / upgrade pip deps from backend/requirements.txt
-#   3. Pre-migration safety backup (skipped if no schema changes apply)
-#   4. Run additive DB migrations 001 + 002 (idempotent — INFORMATION_SCHEMA
+#   3. Run additive DB migrations (idempotent — INFORMATION_SCHEMA
 #      checks mean each migration's a no-op when already applied)
-#   5. Build the frontend (npm install + npm run build)
-#   6. Sync backend/ + frontend/dist/ from source to runtime
-#   7. Restart the backend systemd service
-#   8. Ensure nginx proxies /uploads/* to the backend (auto-inserts
+#   4. Build the frontend (npm install + npm run build)
+#   5. Sync backend/ + frontend/dist/ from source to runtime
+#   6. Restart the backend systemd service
+#   7. Ensure nginx proxies /uploads/* to the backend (auto-inserts
 #      the location block once if missing; idempotent afterwards)
-#   9. Self-verify: service active, /health responding, schema sane
+#   8. Self-verify: service active, /health responding, schema sane
+#
+# NOTE: pre-migration DB + uploads backup was removed 2026-07-24.
+# Nightly systemd timers (cyberfraud-backup.{service,timer}) still
+# run — run backup-db.sh / backup-uploads.sh by hand before a risky
+# deploy if you want the extra insurance snapshot.
 #
 # Usage on the server:
 #   cd /opt/scrb && git pull && \
@@ -59,20 +63,9 @@ sudo -u cyberfraud bash -c "
 "
 echo "    Done."
 
-# ── 3. Pre-migration safety backup ───────────────────────────────────
-# Take an ad-hoc backup of cyber_fraud_dsr AND the uploads/ tree just
-# before any schema/code changes. Re-using the same backup scripts as
-# nightly means restore is a one-liner if anything regresses. Safe to
-# run even when no migration changes apply — both scripts always write
-# a fresh timestamped file and prune anything older than 14d.
+# ── 3. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 3. Pre-migration DB + uploads backup ==="
-sudo bash "$SOURCE/deploy/backup-db.sh"
-sudo bash "$SOURCE/deploy/backup-uploads.sh"
-
-# ── 4. Run additive DB migrations ────────────────────────────────────
-echo
-echo "=== 4. Run additive DB migrations 001 → 004, 006 → 016 (idempotent) ==="
+echo "=== 3. Run additive DB migrations 001 → 004, 006 → 016 (idempotent) ==="
 # Migration 005 (chat_messages) is deliberately skipped until the GPU box
 # is in place for the chat feature — there's no point provisioning an
 # empty audit table for an endpoint the prod app does not yet expose.
@@ -100,30 +93,30 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.016_add_crime_type_expansion
 "
 
-# ── 5. Build the frontend ────────────────────────────────────────────
+# ── 4. Build the frontend ────────────────────────────────────────────
 echo
-echo "=== 5. Build frontend (npm install + npm run build) ==="
+echo "=== 4. Build frontend (npm install + npm run build) ==="
 cd "$SOURCE/frontend"
 npm install --silent
 npm run build
 echo "    dist/ built:"
 ls -la "$SOURCE/frontend/dist/" | head -10
 
-# ── 6. Sync code from source to runtime ──────────────────────────────
+# ── 5. Sync code from source to runtime ──────────────────────────────
 echo
-echo "=== 6. Sync backend + frontend dist to $RUNTIME ==="
+echo "=== 5. Sync backend + frontend dist to $RUNTIME ==="
 sudo cp -r "$SOURCE/backend" "$RUNTIME/"
 sudo cp -r "$SOURCE/frontend" "$RUNTIME/"
 sudo chown -R cyberfraud:cyberfraud "$RUNTIME/backend" "$RUNTIME/frontend"
 
-# ── 7. Restart backend ───────────────────────────────────────────────
+# ── 6. Restart backend ───────────────────────────────────────────────
 echo
-echo "=== 7. Restart backend service ==="
+echo "=== 6. Restart backend service ==="
 sudo systemctl restart "$SVC"
 sleep 2
 sudo systemctl is-active "$SVC"
 
-# ── 8. Nginx: ensure /uploads/ is proxied to backend (idempotent) ────
+# ── 7. Nginx: ensure /uploads/ is proxied to backend (idempotent) ────
 # The backend serves file downloads at /uploads/photos/* and
 # /uploads/statements/* — but nginx by default only forwards /api/*.
 # Without this, browser requests to /uploads/xxx hit the SPA fallback
@@ -132,7 +125,7 @@ sudo systemctl is-active "$SVC"
 # it lands in the same server context (HTTPS listener). Idempotent:
 # a re-run notices the block is already there and does nothing.
 echo
-echo "=== 8. Nginx /uploads/ proxy ==="
+echo "=== 7. Nginx /uploads/ proxy ==="
 SITE_LINK=$(ls /etc/nginx/sites-enabled/*cyberfraud* 2>/dev/null | head -1 || true)
 if [ -z "$SITE_LINK" ]; then
     echo "    ⚠  no cyberfraud site under /etc/nginx/sites-enabled/ — skipping."
@@ -186,9 +179,9 @@ else
     fi
 fi
 
-# ── 9. Self-verify ───────────────────────────────────────────────────
+# ── 8. Self-verify ───────────────────────────────────────────────────
 echo
-echo "=== 9. Self-verify ==="
+echo "=== 8. Self-verify ==="
 # Health endpoint via nginx (proxied path)
 if curl -sk --max-time 5 https://localhost/health | grep -q '"ok"'; then
     echo "    ✓ /health responding via nginx"
@@ -591,7 +584,6 @@ echo "  /uploads/* is no longer public — every file URL now carries an"
 echo "  HMAC-signed 1-hour expiry. Leaked URLs (in exports, screenshots)"
 echo "  die fast. Deleting an account row now unlinks its files too."
 echo "  Nightly orphan cleanup: venv/bin/python sweep_orphaned_uploads.py"
-echo "  Pre-deploy backup now also archives uploads/ (see backup-uploads.sh)."
 echo
 echo "  The former 'Dashboard' link is now 'DSR Dashboard' and the"
 echo "  'Mule Accounts Data' section header is renamed 'NCRP Data'"
