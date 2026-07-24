@@ -65,7 +65,7 @@ echo "    Done."
 
 # ── 3. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 3. Run additive DB migrations 001 → 004, 006 → 017 (idempotent) ==="
+echo "=== 3. Run additive DB migrations 001 → 004, 006 → 018 (idempotent) ==="
 # Migration 005 (chat_messages) is deliberately skipped until the GPU box
 # is in place for the chat feature — there's no point provisioning an
 # empty audit table for an endpoint the prod app does not yet expose.
@@ -92,6 +92,7 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.015_add_sections_to_cases
     venv/bin/python -m migrations.016_add_crime_type_expansion
     venv/bin/python -m migrations.017_add_victim_and_accused_accounts
+    venv/bin/python -m migrations.018_rename_cen_to_cyber_in_ps_names
 "
 
 # ── 4. Build the frontend ────────────────────────────────────────────
@@ -532,6 +533,18 @@ if [ "$AA_TBL" = "1" ]; then
     echo "    ✓ accused_accounts table present"
 else
     echo "    ✗ accused_accounts table missing — migration 017 did not complete"
+    exit 1
+fi
+
+# Migration 018 data-sanity check — no standalone 'CEN' left in PS
+# names. Uses REGEXP with \bCEN\b so 'CENTRAL JAIL' etc. are correctly
+# excluded (that row is a legitimate CENTRAL, not the CEN acronym).
+CEN_LEFT=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM police_stations WHERE station_name REGEXP '\\\\bCEN\\\\b'" 2>/dev/null || echo "ERROR")
+if [ "$CEN_LEFT" = "0" ]; then
+    echo "    ✓ police_stations.station_name has no standalone 'CEN' (migration 018 applied)"
+else
+    echo "    ✗ $CEN_LEFT rows still contain standalone 'CEN' — migration 018 did not complete"
     exit 1
 fi
 

@@ -26,10 +26,10 @@ organisational unit.
 
 ### police_stations
 44 cyber police stations across the 36 districts. Most districts have one
-CEN PS, Bangalore City has several.
+Cyber Crime PS, Bangalore City has several.
   id            INT PRIMARY KEY
   district_name VARCHAR(100)  -- matches units.name
-  station_name  VARCHAR(200)  -- e.g. 'CEN South East'
+  station_name  VARCHAR(200)  -- e.g. 'South East Cyber PS'
 
 ### cases
 The core record — one row per cyber fraud case (FIR / Walk-In / NCRP).
@@ -136,8 +136,10 @@ Victim refunds.
 - District = units.name. PS = police_stations.station_name. Operators
   often say 'PS' when they mean a district + PS combination — pick the
   more specific match if you can.
-- 'CEN' in PS names stands for Cyber Economic and Narcotic — it's the
-  KSP cyber wing prefix. Ignore it in matching when convenient.
+- 'Cyber' in PS names marks a Cyber Crime station (KSP cyber wing).
+  Historical rows and free-text may still say 'CEN' (the old acronym
+  standing for Cyber Economic and Narcotic) -- treat 'CEN' and 'Cyber'
+  as interchangeable when matching PS names in user questions.
 - Dates are MySQL DATE/DATETIME. Use NOW(), CURDATE(), DATE_SUB, INTERVAL.
 - 'this month' = WHERE YEAR(created_at) = YEAR(NOW()) AND MONTH(created_at) = MONTH(NOW())
 - 'last 7 days' = WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)
