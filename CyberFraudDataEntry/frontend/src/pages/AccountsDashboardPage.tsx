@@ -38,7 +38,7 @@ const cardStyle = {
 // always reads as the same colour. Victim / Mule / Non-Mule live
 // together on the donut, stacked bars, KPI cards, and per-PS text
 // rows — three clearly distinct hues at any size.
-const COLOR_VICTIM   = '#FACC15';  // yellow-400 — bright, on-brand
+const COLOR_VICTIM   = '#EF4444';  // red-500 — bright red
 const COLOR_MULE     = '#8b1919';  // dark red — offender
 const COLOR_NONMULE  = '#1d4ed8';  // blue-700 — neutral / unknown
 const COLOR_NAVY     = '#0b2c4a';
