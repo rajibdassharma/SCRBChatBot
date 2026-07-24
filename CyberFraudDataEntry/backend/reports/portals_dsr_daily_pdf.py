@@ -142,6 +142,7 @@ def render_portals_dsr_daily_pdf(
 
     # ── Data rows ─────────────────────────────────────────────────
     body: list[list] = []
+    totals: dict[str, int] = {}
     for i, r in enumerate(rows, start=1):
         row: list = [
             str(i),
@@ -154,7 +155,16 @@ def render_portals_dsr_daily_pdf(
                 # the paper form's empty-cell convention. Real zero
                 # submissions still show "0".
                 row.append("" if v is None else str(v))
+                if v is not None:
+                    totals[key] = totals.get(key, 0) + int(v)
         body.append(row)
+
+    # ── Grand total row (bold yellow band, sums every metric col) ─
+    total_row: list = ["", "Grand Total"]
+    for _gname, cols in _GROUPS:
+        for _label, key in cols:
+            n = totals.get(key, 0)
+            total_row.append(str(n) if n else "")
 
     # ── Column widths ─────────────────────────────────────────────
     # Landscape A4 = 297mm × 210mm. With 8mm side margins the usable
@@ -181,16 +191,25 @@ def render_portals_dsr_daily_pdf(
         ("SPAN", (1, 0), (1, 1)),
 
         # Body — 6.5pt so 3-digit values still fit inside 9.3mm cols
-        ("FONTSIZE",   (0, 2), (-1, -1), 6.5),
+        ("FONTSIZE",   (0, 2), (-1, -2), 6.5),
         ("ALIGN",      (0, 2), (0, -1), "CENTER"),         # Sl.No
         ("ALIGN",      (2, 2), (-1, -1), "RIGHT"),         # metric cells
         ("VALIGN",     (0, 2), (-1, -1), "MIDDLE"),
-        ("ROWBACKGROUNDS", (0, 2), (-1, -1), [colors.white, KSP_GREY_SOFT]),
+        ("ROWBACKGROUNDS", (0, 2), (-1, -2), [colors.white, KSP_GREY_SOFT]),
         ("GRID",       (0, 0), (-1, -1), 0.25, colors.lightgrey),
         ("LEFTPADDING",   (0, 0), (-1, -1), 1),
         ("RIGHTPADDING",  (0, 0), (-1, -1), 1),
         ("TOPPADDING",    (0, 0), (-1, -1), 2),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+
+        # Grand-total row -- bold yellow band, same treatment as the
+        # Daily Work Done report so the two files feel consistent.
+        ("BACKGROUND", (0, -1), (-1, -1), colors.HexColor("#ffd400")),
+        ("FONTNAME",   (0, -1), (-1, -1), "Helvetica-Bold"),
+        ("FONTSIZE",   (0, -1), (-1, -1), 7),
+        ("TEXTCOLOR",  (0, -1), (-1, -1), KSP_NAVY),
+        ("ALIGN",      (1, -1), (1, -1), "RIGHT"),          # "Grand Total" label
+        ("SPAN",       (0, -1), (1, -1)),                    # merge Sl.No + PS cells
     ]
 
     # Merge each group header horizontally.
@@ -202,7 +221,7 @@ def render_portals_dsr_daily_pdf(
             style_cmds.append(("SPAN", (span_from, 0), (span_to, 0)))
         col_cursor = span_to + 1
 
-    table = Table([group_row, metric_row] + body,
+    table = Table([group_row, metric_row] + body + [total_row],
                   colWidths=col_widths,
                   hAlign="LEFT",
                   repeatRows=2)

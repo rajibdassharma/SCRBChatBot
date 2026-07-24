@@ -107,6 +107,20 @@ export function PortalsDsrReportPage() {
     (r) => r.ncrp_received !== null || r.samanvaya_request_received !== null,
   ).length;
 
+  // Column totals across every PS — same numbers the PDF/XLSX grand-
+  // total row shows. Nulls are treated as 0 for summing.
+  const totals: Record<string, number> = {};
+  for (const g of GROUPS) {
+    for (const c of g.cols) {
+      let sum = 0;
+      for (const r of rows) {
+        const v = r[c.key] as number | null;
+        if (v !== null) sum += v;
+      }
+      totals[c.key as string] = sum;
+    }
+  }
+
   return (
     <div>
       <div className="mb-4">
@@ -227,6 +241,28 @@ export function PortalsDsrReportPage() {
               </tr>
             ))}
           </tbody>
+          {!loading && rows.length > 0 && (
+            <tfoot>
+              <tr style={{ background: 'var(--ksp-yellow)', color: 'var(--ksp-navy)' }}>
+                <td colSpan={2}
+                  className="px-2 py-2 text-right font-bold sticky left-0 z-10"
+                  style={{ background: 'var(--ksp-yellow)' }}>
+                  Grand Total
+                </td>
+                {GROUPS.flatMap((g) =>
+                  g.cols.map((c, j) => {
+                    const n = totals[c.key as string] || 0;
+                    return (
+                      <td key={`total-${g.name}-${c.key}`}
+                        className={`px-1.5 py-2 text-right font-bold ${j === 0 ? 'border-l border-white/20' : ''}`}>
+                        {n === 0 ? '' : n}
+                      </td>
+                    );
+                  }),
+                )}
+              </tr>
+            </tfoot>
+          )}
         </table>
       </div>
     </div>

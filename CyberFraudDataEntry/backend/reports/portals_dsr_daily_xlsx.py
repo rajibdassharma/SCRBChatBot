@@ -141,7 +141,8 @@ def render_portals_dsr_daily_xlsx(
 
         col_cursor = end_col + 1
 
-    # Data rows
+    # Data rows -- collect running totals per metric key while we go
+    totals: dict[str, int] = {}
     for i, r in enumerate(rows, start=1):
         excel_row = header_m_row + i
         ws.cell(row=excel_row, column=1, value=i).alignment = Alignment(horizontal="center")
@@ -162,6 +163,8 @@ def render_portals_dsr_daily_xlsx(
                                value=None if v is None else int(v))
                 cell.alignment = Alignment(horizontal="right")
                 cell.border = _thin_border()
+                if v is not None:
+                    totals[key] = totals.get(key, 0) + int(v)
                 col_cursor += 1
 
         if i % 2 == 0:
@@ -169,6 +172,27 @@ def render_portals_dsr_daily_xlsx(
                 if ws.cell(row=excel_row, column=col).fill.fgColor.value in (None, "00000000"):
                     ws.cell(row=excel_row, column=col).fill = \
                         PatternFill("solid", fgColor=_LIGHT_BG)
+
+    # Grand-total row -- bold yellow band, same treatment as the
+    # Daily Work Done report.
+    gt_row = header_m_row + len(rows) + 1
+    ws.cell(row=gt_row, column=1, value="")
+    ws.cell(row=gt_row, column=2, value="Grand Total")
+    ws.merge_cells(start_row=gt_row, start_column=1, end_row=gt_row, end_column=2)
+    ws.cell(row=gt_row, column=2).alignment = Alignment(horizontal="right", vertical="center")
+    col_cursor = _FIXED_COLS + 1
+    for _gname, cols in _GROUPS:
+        for _label, key in cols:
+            n = totals.get(key, 0)
+            ws.cell(row=gt_row, column=col_cursor, value=n if n else None)
+            col_cursor += 1
+    for c in range(1, _COL_COUNT + 1):
+        cell = ws.cell(row=gt_row, column=c)
+        cell.font = Font(bold=True, color=_NAVY)
+        cell.fill = PatternFill("solid", fgColor=_YELLOW)
+        cell.border = _thin_border()
+        if c >= _FIXED_COLS + 1:
+            cell.alignment = Alignment(horizontal="right")
 
     # Column widths -- narrow metric cols so the whole table stays
     # scannable; wider PS name column since some are ~28 chars.
