@@ -953,6 +953,68 @@ export interface DailyWorkDashboard {
 // -- FIR Dashboard (DSR module) — per-PS performance table --
 // Mirrors backend/schemas/dashboard.py FirPsPerformanceRow.
 
+// ── Daily report preview shapes (2026-07-24) ────────────────
+// Returned by /api/v1/reports/portals-dsr-daily.json and
+// daily-work-daily.json — same aggregation as the corresponding
+// PDF/XLSX renderers. All 45 active PSes are always returned; a
+// PS that didn't submit gets null for every metric so the UI
+// renders a blank cell (not "0").
+
+export interface PortalsDsrDailyPreviewRow {
+  ps_id: number;
+  ps_name: string;
+  district: string;
+  ncrp_received: number | null;
+  ncrp_disposed: number | null;
+  ncrp_pending: number | null;
+  samanvaya_request_received: number | null;
+  samanvaya_actions: number | null;
+  samanvaya_action_pending: number | null;
+  samanvaya_request_sent: number | null;
+  samanvaya_reply_received: number | null;
+  samanvaya_replies_pending: number | null;
+  sahayog_unlawful_content_removal: number | null;
+  sahayog_intermediary_requests: number | null;
+  sahayog_crypto_requests: number | null;
+  grm_request_received: number | null;
+  grm_action: number | null;
+  grm_pending: number | null;
+  mrm_request_received: number | null;
+  mrm_action: number | null;
+  mrm_pending: number | null;
+  bharatpol_request_received: number | null;
+  ocwc_received: number | null;
+  ocwc_disposed: number | null;
+  ocwc_pending: number | null;
+  ncmec_received: number | null;
+  ncmec_disposed: number | null;
+  ncmec_pending: number | null;
+}
+
+export interface DailyWorkDailyPreviewRow {
+  ps_id: number;
+  ps_name: string;
+  district: string;
+  fir_count: number;
+  notices_35_41a_count: number | null;
+  notices_91_92_94_banks: number | null;
+  notices_91_92_94_intermediary: number | null;
+  notices_91_92_94_account_holder: number | null;
+  notices_91_92_94_cdr_ipdr: number | null;
+  lien_requests_count: number | null;
+  freeze_requests_count: number | null;
+  total_lien_amount: number | null;
+  unlien_requests_count: number | null;
+  defreeze_requests_count: number | null;
+  total_unlien_amount: number | null;
+  arrests_count: number | null;
+  statements_count: number | null;
+  final_report_a: number;
+  final_report_b: number;
+  final_report_c: number;
+  final_report_abc: string | null;
+}
+
 export interface FirPsPerformanceRow {
   unit_id: number;
   district: string;

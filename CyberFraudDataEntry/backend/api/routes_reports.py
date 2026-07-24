@@ -648,3 +648,31 @@ async def get_daily_work_daily_xlsx(
     rows = await compute_daily_work_daily(db, target_date=target_date)
     xlsx = render_daily_work_daily_xlsx(rows, target_date=target_date)
     return _xlsx_response(xlsx, _daily_work_daily_filename("xlsx", target_date))
+
+
+# ── JSON preview endpoints ────────────────────────────────────────
+# Both pages fetch these to render an on-screen table BEFORE the
+# operator downloads the file. Same aggregators as the PDF/XLSX
+# routes above, so preview and download are always consistent.
+
+
+@router.get("/portals-dsr-daily.json")
+async def preview_portals_dsr_daily(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List of 45 PS rows with 25 metric fields (nullable per PS —
+    None = did not submit)."""
+    return await compute_portals_dsr_daily(db, target_date=target_date)
+
+
+@router.get("/daily-work-daily.json")
+async def preview_daily_work_daily(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """List of 45 PS rows with fir_count + 13 summed numeric fields
+    + final_report_abc composite string."""
+    return await compute_daily_work_daily(db, target_date=target_date)

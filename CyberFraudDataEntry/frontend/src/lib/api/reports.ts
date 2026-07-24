@@ -7,6 +7,12 @@
  * server error). The browser then handles the actual file save.
  */
 
+import { apiFetch } from './client';
+import type {
+  DailyWorkDailyPreviewRow,
+  PortalsDsrDailyPreviewRow,
+} from '../../types';
+
 const BASE = import.meta.env.VITE_API_BASE ?? '';
 
 
@@ -214,5 +220,26 @@ export function downloadDailyWorkDailyExcel(date: string): Promise<void> {
   return downloadPdf(
     `/api/v1/reports/daily-work-daily.xlsx?date=${encodeURIComponent(date)}`,
     `Daily_Work_Done_${date}.xlsx`,
+  );
+}
+
+
+/**
+ * JSON previews — same aggregation as the PDF/XLSX downloads. Used by
+ * the report pages to render an on-screen table BEFORE download.
+ */
+export function fetchPortalsDsrDailyPreview(
+  date: string,
+): Promise<PortalsDsrDailyPreviewRow[]> {
+  return apiFetch<PortalsDsrDailyPreviewRow[]>(
+    `/api/v1/reports/portals-dsr-daily.json?date=${encodeURIComponent(date)}`,
+  );
+}
+
+export function fetchDailyWorkDailyPreview(
+  date: string,
+): Promise<DailyWorkDailyPreviewRow[]> {
+  return apiFetch<DailyWorkDailyPreviewRow[]>(
+    `/api/v1/reports/daily-work-daily.json?date=${encodeURIComponent(date)}`,
   );
 }
