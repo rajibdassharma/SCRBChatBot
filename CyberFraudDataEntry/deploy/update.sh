@@ -65,7 +65,7 @@ echo "    Done."
 
 # ── 3. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 3. Run additive DB migrations 001 → 004, 006 → 016 (idempotent) ==="
+echo "=== 3. Run additive DB migrations 001 → 004, 006 → 017 (idempotent) ==="
 # Migration 005 (chat_messages) is deliberately skipped until the GPU box
 # is in place for the chat feature — there's no point provisioning an
 # empty audit table for an endpoint the prod app does not yet expose.
@@ -91,6 +91,7 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.014_add_daily_work_entries
     venv/bin/python -m migrations.015_add_sections_to_cases
     venv/bin/python -m migrations.016_add_crime_type_expansion
+    venv/bin/python -m migrations.017_add_victim_and_accused_accounts
 "
 
 # ── 4. Build the frontend ────────────────────────────────────────────
@@ -512,6 +513,25 @@ if [ "$CRIME_OTHER_COL" = "1" ]; then
     echo "    ✓ cases.crime_type_other column present"
 else
     echo "    ✗ cases.crime_type_other column missing — migration 016 did not complete"
+    exit 1
+fi
+
+# Migration 017 schema sanity check — victim_accounts + accused_accounts
+# tables landed (multi-account capture on DSR -> New FIR, 2026-07-24).
+VA_TBL=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='victim_accounts'" 2>/dev/null || echo "ERROR")
+if [ "$VA_TBL" = "1" ]; then
+    echo "    ✓ victim_accounts table present"
+else
+    echo "    ✗ victim_accounts table missing — migration 017 did not complete"
+    exit 1
+fi
+AA_TBL=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA='$DB_NAME' AND TABLE_NAME='accused_accounts'" 2>/dev/null || echo "ERROR")
+if [ "$AA_TBL" = "1" ]; then
+    echo "    ✓ accused_accounts table present"
+else
+    echo "    ✗ accused_accounts table missing — migration 017 did not complete"
     exit 1
 fi
 
