@@ -237,11 +237,13 @@ export function AccountsDashboardPage() {
                   <div style={{ width: '100%', height: 320 }}>
                     <ResponsiveContainer>
                       <LineChart data={dailyGrowth}
-                                margin={{ top: 8, right: 24, left: 24, bottom: 56 }}>
+                                margin={{ top: 8, right: 24, left: 24, bottom: 68 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
                         <XAxis dataKey="day" tick={{ fontSize: 10 }}
-                          /* interval=0 forces every date to render as a tick;
-                             angle + textAnchor rotates them so 30 days still fit. */
+                          /* Explicit ticks list guarantees every day in the
+                             series renders — interval={0} alone still lets
+                             Recharts drop overlapping labels. */
+                          ticks={dailyGrowth.map((d) => d.day)}
                           interval={0}
                           angle={-45}
                           textAnchor="end"
@@ -249,8 +251,8 @@ export function AccountsDashboardPage() {
                           tickFormatter={(v: string) => v.slice(5)} /* MM-DD */
                           label={{
                             value: 'Date',
-                            position: 'insideBottom',
-                            offset: -48,
+                            position: 'bottom',
+                            offset: 10,
                             style: { fontSize: 12, fontWeight: 700, fill: COLOR_NAVY },
                           }} />
                         <YAxis allowDecimals={false} tick={{ fontSize: 11 }}
@@ -258,7 +260,7 @@ export function AccountsDashboardPage() {
                             value: 'No. of Accounts',
                             angle: -90,
                             position: 'insideLeft',
-                            offset: 0,
+                            offset: 10,
                             style: { fontSize: 12, fontWeight: 700, fill: COLOR_NAVY, textAnchor: 'middle' },
                           }} />
                         <Tooltip
