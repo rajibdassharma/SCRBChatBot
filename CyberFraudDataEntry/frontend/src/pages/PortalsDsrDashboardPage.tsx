@@ -13,6 +13,16 @@ import type { PortalsDsrKpiSummary, PortalsDsrPsComparison } from '../types';
  *  chart + per-PS table. Multiple entries per (unit, ps, date) are
  *  aggregated by the backend (SUM). Drafts excluded. */
 
+// "24 Jul" — short header label for the Yesterday column. Server
+// computes yesterday_count as today−1 using its own clock; the label
+// tracks the user's local date. Same tz in production (IST), so the
+// label matches the data.
+function yesterdayShortLabel(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+}
+
 const cardStyle = {
   background: '#fff',
   border: '1px solid rgba(0,0,0,0.06)',
@@ -85,6 +95,7 @@ export function PortalsDsrDashboardPage() {
   }, [fromDate, toDate]);
 
   const top10 = useMemo(() => rows.slice(0, 10), [rows]);
+  const yestLabel = yesterdayShortLabel();
 
   return (
     <div>
@@ -190,6 +201,10 @@ export function PortalsDsrDashboardPage() {
                   <th className="px-3 py-2 text-left">#</th>
                   <th className="px-3 py-2 text-left">District</th>
                   <th className="px-3 py-2 text-left">Police Station</th>
+                  <th className="px-3 py-2 text-right"
+                    title={`Submissions with report_date = ${yestLabel}`}>
+                    Yesterday ({yestLabel})
+                  </th>
                   <th className="px-3 py-2 text-right">Entries</th>
                   <th className="px-3 py-2 text-right">Grand Total</th>
                 </tr>
@@ -197,7 +212,7 @@ export function PortalsDsrDashboardPage() {
               <tbody>
                 {rows.length === 0 && (
                   <tr>
-                    <td colSpan={5} className="px-3 py-8 text-center italic opacity-60">
+                    <td colSpan={6} className="px-3 py-8 text-center italic opacity-60">
                       No submitted entries in this date range.
                     </td>
                   </tr>
@@ -208,6 +223,10 @@ export function PortalsDsrDashboardPage() {
                     <td className="px-3 py-2">{r.unit_name}</td>
                     <td className="px-3 py-2 font-semibold" style={{ color: 'var(--ksp-navy)' }}>
                       {r.ps_name}
+                    </td>
+                    <td className="px-3 py-2 text-right font-mono font-bold"
+                      style={{ color: r.yesterday_count === 0 ? 'rgba(0,0,0,0.35)' : '#0a6b28' }}>
+                      {formatNumber(r.yesterday_count)}
                     </td>
                     <td className="px-3 py-2 text-right font-mono">{formatNumber(r.entries)}</td>
                     <td className="px-3 py-2 text-right font-mono font-bold">{formatNumber(r.total)}</td>

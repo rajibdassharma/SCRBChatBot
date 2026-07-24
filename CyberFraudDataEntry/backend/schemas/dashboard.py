@@ -300,3 +300,7 @@ class FirPsPerformanceRow(BaseModel):
     ps_id: int
     ps_name: str
     fir_count: int = 0
+    # New FIRs registered YESTERDAY (server today − 1 day), independent
+    # of the from/to window. Surfaces "last 24h" pulse next to the
+    # cumulative Total column — added 2026-07-25.
+    yesterday_count: int = 0

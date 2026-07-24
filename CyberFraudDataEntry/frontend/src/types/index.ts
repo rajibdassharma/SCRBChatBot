@@ -830,6 +830,9 @@ export interface PortalsDsrPsComparison {
   ps_name: string;
   entries: number;
   total: number;
+  /** Submitted rows whose report_date is yesterday (server today - 1),
+   *  independent of the from/to window. Added 2026-07-25. */
+  yesterday_count: number;
 }
 
 // -- Daily Work Done (Investigation Log) --
@@ -922,4 +925,7 @@ export interface FirPsPerformanceRow {
   ps_id: number;
   ps_name: string;
   fir_count: number;
+  /** FIRs registered yesterday (server today - 1), independent of the
+   *  from/to window. Added 2026-07-25. */
+  yesterday_count: number;
 }

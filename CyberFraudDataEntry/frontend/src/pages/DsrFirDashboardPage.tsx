@@ -37,6 +37,15 @@ function isoNDaysAgo(n: number): string {
 
 function fmtInt(n: number): string { return n.toLocaleString('en-IN'); }
 
+// "24 Jul" — short header label for the Yesterday column. Client-side
+// so the label tracks the user's local date, matching the server's
+// today-1 window (both machines are on the same IST tz in production).
+function yesterdayShortLabel(): string {
+  const d = new Date();
+  d.setDate(d.getDate() - 1);
+  return d.toLocaleDateString('en-GB', { day: '2-digit', month: 'short' });
+}
+
 const cardStyle = {
   background: '#fff',
   border: '1px solid rgba(0,0,0,0.06)',
@@ -46,12 +55,13 @@ const cardStyle = {
 // Sort control — click a header once to sort by that column in its
 // default direction, click again to reverse. Default direction:
 // count DESC (bigger performers first), district/PS ASC (A→Z).
-type SortKey = 'district' | 'ps_name' | 'fir_count';
+type SortKey = 'district' | 'ps_name' | 'fir_count' | 'yesterday_count';
 type SortDir = 'asc' | 'desc';
 const DEFAULT_DIR: Record<SortKey, SortDir> = {
   district: 'asc',
   ps_name: 'asc',
   fir_count: 'desc',
+  yesterday_count: 'desc',
 };
 
 export function DsrFirDashboardPage() {
@@ -91,6 +101,7 @@ export function DsrFirDashboardPage() {
       let cmp = 0;
       if (sortBy === 'district') cmp = a.district.localeCompare(b.district);
       else if (sortBy === 'ps_name') cmp = a.ps_name.localeCompare(b.ps_name);
+      else if (sortBy === 'yesterday_count') cmp = a.yesterday_count - b.yesterday_count;
       else cmp = a.fir_count - b.fir_count;
       if (sortDir === 'desc') cmp = -cmp;
       // Stable tiebreak: district, then ps_name — so identical fir_counts
@@ -105,6 +116,10 @@ export function DsrFirDashboardPage() {
   const grandTotal = useMemo(
     () => rows.reduce((s, r) => s + r.fir_count, 0),
     [rows]);
+  const grandYesterday = useMemo(
+    () => rows.reduce((s, r) => s + r.yesterday_count, 0),
+    [rows]);
+  const yestLabel = yesterdayShortLabel();
 
   const handleDownload = async (kind: 'pdf' | 'xlsx') => {
     setDl(kind);
@@ -202,12 +217,21 @@ export function DsrFirDashboardPage() {
             </p>
           </div>
 
-          <div className="text-right">
-            <p className="text-[11px] uppercase tracking-wide font-bold"
-              style={{ color: 'var(--ksp-red)' }}>Grand Total</p>
-            <p className="text-xl font-bold" style={{ color: 'var(--ksp-navy)' }}>
-              {fmtInt(grandTotal)}
-            </p>
+          <div className="flex gap-6 text-right">
+            <div>
+              <p className="text-[11px] uppercase tracking-wide font-bold"
+                style={{ color: '#0a6b28' }}>Yesterday ({yestLabel})</p>
+              <p className="text-xl font-bold" style={{ color: '#0a6b28' }}>
+                {fmtInt(grandYesterday)}
+              </p>
+            </div>
+            <div>
+              <p className="text-[11px] uppercase tracking-wide font-bold"
+                style={{ color: 'var(--ksp-red)' }}>Grand Total</p>
+              <p className="text-xl font-bold" style={{ color: 'var(--ksp-navy)' }}>
+                {fmtInt(grandTotal)}
+              </p>
+            </div>
           </div>
         </div>
 
@@ -229,6 +253,12 @@ export function DsrFirDashboardPage() {
               </th>
               <th className="px-4 py-3 text-xs uppercase font-bold text-right"
                 style={{ cursor: 'pointer', userSelect: 'none' }}
+                onClick={() => onSort('yesterday_count')}
+                title={`FIRs registered yesterday (${yestLabel})`}>
+                Yesterday ({yestLabel}){arrow('yesterday_count')}
+              </th>
+              <th className="px-4 py-3 text-xs uppercase font-bold text-right"
+                style={{ cursor: 'pointer', userSelect: 'none' }}
                 onClick={() => onSort('fir_count')}
                 title="Sort by Total FIRs">
                 Total FIRs{arrow('fir_count')}
@@ -238,12 +268,12 @@ export function DsrFirDashboardPage() {
           <tbody>
             {busy && (
               <tr>
-                <td colSpan={4} className="px-4 py-6 text-center italic opacity-60">Loading…</td>
+                <td colSpan={5} className="px-4 py-6 text-center italic opacity-60">Loading…</td>
               </tr>
             )}
             {!busy && sortedRows.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-6 text-center italic opacity-60">
+                <td colSpan={5} className="px-4 py-6 text-center italic opacity-60">
                   No active PSes in scope.
                 </td>
               </tr>
@@ -258,6 +288,10 @@ export function DsrFirDashboardPage() {
                 </td>
                 <td className="px-4 py-2" style={{ color: 'var(--ksp-navy)' }}>
                   {r.ps_name || '—'}
+                </td>
+                <td className="px-4 py-2 text-right font-bold"
+                  style={{ color: r.yesterday_count === 0 ? 'rgba(0,0,0,0.35)' : '#0a6b28' }}>
+                  {fmtInt(r.yesterday_count)}
                 </td>
                 <td className="px-4 py-2 text-right font-bold"
                   style={{ color: r.fir_count === 0 ? 'var(--ksp-red)' : 'var(--ksp-navy)' }}>

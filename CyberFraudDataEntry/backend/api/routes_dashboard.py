@@ -1852,6 +1852,33 @@ async def get_portals_comparison(
         )
 
     rows = (await db.execute(q)).all()
+
+    # Second query — YESTERDAY's submissions per PS (report_date = today − 1),
+    # independent of the from/to window. Same status='submitted' + same
+    # scope filter as the main aggregate.
+    yesterday = date.today() - timedelta(days=1)
+    yday_q = (
+        select(
+            PortalsDsrEntry.unit_id,
+            PortalsDsrEntry.ps_id,
+            func.count(PortalsDsrEntry.id),
+        )
+        .where(
+            PortalsDsrEntry.status == "submitted",
+            PortalsDsrEntry.report_date == yesterday,
+        )
+        .group_by(PortalsDsrEntry.unit_id, PortalsDsrEntry.ps_id)
+    )
+    if admin.role != "super_admin":
+        yday_q = yday_q.where(
+            PortalsDsrEntry.unit_id == admin.unit_id,
+            PortalsDsrEntry.ps_id == admin.ps_id,
+        )
+    yday_rows = (await db.execute(yday_q)).all()
+    yday_counts: dict[tuple[int, int], int] = {
+        (int(uid), int(pid)): int(n or 0) for uid, pid, n in yday_rows
+    }
+
     return [
         PortalsDsrPsComparison(
             unit_id=r.unit_id,
@@ -1860,6 +1887,7 @@ async def get_portals_comparison(
             ps_name=r.ps_name,
             entries=int(r.entries or 0),
             total=int(r.total or 0),
+            yesterday_count=yday_counts.get((int(r.unit_id), int(r.ps_id)), 0),
         )
         for r in rows
     ]
@@ -1945,6 +1973,24 @@ async def compute_fir_ps_performance(
         if pid is not None
     }
 
+    # Second query — FIRs registered YESTERDAY (server today − 1 day),
+    # independent of the window. Powers the "last 24h" column on the
+    # dashboard. Same PS scoping as the main count.
+    yesterday = date.today() - timedelta(days=1)
+    yday_q = (
+        select(Case.unit_id, Case.ps_id, func.count(Case.id))
+        .where(Case.registration_date == yesterday)
+        .group_by(Case.unit_id, Case.ps_id)
+    )
+    if admin.role != "super_admin":
+        yday_q = yday_q.where(Case.unit_id == admin.unit_id).where(Case.ps_id == admin.ps_id)
+    yday_rows = (await db.execute(yday_q)).all()
+    yday_counts: dict[tuple[int, int], int] = {
+        (int(uid), int(pid)): int(n or 0)
+        for uid, pid, n in yday_rows
+        if pid is not None
+    }
+
     rows = [
         FirPsPerformanceRow(
             unit_id=int(uid),
@@ -1952,6 +1998,7 @@ async def compute_fir_ps_performance(
             ps_id=int(pid),
             ps_name=pname or "",
             fir_count=counts.get((int(uid), int(pid)), 0),
+            yesterday_count=yday_counts.get((int(uid), int(pid)), 0),
         )
         for uid, uname, pid, pname in ps_rows
     ]

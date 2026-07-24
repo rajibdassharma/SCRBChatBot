@@ -161,3 +161,7 @@ class PortalsDsrPsComparison(BaseModel):
     ps_name: str
     entries: int = 0
     total: int = 0
+    # Submissions with report_date = YESTERDAY (server today − 1 day),
+    # independent of the from/to window. Surfaces "last 24h" pulse
+    # next to the Entries / Grand Total columns — added 2026-07-25.
+    yesterday_count: int = 0

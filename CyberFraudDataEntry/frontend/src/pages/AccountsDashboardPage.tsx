@@ -283,18 +283,31 @@ export function AccountsDashboardPage() {
               {typePie.length === 0 ? (
                 <div className="py-10 text-center italic opacity-60 text-sm">No accounts yet.</div>
               ) : (
-                <div style={{ width: '100%', height: 260 }}>
+                <div style={{ width: '100%', height: 280 }}>
                   <ResponsiveContainer>
-                    <PieChart>
+                    <PieChart margin={{ top: 8, right: 8, bottom: 24, left: 8 }}>
                       <Pie data={typePie} dataKey="value" nameKey="name"
-                        cx="50%" cy="50%" innerRadius={55} outerRadius={95}
+                        cx="50%" cy="45%" innerRadius={48} outerRadius={80}
                         paddingAngle={2}
-                        label={(d: any) => `${d.name}: ${formatNumber(d.value)}`}
+                        // Labels live INSIDE the arc as a percentage so
+                        // long category names ("Non-Mule") don't spill
+                        // outside the card. Absolute counts move to the
+                        // legend + tooltip.
+                        label={(d: any) => {
+                          const total = typePie.reduce((s, x) => s + x.value, 0);
+                          if (!total || !d.value) return '';
+                          const pct = (d.value / total) * 100;
+                          return pct >= 5 ? `${pct.toFixed(0)}%` : '';
+                        }}
                         labelLine={false}
                       >
                         {typePie.map((d) => <Cell key={d.name} fill={d.fill} />)}
                       </Pie>
                       <Tooltip formatter={(v) => formatNumber(Number(v ?? 0))} />
+                      <Legend verticalAlign="bottom" height={24}
+                        formatter={(name, entry: any) =>
+                          `${name}: ${formatNumber(entry?.payload?.value ?? 0)}`}
+                        wrapperStyle={{ fontSize: 11 }} />
                     </PieChart>
                   </ResponsiveContainer>
                 </div>
