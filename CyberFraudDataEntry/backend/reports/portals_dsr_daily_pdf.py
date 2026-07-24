@@ -22,7 +22,9 @@ import io
 from datetime import date as date_t
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import A3, landscape
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
 from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
@@ -31,6 +33,34 @@ from reports.base import (
     KSP_NAVY,
     STYLES,
     _draw_page_chrome,
+)
+
+
+# Compact wrapping styles for header cells — needed because A4 landscape
+# forces narrow columns and long labels like "NCMEC (Tipline)" or
+# "Reply Recv" must wrap inside the cell instead of overflowing.
+_HDR_GROUP_STYLE = ParagraphStyle(
+    "portalsGroupHdr",
+    fontName="Helvetica-Bold",
+    fontSize=7.5,
+    leading=8.5,
+    alignment=TA_CENTER,
+    textColor=colors.white,
+)
+_HDR_METRIC_STYLE = ParagraphStyle(
+    "portalsMetricHdr",
+    fontName="Helvetica-Bold",
+    fontSize=6.5,
+    leading=7.5,
+    alignment=TA_CENTER,
+    textColor=colors.white,
+)
+_PS_NAME_STYLE = ParagraphStyle(
+    "portalsPsName",
+    fontName="Helvetica-Bold",
+    fontSize=6.5,
+    leading=7.5,
+    textColor=KSP_NAVY,
 )
 
 
@@ -96,18 +126,27 @@ def render_portals_dsr_daily_pdf(
     render as blanks (cells stay empty)."""
 
     # ── Build the two-row header ─────────────────────────────────
-    group_row: list[str] = ["Sl.No", "Police Station"]
-    metric_row: list[str] = ["", ""]
+    # Header cells are Paragraphs (not plain strings) so long labels
+    # like "NCMEC (Tipline)" / "Reply Recv" wrap inside the narrow
+    # A4-landscape columns instead of overflowing.
+    group_row: list = [
+        Paragraph("Sl.No", _HDR_GROUP_STYLE),
+        Paragraph("Police Station", _HDR_GROUP_STYLE),
+    ]
+    metric_row: list = ["", ""]
     for gname, cols in _GROUPS:
-        group_row.append(gname)
+        group_row.append(Paragraph(gname, _HDR_GROUP_STYLE))
         group_row.extend([""] * (len(cols) - 1))  # placeholders for SPAN
         for label, _key in cols:
-            metric_row.append(label)
+            metric_row.append(Paragraph(label, _HDR_METRIC_STYLE))
 
     # ── Data rows ─────────────────────────────────────────────────
     body: list[list] = []
     for i, r in enumerate(rows, start=1):
-        row: list = [str(i), r.get("ps_name") or "—"]
+        row: list = [
+            str(i),
+            Paragraph(r.get("ps_name") or "—", _PS_NAME_STYLE),
+        ]
         for _gname, cols in _GROUPS:
             for _label, key in cols:
                 v = r.get(key)
@@ -118,40 +157,38 @@ def render_portals_dsr_daily_pdf(
         body.append(row)
 
     # ── Column widths ─────────────────────────────────────────────
-    # Landscape A3 usable width ≈ 390mm after 15mm margins on each
-    # side. Sl.No 10, PS 55, remaining 25 metric cols share ≈ 325mm.
-    metric_w = 12.5 * mm  # 25 * 12.5 = 312mm, fits comfortably
-    col_widths = [10 * mm, 55 * mm] + [metric_w] * _METRIC_COUNT
+    # Landscape A4 = 297mm × 210mm. With 8mm side margins the usable
+    # width is 281mm. Everything MUST fit here — the user reads this
+    # on standard printers, not A3.
+    #   Sl.No     8mm
+    #   Police    40mm  (fits "Bengaluru City (South-East)" wrapped)
+    #   25 metrics × 9.3mm = 232.5mm
+    #   Total    280.5mm  ⇒ ~0.5mm slack, safely inside 281mm
+    metric_w = 9.3 * mm
+    col_widths = [8 * mm, 40 * mm] + [metric_w] * _METRIC_COUNT
 
     # ── Style: header row spans, colours, tight body font ─────────
     style_cmds: list = [
-        # Group header (row 0) — navy background, white bold
+        # Group header (row 0) — navy background, Paragraph carries the font
         ("BACKGROUND", (0, 0), (-1, 0), KSP_NAVY),
-        ("TEXTCOLOR",  (0, 0), (-1, 0), colors.white),
-        ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE",   (0, 0), (-1, 0), 8),
-        ("ALIGN",      (0, 0), (-1, 0), "CENTER"),
         ("VALIGN",     (0, 0), (-1, 1), "MIDDLE"),
 
-        # Metric header (row 1) — lighter, slightly smaller
+        # Metric header (row 1) — lighter navy
         ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#1c4267")),
-        ("TEXTCOLOR",  (0, 1), (-1, 1), colors.white),
-        ("FONTNAME",   (0, 1), (-1, 1), "Helvetica-Bold"),
-        ("FONTSIZE",   (0, 1), (-1, 1), 7),
-        ("ALIGN",      (0, 1), (-1, 1), "CENTER"),
 
         # Sl.No + PS: span both header rows vertically
         ("SPAN", (0, 0), (0, 1)),
         ("SPAN", (1, 0), (1, 1)),
 
-        # Body
-        ("FONTSIZE",   (0, 2), (-1, -1), 7),
-        ("ALIGN",      (0, 2), (0, -1), "CENTER"),        # Sl.No
+        # Body — 6.5pt so 3-digit values still fit inside 9.3mm cols
+        ("FONTSIZE",   (0, 2), (-1, -1), 6.5),
+        ("ALIGN",      (0, 2), (0, -1), "CENTER"),         # Sl.No
         ("ALIGN",      (2, 2), (-1, -1), "RIGHT"),         # metric cells
+        ("VALIGN",     (0, 2), (-1, -1), "MIDDLE"),
         ("ROWBACKGROUNDS", (0, 2), (-1, -1), [colors.white, KSP_GREY_SOFT]),
         ("GRID",       (0, 0), (-1, -1), 0.25, colors.lightgrey),
-        ("LEFTPADDING",   (0, 0), (-1, -1), 2),
-        ("RIGHTPADDING",  (0, 0), (-1, -1), 2),
+        ("LEFTPADDING",   (0, 0), (-1, -1), 1),
+        ("RIGHTPADDING",  (0, 0), (-1, -1), 1),
         ("TOPPADDING",    (0, 0), (-1, -1), 2),
         ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
     ]
@@ -182,16 +219,18 @@ def render_portals_dsr_daily_pdf(
         table,
     ]
 
-    # Landscape A3 -- SimpleDocTemplate directly so we can override
-    # the paper size (build_pdf() only offers landscape A4).
+    # Landscape A4 — standard printer paper. Margins tightened to 8mm
+    # sides (vs base.py's 15) so we can afford wider columns.
+    # build_pdf() bakes 15mm margins so this file drives
+    # SimpleDocTemplate directly.
     buf = io.BytesIO()
     doc = SimpleDocTemplate(
         buf,
-        pagesize=landscape(A3),
-        leftMargin=15 * mm,
-        rightMargin=15 * mm,
+        pagesize=landscape(A4),
+        leftMargin=8 * mm,
+        rightMargin=8 * mm,
         topMargin=24 * mm,
-        bottomMargin=18 * mm,
+        bottomMargin=14 * mm,
         title=f"Portals DSR {target_date.isoformat()}",
         author="Cyber Fraud Data Entry",
     )

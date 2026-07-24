@@ -16,15 +16,45 @@ from __future__ import annotations
 
 from datetime import date as date_t
 
+import io
+
 from reportlab.lib import colors
+from reportlab.lib.enums import TA_CENTER
+from reportlab.lib.pagesizes import A4, landscape
+from reportlab.lib.styles import ParagraphStyle
 from reportlab.lib.units import mm
-from reportlab.platypus import Paragraph, Spacer, Table, TableStyle
+from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
 from reports.base import (
     KSP_GREY_SOFT,
     KSP_NAVY,
     STYLES,
-    build_pdf,
+    _draw_page_chrome,
+)
+
+
+_HDR_GROUP_STYLE = ParagraphStyle(
+    "dwGroupHdr",
+    fontName="Helvetica-Bold",
+    fontSize=7.5,
+    leading=8.5,
+    alignment=TA_CENTER,
+    textColor=colors.white,
+)
+_HDR_METRIC_STYLE = ParagraphStyle(
+    "dwMetricHdr",
+    fontName="Helvetica-Bold",
+    fontSize=6.5,
+    leading=7.5,
+    alignment=TA_CENTER,
+    textColor=colors.white,
+)
+_PS_NAME_STYLE = ParagraphStyle(
+    "dwPsName",
+    fontName="Helvetica-Bold",
+    fontSize=7,
+    leading=8,
+    textColor=KSP_NAVY,
 )
 
 
@@ -89,13 +119,20 @@ def render_daily_work_daily_pdf(
     (pre-formatted 'A:n, B:m, C:k')."""
 
     # ── Header rows ───────────────────────────────────────────────
-    group_row: list[str] = ["Sl.No", "Police Station", "FIR Count"]
-    metric_row: list[str] = ["", "", ""]
+    # Header cells wrapped in Paragraphs so long labels
+    # ("91/92/94 — Acc. Hldr", "Final (A/B/C)") wrap inside the
+    # narrow A4-landscape columns instead of overflowing.
+    group_row: list = [
+        Paragraph("Sl.No", _HDR_GROUP_STYLE),
+        Paragraph("Police Station", _HDR_GROUP_STYLE),
+        Paragraph("FIR Count", _HDR_GROUP_STYLE),
+    ]
+    metric_row: list = ["", "", ""]
     for gname, _colour, cols in _GROUPS:
-        group_row.append(gname)
+        group_row.append(Paragraph(gname, _HDR_GROUP_STYLE))
         group_row.extend([""] * (len(cols) - 1))
         for label, _key in cols:
-            metric_row.append(label)
+            metric_row.append(Paragraph(label, _HDR_METRIC_STYLE))
 
     # ── Body ──────────────────────────────────────────────────────
     body: list[list[str]] = []
@@ -108,7 +145,7 @@ def render_daily_work_daily_pdf(
         total_fir_count += fir_count
         row = [
             str(i),
-            r.get("ps_name") or "—",
+            Paragraph(r.get("ps_name") or "—", _PS_NAME_STYLE),
             _fmt_int(fir_count) if fir_count else "",
         ]
         for _gname, _colour, cols in _GROUPS:
@@ -139,38 +176,37 @@ def render_daily_work_daily_pdf(
             else:
                 total_row.append(_fmt_int(int(totals.get(key, 0))))
 
-    # ── Column widths (landscape A4 usable ≈ 267mm) ───────────────
-    # Sl.No 10, PS 46, FIR Count 15, then 14 metric cols share ≈ 196mm
-    metric_w = 14 * mm
-    col_widths = [10 * mm, 46 * mm, 15 * mm] + [metric_w] * _METRIC_COUNT
+    # ── Column widths ─────────────────────────────────────────────
+    # A4 landscape usable width with 8mm side margins = 281mm.
+    #   Sl.No       8mm
+    #   Police     42mm
+    #   FIR Count  12mm
+    #   14 metric × 15.5mm = 217mm
+    #   Total     279mm  ⇒ safely inside 281mm
+    metric_w = 15.5 * mm
+    col_widths = [8 * mm, 42 * mm, 12 * mm] + [metric_w] * _METRIC_COUNT
 
     # ── Style ─────────────────────────────────────────────────────
     style_cmds: list = [
         # Group header row -- coloured bands per section
         ("BACKGROUND", (0, 0), (2, 0), KSP_NAVY),      # Sl.No / PS / FIR Count span-header
-        ("TEXTCOLOR",  (0, 0), (2, 0), colors.white),
-        ("FONTNAME",   (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE",   (0, 0), (-1, 0), 8),
-        ("ALIGN",      (0, 0), (-1, 0), "CENTER"),
         ("VALIGN",     (0, 0), (-1, 1), "MIDDLE"),
 
         # Metric header row
         ("BACKGROUND", (0, 1), (-1, 1), colors.HexColor("#1c4267")),
-        ("TEXTCOLOR",  (0, 1), (-1, 1), colors.white),
-        ("FONTNAME",   (0, 1), (-1, 1), "Helvetica-Bold"),
-        ("FONTSIZE",   (0, 1), (-1, 1), 7),
-        ("ALIGN",      (0, 1), (-1, 1), "CENTER"),
 
         # First 3 columns span both header rows
         ("SPAN", (0, 0), (0, 1)),
         ("SPAN", (1, 0), (1, 1)),
         ("SPAN", (2, 0), (2, 1)),
 
-        # Body
+        # Body -- 7pt fits amounts up to ~9 digits in 15.5mm; text
+        # cells (PS name) use Paragraph for wrap.
         ("FONTSIZE",   (0, 2), (-1, -2), 7),
         ("ALIGN",      (0, 2), (0, -1), "CENTER"),          # Sl.No
         ("ALIGN",      (2, 2), (-1, -1), "RIGHT"),
         ("ALIGN",      (1, 2), (1, -1), "LEFT"),            # PS name
+        ("VALIGN",     (0, 2), (-1, -1), "MIDDLE"),
         ("ROWBACKGROUNDS", (0, 2), (-1, -2), [colors.white, KSP_GREY_SOFT]),
         ("GRID",       (0, 0), (-1, -1), 0.25, colors.lightgrey),
         ("LEFTPADDING",   (0, 0), (-1, -1), 2),
@@ -214,8 +250,18 @@ def render_daily_work_daily_pdf(
         table,
     ]
 
-    return build_pdf(
-        flowables,
-        landscape_mode=True,
+    # Landscape A4 with 8mm side margins — matches Portals DSR report
+    # so both files print consistently on the same paper.
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(A4),
+        leftMargin=8 * mm,
+        rightMargin=8 * mm,
+        topMargin=24 * mm,
+        bottomMargin=14 * mm,
         title=f"Daily Work Done {target_date.isoformat()}",
+        author="Cyber Fraud Data Entry",
     )
+    doc.build(flowables, onFirstPage=_draw_page_chrome, onLaterPages=_draw_page_chrome)
+    return buf.getvalue()
