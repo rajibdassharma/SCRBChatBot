@@ -109,11 +109,16 @@ export function AccountsDashboardPage() {
 
   useEffect(() => {
     setLoading(true);
+    // Growth chart ends at YESTERDAY (day-before-picker), not the
+    // picker date itself — today's partial-day count would drag the
+    // line down and read as a fake dip. All other panels stay on the
+    // full "as of" date.
+    const growthCutoff = yesterdayOf(date).iso;
     Promise.allSettled([
       getAccountsSummary(date),
       getAccountsComparison(date),
       getAccountsTopBanks(date, 10),
-      getAccountsDailyGrowth(date, 30),
+      getAccountsDailyGrowth(growthCutoff, 30),
     ]).then(([s, u, b, g]) => {
       if (s.status === 'fulfilled') setSummary(s.value);
       else { setSummary(null); toast.error(`Summary: ${(s as any).reason?.message ?? 'failed'}`); }
@@ -223,7 +228,7 @@ export function AccountsDashboardPage() {
             <div className="lg:col-span-2">
               <ChartCard
                 title="Daily Growth — Accounts"
-                hint="New accounts created per day. Series starts on 20 Jul 2026 (data entry launch); zero days shown so the trendline stays continuous."
+                hint="New accounts created per day. Series runs from 20 Jul 2026 launch through yesterday (today's partial-day count is omitted so the trendline doesn't dip artificially). Zero days shown so the line stays continuous."
                 accent={COLOR_NAVY}
               >
                 {dailyGrowth.length === 0 ? (
