@@ -61,7 +61,7 @@ export const MODULES: ModuleDef[] = [
       { to: '/petitions/new',    label: 'New Petition',    icon: FileText },
       { to: '/petitions/update', label: 'Update Petition', icon: Search },
       { to: '/reports',          label: 'Reports',         icon: FileDown },
-      { to: '/dashboard',        label: 'DSR Dashboard',   icon: BarChart3, requiresAdmin: true },
+      { to: '/dashboard',        label: 'Cases & Petitions Dashboard', icon: BarChart3, requiresAdmin: true },
     ],
   },
   {

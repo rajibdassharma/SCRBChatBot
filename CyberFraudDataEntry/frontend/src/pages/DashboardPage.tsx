@@ -37,9 +37,15 @@ const cardStyle = { background: '#fff', border: '1px solid rgba(0,0,0,0.06)', bo
 
 function KpiCard({ label, value, sub }: { label: string; value: string; sub?: string }) {
   return (
-    <div className="rounded-2xl p-5" style={{ ...cardStyle, borderLeft: '4px solid var(--ksp-yellow)' }}>
+    <div className="rounded-2xl p-5 min-w-0" style={{ ...cardStyle, borderLeft: '4px solid var(--ksp-yellow)' }}>
       <p className="text-xs uppercase tracking-wide font-bold mb-1" style={{ color: 'var(--ksp-red)' }}>{label}</p>
-      <p className="text-2xl font-bold" style={{ color: 'var(--ksp-navy)' }}>{value}</p>
+      {/* Amount Lien Marked can hit ₹XX,XX,XX,XX,XXX at 44 PSes — the
+          old text-2xl overflowed the card at 1/5 grid width. Smaller
+          font + tabular-nums so digits line up + break-all as a hard
+          fallback for extreme values. Applied to every card so all
+          Overview / Investigation / Disposal tabs stay consistent. */}
+      <p className="text-lg font-bold leading-tight break-all tabular-nums"
+        style={{ color: 'var(--ksp-navy)' }}>{value}</p>
       {sub && <p className="text-xs mt-1 opacity-60">{sub}</p>}
     </div>
   );
