@@ -291,13 +291,11 @@ export function AccountsDashboardPage() {
                       <Pie data={typePie} dataKey="value" nameKey="name"
                         cx="50%" cy="45%" innerRadius={48} outerRadius={80}
                         paddingAngle={2}
-                        // Labels sit INSIDE the arc as a percentage —
-                        // long category names ("Non-Mule") would spill
-                        // outside the card, and absolute counts live in
-                        // the legend + tooltip. Custom renderer so text
-                        // fill is fixed dark navy regardless of slice
-                        // colour (Recharts default inherits fill from
-                        // the slice, which vanishes on the yellow one).
+                        // % INSIDE the arc, absolute count in the legend
+                        // below. Custom renderer so the % text fill is
+                        // fixed navy regardless of slice colour
+                        // (Recharts default inherits fill from the
+                        // slice, which vanishes on pale slices).
                         label={(props: any) => {
                           const total = typePie.reduce((s, x) => s + x.value, 0);
                           if (!total || !props.value) return null;
