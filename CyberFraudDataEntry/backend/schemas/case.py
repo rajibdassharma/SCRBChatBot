@@ -167,6 +167,50 @@ class RefundCreate(BaseModel):
     _check_amount = field_validator("amount")(_validate_amount)
 
 
+class VictimAccountCreate(BaseModel):
+    """Additional bank account belonging to the victim.
+
+    The primary account (bank_account_no / bank_name / bank_branch_address)
+    still lives on `VictimCreate`. This shape covers any *extra* accounts
+    the victim used when the fraud spanned multiple accounts of theirs.
+    Captured on DSR -> New FIR only; passed through unchanged on
+    Cases -> Update Case."""
+    bank_name: str = Field(default="", max_length=200)
+    branch_name: Optional[str] = Field(default=None, max_length=200)
+    branch_address: Optional[str] = Field(default=None, max_length=500)
+    state: Optional[str] = Field(default=None, max_length=100)
+    district: Optional[str] = Field(default=None, max_length=100)
+    ifsc_code: Optional[str] = Field(default=None, max_length=20)
+    amount_transferred: Decimal = Decimal("0")
+
+    _sanitize_text = field_validator(
+        "bank_name", "branch_name", "branch_address",
+        "state", "district", "ifsc_code",
+    )(_sanitize)
+    _check_amount = field_validator("amount_transferred")(_validate_amount)
+
+
+class AccusedAccountCreate(BaseModel):
+    """Bank account of an accused/mule that received a transfer from the
+    victim. Independent of `LienAccountCreate` -- lien tracks the
+    freeze/lien lifecycle after the fact, this shape tracks the
+    transfer itself. Captured on DSR -> New FIR only."""
+    account_holder_name: str = Field(default="", max_length=200)
+    bank_name: str = Field(default="", max_length=200)
+    branch_name: Optional[str] = Field(default=None, max_length=200)
+    branch_address: Optional[str] = Field(default=None, max_length=500)
+    state: Optional[str] = Field(default=None, max_length=100)
+    district: Optional[str] = Field(default=None, max_length=100)
+    ifsc_code: Optional[str] = Field(default=None, max_length=20)
+    amount_transferred: Decimal = Decimal("0")
+
+    _sanitize_text = field_validator(
+        "account_holder_name", "bank_name", "branch_name", "branch_address",
+        "state", "district", "ifsc_code",
+    )(_sanitize)
+    _check_amount = field_validator("amount_transferred")(_validate_amount)
+
+
 class VictimCreate(BaseModel):
     """Victim profile captured at FIR time. 1:1 with Case (enforced by
     UNIQUE (case_id) at the DB level — migration 003).
@@ -236,6 +280,12 @@ class CaseCreate(BaseModel):
     # Optional so legacy cases without a victim record can still be updated.
     # New cases enforce this at the frontend layer.
     victim: Optional[VictimCreate] = None
+    # Additional victim accounts + per-accused-account transfer rows.
+    # Both captured on DSR -> New FIR and passed through unchanged by
+    # Cases -> Update Case (2026-07-24, migration 017). Optional so
+    # older clients omitting these keys don't break.
+    victim_accounts: Optional[List[VictimAccountCreate]] = None
+    accused_accounts: Optional[List[AccusedAccountCreate]] = None
     # Financial nature of the case. Default True for backwards compat
     # with the 645 existing cases (all assumed Financial pre-2026-06-22).
     is_financial: bool = True
@@ -374,6 +424,39 @@ class VictimResponse(BaseModel):
         from_attributes = True
 
 
+class VictimAccountResponse(BaseModel):
+    id: str
+    case_id: str
+    bank_name: str
+    branch_name: Optional[str] = None
+    branch_address: Optional[str] = None
+    state: Optional[str] = None
+    district: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    amount_transferred: float = 0
+    created_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AccusedAccountResponse(BaseModel):
+    id: str
+    case_id: str
+    account_holder_name: str
+    bank_name: str
+    branch_name: Optional[str] = None
+    branch_address: Optional[str] = None
+    state: Optional[str] = None
+    district: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    amount_transferred: float = 0
+    created_at: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
 # ── Case Response schemas ─────────────────────────────────────────
 
 class CaseResponse(BaseModel):
@@ -399,6 +482,8 @@ class CaseResponse(BaseModel):
     refunds: List[RefundResponse] = []
     # Optional — legacy cases pre-migration-003 have no victim row.
     victim: Optional[VictimResponse] = None
+    victim_accounts: List[VictimAccountResponse] = []
+    accused_accounts: List[AccusedAccountResponse] = []
     is_financial: bool = True
 
     class Config:

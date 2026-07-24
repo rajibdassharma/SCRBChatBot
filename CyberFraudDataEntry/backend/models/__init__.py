@@ -9,6 +9,8 @@ from models.lien_account import LienAccount
 from models.unfreeze_detail import UnfreezeDetail
 from models.refund import Refund
 from models.victim import Victim
+from models.victim_account import VictimAccount
+from models.accused_account import AccusedAccount
 from models.mule_report import MuleReport
 from models.money_transfer import MoneyTransfer
 from models.other_transaction import OtherTransaction
@@ -30,6 +32,7 @@ from models.daily_work_entry import DailyWorkEntry
 __all__ = [
     "Unit", "User", "Case", "Arrest", "Accomplice", "AccusedDetail",
     "Petition", "LienAccount", "UnfreezeDetail", "Refund", "Victim",
+    "VictimAccount", "AccusedAccount",
     "MuleReport", "MoneyTransfer", "OtherTransaction", "TransactionOnHold",
     "OtherLessThan500", "AepsTransaction", "AtmWithdrawal",
     "PoliceStation", "RevokedToken", "ChatMessage", "NilDeclaration",

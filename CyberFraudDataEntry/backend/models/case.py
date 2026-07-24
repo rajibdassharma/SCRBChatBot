@@ -46,6 +46,15 @@ class Case(Base):
     # 1:1 — uselist=False so SQLAlchemy returns a single Victim (or None)
     # instead of a list. Enforced by UNIQUE (case_id) on the child table.
     victim = relationship("Victim", back_populates="case", cascade="all, delete-orphan", uselist=False)
+    # Additional victim bank accounts (beyond the single primary account
+    # on `victims`) and the accused-side accounts money was transferred
+    # to. Captured on DSR -> New FIR (migration 017, 2026-07-24).
+    victim_accounts = relationship(
+        "VictimAccount", back_populates="case", cascade="all, delete-orphan"
+    )
+    accused_accounts = relationship(
+        "AccusedAccount", back_populates="case", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         # Per-PS FIR namespace. Replaced uq_case_unit_fir in migration 002.

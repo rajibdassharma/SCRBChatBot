@@ -159,6 +159,35 @@ export interface Victim {
   bank_branch_address: string;
 }
 
+// ── Multi-account rows on the FIR (2026-07-24) ─────────────
+// Both surfaces on DSR -> New FIR only. Update Case treats these as
+// passthrough (loads them into state, sends unchanged on PUT). The
+// backend treats an omitted key as "leave DB rows untouched"; an
+// empty array replaces with none.
+
+export interface VictimAccount {
+  id?: string;
+  bank_name: string;
+  branch_name: string;
+  branch_address: string;
+  state: string;
+  district: string;
+  ifsc_code: string;
+  amount_transferred: number;
+}
+
+export interface AccusedAccount {
+  id?: string;
+  account_holder_name: string;
+  bank_name: string;
+  branch_name: string;
+  branch_address: string;
+  state: string;
+  district: string;
+  ifsc_code: string;
+  amount_transferred: number;
+}
+
 export interface CaseEntry {
   id?: string;
   unit_id?: number;
@@ -193,6 +222,11 @@ export interface CaseEntry {
   refunds: Refund[];
   // 1:1 — null until the operator fills the Victim Details section.
   victim?: Victim | null;
+  // Multi-row account sections captured on DSR -> New FIR. Optional
+  // so Update Case can pass them through by simply loading + re-sending
+  // (or omit the key entirely to leave the DB rows untouched).
+  victim_accounts?: VictimAccount[];
+  accused_accounts?: AccusedAccount[];
   submitted_by?: number;
   created_at?: string;
   updated_at?: string;

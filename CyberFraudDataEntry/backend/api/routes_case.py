@@ -17,6 +17,8 @@ from models.lien_account import LienAccount
 from models.unfreeze_detail import UnfreezeDetail
 from models.refund import Refund
 from models.victim import Victim
+from models.victim_account import VictimAccount
+from models.accused_account import AccusedAccount
 from schemas.case import CaseCreate, CaseResponse, CaseListItem
 from api.deps import get_current_user, require_admin, CurrentUser, check_record_access
 
@@ -42,6 +44,8 @@ def _eager_options():
         selectinload(Case.unfreeze_details),
         selectinload(Case.refunds),
         selectinload(Case.victim),
+        selectinload(Case.victim_accounts),
+        selectinload(Case.accused_accounts),
     ]
 
 
@@ -252,6 +256,37 @@ def _case_to_response(c: Case) -> dict:
             }
             if c.victim else None
         ),
+        "victim_accounts": [
+            {
+                "id": va.id,
+                "case_id": va.case_id,
+                "bank_name": va.bank_name,
+                "branch_name": va.branch_name,
+                "branch_address": va.branch_address,
+                "state": va.state,
+                "district": va.district,
+                "ifsc_code": va.ifsc_code,
+                "amount_transferred": float(va.amount_transferred) if va.amount_transferred else 0,
+                "created_at": _ts(va.created_at),
+            }
+            for va in (c.victim_accounts or [])
+        ],
+        "accused_accounts": [
+            {
+                "id": aa.id,
+                "case_id": aa.case_id,
+                "account_holder_name": aa.account_holder_name,
+                "bank_name": aa.bank_name,
+                "branch_name": aa.branch_name,
+                "branch_address": aa.branch_address,
+                "state": aa.state,
+                "district": aa.district,
+                "ifsc_code": aa.ifsc_code,
+                "amount_transferred": float(aa.amount_transferred) if aa.amount_transferred else 0,
+                "created_at": _ts(aa.created_at),
+            }
+            for aa in (c.accused_accounts or [])
+        ],
     }
 
 
@@ -315,6 +350,38 @@ async def _create_children_from_body(case: Case, body: CaseCreate, db: AsyncSess
             amount=ref.amount,
             crime_no_or_petition_no=ref.crime_no_or_petition_no,
         ))
+
+    # Additional victim bank accounts + accused bank accounts.
+    # `victim_accounts` / `accused_accounts` on CaseCreate are Optional
+    # (None = "don't touch"). Only rebuild the child rows when the
+    # client actually sent a list. Passing [] IS meaningful — it clears
+    # everything. Passing None leaves the DB rows alone. See update_case
+    # below for the mirror on the delete side.
+    if body.victim_accounts is not None:
+        for va in body.victim_accounts:
+            db.add(VictimAccount(
+                case_id=case.id,
+                bank_name=va.bank_name,
+                branch_name=va.branch_name,
+                branch_address=va.branch_address,
+                state=va.state,
+                district=va.district,
+                ifsc_code=va.ifsc_code,
+                amount_transferred=va.amount_transferred,
+            ))
+    if body.accused_accounts is not None:
+        for aa in body.accused_accounts:
+            db.add(AccusedAccount(
+                case_id=case.id,
+                account_holder_name=aa.account_holder_name,
+                bank_name=aa.bank_name,
+                branch_name=aa.branch_name,
+                branch_address=aa.branch_address,
+                state=aa.state,
+                district=aa.district,
+                ifsc_code=aa.ifsc_code,
+                amount_transferred=aa.amount_transferred,
+            ))
 
     # 1:1 victim — None on legacy cases until the operator fills it in.
     if body.victim is not None:
@@ -700,6 +767,16 @@ async def update_case(
         await db.delete(ref)
     if case.victim is not None:
         await db.delete(case.victim)
+    # victim_accounts / accused_accounts: only rebuild when the client
+    # sent a list. Omitting the keys entirely (Optional[List]=None) is
+    # the "passthrough" signal Cases -> Update Case uses so its shallow
+    # edit doesn't wipe rows entered on DSR -> New FIR.
+    if body.victim_accounts is not None:
+        for va in list(case.victim_accounts):
+            await db.delete(va)
+    if body.accused_accounts is not None:
+        for aa in list(case.accused_accounts):
+            await db.delete(aa)
 
     await db.flush()
 

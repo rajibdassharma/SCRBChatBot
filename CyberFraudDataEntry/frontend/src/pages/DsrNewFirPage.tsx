@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router';
 import { toast } from 'sonner';
-import { Save, ArrowRight } from 'lucide-react';
+import { Save, ArrowRight, Plus, Trash2 } from 'lucide-react';
 import { createCase } from '../lib/api/cases';
 import { CRIME_TYPE_OTHERS, CYBER_CRIME_TYPES } from '../lib/utils/crime-types';
 import { FIR_NO_PLACEHOLDER, validateFirNo } from '../lib/utils/fir-no';
 import { INDIAN_STATES } from '../lib/utils/indian-states';
-import type { CaseEntry, Victim } from '../types';
+import { KARNATAKA_DISTRICTS } from '../lib/utils/karnataka-districts';
+import type { AccusedAccount, CaseEntry, Victim, VictimAccount } from '../types';
 
 /** DSR → New FIR — lightweight daily-log entry for a fresh FIR.
  *
@@ -147,6 +148,205 @@ function FinancialRadio({ value, onChange }: { value: boolean; onChange: (v: boo
   );
 }
 
+/* ── Multi-row account editors ─────────────────────────────────
+ *   State/District rule (both editors): District is a select of the
+ *   36 KA districts when state == "Karnataka"; for every other state
+ *   the District select is disabled and cleared.
+ */
+
+// Renders the state/district pair with the Karnataka-only rule.
+function StateDistrict({
+  state, district, onState, onDistrict,
+}: {
+  state: string; district: string;
+  onState: (v: string) => void; onDistrict: (v: string) => void;
+}) {
+  const isKA = state === 'Karnataka';
+  return (
+    <>
+      <SelectField label="State"
+        value={state}
+        onChange={(v) => {
+          onState(v);
+          if (v !== 'Karnataka') onDistrict('');  // clear when leaving KA
+        }}
+        options={[
+          { value: '', label: '—' },
+          ...INDIAN_STATES.map((s) => ({ value: s, label: s })),
+        ]} />
+      {isKA ? (
+        <SelectField label="District"
+          value={district}
+          onChange={onDistrict}
+          options={[
+            { value: '', label: '— Select —' },
+            ...KARNATAKA_DISTRICTS.map((d) => ({ value: d, label: d })),
+          ]} />
+      ) : (
+        <div>
+          <label className="block text-xs font-semibold mb-1"
+            style={{ color: 'var(--ksp-navy)', opacity: 0.5 }}>District</label>
+          <select disabled value=""
+            className="w-full px-3 py-2 rounded-xl text-sm font-semibold outline-none cursor-not-allowed"
+            style={{
+              border: '2px solid rgba(11,44,74,0.3)',
+              background: 'rgba(11,44,74,0.06)',
+              color: 'rgba(11,44,74,0.5)',
+            }}>
+            <option value="">— Karnataka only —</option>
+          </select>
+        </div>
+      )}
+    </>
+  );
+}
+
+function VictimAccountRow({
+  row, onChange,
+}: { row: VictimAccount; onChange: (patch: Partial<VictimAccount>) => void }) {
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+      <TextField label="Bank Name *" wrapperClassName="lg:col-span-2"
+        value={row.bank_name} onChange={(v) => onChange({ bank_name: v })} />
+      <TextField label="Branch Name"
+        value={row.branch_name} onChange={(v) => onChange({ branch_name: v })} />
+      <TextField label="IFSC Code"
+        value={row.ifsc_code}
+        onChange={(v) => onChange({ ifsc_code: v.toUpperCase() })}
+        placeholder="XXXX0YYYYYY" maxLength={11} />
+      <TextField label="Branch Address" wrapperClassName="lg:col-span-2"
+        value={row.branch_address} onChange={(v) => onChange({ branch_address: v })} />
+      <StateDistrict state={row.state} district={row.district}
+        onState={(v) => onChange({ state: v })}
+        onDistrict={(v) => onChange({ district: v })} />
+      <NumField label="Amount Transferred (₹) *"
+        value={row.amount_transferred}
+        onChange={(v) => onChange({ amount_transferred: v })} />
+    </div>
+  );
+}
+
+function AccusedAccountRow({
+  row, onChange,
+}: { row: AccusedAccount; onChange: (patch: Partial<AccusedAccount>) => void }) {
+  return (
+    <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3">
+      <TextField label="Name *" wrapperClassName="lg:col-span-2"
+        value={row.account_holder_name}
+        onChange={(v) => onChange({ account_holder_name: v })} />
+      <TextField label="Bank Name *" wrapperClassName="lg:col-span-2"
+        value={row.bank_name} onChange={(v) => onChange({ bank_name: v })} />
+      <TextField label="Branch Name"
+        value={row.branch_name} onChange={(v) => onChange({ branch_name: v })} />
+      <TextField label="IFSC Code"
+        value={row.ifsc_code}
+        onChange={(v) => onChange({ ifsc_code: v.toUpperCase() })}
+        placeholder="XXXX0YYYYYY" maxLength={11} />
+      <TextField label="Branch Address" wrapperClassName="lg:col-span-2"
+        value={row.branch_address} onChange={(v) => onChange({ branch_address: v })} />
+      <StateDistrict state={row.state} district={row.district}
+        onState={(v) => onChange({ state: v })}
+        onDistrict={(v) => onChange({ district: v })} />
+      <NumField label="Amount Transferred (₹) *"
+        value={row.amount_transferred}
+        onChange={(v) => onChange({ amount_transferred: v })} />
+    </div>
+  );
+}
+
+function AccountsSectionShell({
+  title, subtitle, rowCount, onAdd, children,
+}: {
+  title: string; subtitle: string; rowCount: number;
+  onAdd: () => void; children: React.ReactNode;
+}) {
+  return (
+    <div className="rounded-2xl p-5"
+      style={{ background: '#fff', border: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 6px 16px rgba(0,0,0,0.08)' }}>
+      <div className="flex items-start justify-between gap-3 mb-3 flex-wrap">
+        <div>
+          <h3 className="text-sm font-bold uppercase tracking-wide"
+            style={{ color: 'var(--ksp-red)' }}>{title}</h3>
+          <p className="text-xs opacity-60 mt-0.5">{subtitle}</p>
+        </div>
+        <button type="button" onClick={onAdd}
+          className="flex items-center gap-1 px-3 py-1.5 text-xs font-bold rounded-lg"
+          style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)' }}>
+          <Plus className="w-3.5 h-3.5" /> Add
+        </button>
+      </div>
+      {rowCount === 0 ? (
+        <p className="text-xs italic opacity-50 py-3">No rows yet. Click Add to enter one.</p>
+      ) : (
+        <div className="space-y-4">{children}</div>
+      )}
+    </div>
+  );
+}
+
+function RowFrame({
+  index, onRemove, children,
+}: { index: number; onRemove: () => void; children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl p-4 relative"
+      style={{ background: 'rgba(11,44,74,0.03)', border: '1px dashed rgba(11,44,74,0.15)' }}>
+      <div className="flex items-center justify-between mb-2">
+        <span className="text-[11px] font-bold uppercase tracking-wide"
+          style={{ color: 'var(--ksp-navy)' }}>#{index + 1}</span>
+        <button type="button" onClick={onRemove}
+          title="Remove this row"
+          className="flex items-center gap-1 px-2 py-1 text-[11px] font-bold rounded"
+          style={{ background: 'var(--ksp-red)', color: '#fff' }}>
+          <Trash2 className="w-3 h-3" /> Remove
+        </button>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function VictimAccountsSection({
+  rows, onChange,
+}: { rows: VictimAccount[]; onChange: (rows: VictimAccount[]) => void }) {
+  const add = () => onChange([...rows, emptyVictimAccount()]);
+  const remove = (i: number) => onChange(rows.filter((_, j) => j !== i));
+  const patch = (i: number, p: Partial<VictimAccount>) =>
+    onChange(rows.map((r, j) => (j === i ? { ...r, ...p } : r)));
+  return (
+    <AccountsSectionShell
+      title="Additional Victim Accounts"
+      subtitle="Other bank accounts the victim transferred FROM (besides the primary account above)."
+      rowCount={rows.length} onAdd={add}>
+      {rows.map((r, i) => (
+        <RowFrame key={i} index={i} onRemove={() => remove(i)}>
+          <VictimAccountRow row={r} onChange={(p) => patch(i, p)} />
+        </RowFrame>
+      ))}
+    </AccountsSectionShell>
+  );
+}
+
+function AccusedAccountsSection({
+  rows, onChange,
+}: { rows: AccusedAccount[]; onChange: (rows: AccusedAccount[]) => void }) {
+  const add = () => onChange([...rows, emptyAccusedAccount()]);
+  const remove = (i: number) => onChange(rows.filter((_, j) => j !== i));
+  const patch = (i: number, p: Partial<AccusedAccount>) =>
+    onChange(rows.map((r, j) => (j === i ? { ...r, ...p } : r)));
+  return (
+    <AccountsSectionShell
+      title="Accused Accounts"
+      subtitle="Bank accounts money was transferred TO. One row per account/mule; a cybercrime often fans out across many."
+      rowCount={rows.length} onAdd={add}>
+      {rows.map((r, i) => (
+        <RowFrame key={i} index={i} onRemove={() => remove(i)}>
+          <AccusedAccountRow row={r} onChange={(p) => patch(i, p)} />
+        </RowFrame>
+      ))}
+    </AccountsSectionShell>
+  );
+}
+
 /* ── Form ─────────────────────────────────────────────────── */
 
 const emptyVictim = (): Victim => ({
@@ -154,6 +354,17 @@ const emptyVictim = (): Victim => ({
   phone: '', email: '',
   house_no: '', street_name: '', city: '', state: '', country: 'India', pincode: '',
   amount_lost: 0, bank_account_no: '', bank_name: '', bank_branch_address: '',
+});
+
+const emptyVictimAccount = (): VictimAccount => ({
+  bank_name: '', branch_name: '', branch_address: '',
+  state: '', district: '', ifsc_code: '', amount_transferred: 0,
+});
+
+const emptyAccusedAccount = (): AccusedAccount => ({
+  account_holder_name: '',
+  bank_name: '', branch_name: '', branch_address: '',
+  state: '', district: '', ifsc_code: '', amount_transferred: 0,
 });
 
 function emptyForm(): CaseEntry {
@@ -175,6 +386,8 @@ function emptyForm(): CaseEntry {
     lien_accounts: [],
     unfreeze_details: [],
     refunds: [],
+    victim_accounts: [],
+    accused_accounts: [],
   };
 }
 
@@ -366,6 +579,21 @@ export function DsrNewFirPage() {
             </>
           )}
         </Section>
+
+        {/* Multi-account sections — Financial cases only.
+             Both flow into the case's `victim_accounts` /
+             `accused_accounts` arrays and get saved atomically with
+             the case on POST /cases/. */}
+        {f.is_financial && (
+          <>
+            <VictimAccountsSection
+              rows={f.victim_accounts ?? []}
+              onChange={(rows) => setF((p) => ({ ...p, victim_accounts: rows }))} />
+            <AccusedAccountsSection
+              rows={f.accused_accounts ?? []}
+              onChange={(rows) => setF((p) => ({ ...p, accused_accounts: rows }))} />
+          </>
+        )}
 
         <Section title="Facts">
           <TextAreaField label="Facts" value={f.facts}
