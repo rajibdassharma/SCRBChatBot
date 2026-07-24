@@ -27,6 +27,8 @@ import { HomePage } from './pages/HomePage';
 import { DailyWorkEntryPage } from './pages/DailyWorkEntryPage';
 import { DailyWorkUpdatePage } from './pages/DailyWorkUpdatePage';
 import { DailyWorkDashboardPage } from './pages/DailyWorkDashboardPage';
+import { DailyWorkReportPage } from './pages/DailyWorkReportPage';
+import { PortalsDsrReportPage } from './pages/PortalsDsrReportPage';
 import { DsrNewFirPage } from './pages/DsrNewFirPage';
 import { DsrFirDashboardPage } from './pages/DsrFirDashboardPage';
 
@@ -108,6 +110,22 @@ function App() {
           element={
             <ProtectedRoute requireAdmin>
               <PortalsDsrDashboardPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/portals-dsr/report"
+          element={
+            <ProtectedRoute requireAdmin>
+              <PortalsDsrReportPage />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="/daily-work/report"
+          element={
+            <ProtectedRoute requireAdmin>
+              <DailyWorkReportPage />
             </ProtectedRoute>
           }
         />

@@ -110,7 +110,9 @@ export const MODULES: ModuleDef[] = [
       // per the same spec — pages remain reachable at their old URLs.
       { to: '/dsr/new-fir',           label: 'New FIR',                    icon: FilePlus },
       { to: '/daily-work/new',        label: 'Investigation',              icon: ClipboardList },
+      { to: '/daily-work/report',     label: 'Daily Work Done Report',     icon: FileDown, requiresAdmin: true },
       { to: '/portals-dsr/new',       label: 'Portals',                    icon: Globe },
+      { to: '/portals-dsr/report',    label: 'Portals DSR Report',         icon: FileDown, requiresAdmin: true },
       { to: '/dsr/fir-dashboard',     label: 'FIR Dashboard',              icon: BarChart3, requiresAdmin: true },
       { to: '/portals-dsr/dashboard', label: 'Portals DSR Dashboard',      icon: BarChart3, requiresAdmin: true },
       { to: '/daily-work/dashboard',  label: 'Daily Work Done Dashboard',  icon: BarChart3, requiresAdmin: true },

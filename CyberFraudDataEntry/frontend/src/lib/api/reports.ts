@@ -174,3 +174,45 @@ export function downloadAccountsPsComparisonExcel(date: string): Promise<void> {
     `Accounts_PS_Comparison_${date}.xlsx`,
   );
 }
+
+
+/**
+ * Portals DSR daily report (PS-wise) — 45 rows × 25 metric columns
+ * grouped under NCRP / Samanvaya / Sahayog / GRM / MRM / Bharatpol
+ * / OCWC / NCMEC. Matches the paper form. Landscape A3 PDF.
+ */
+export function downloadPortalsDsrDailyPdf(date: string): Promise<void> {
+  return downloadPdf(
+    `/api/v1/reports/portals-dsr-daily.pdf?date=${encodeURIComponent(date)}`,
+    `Portals_DSR_${date}.pdf`,
+  );
+}
+
+export function downloadPortalsDsrDailyExcel(date: string): Promise<void> {
+  return downloadPdf(
+    `/api/v1/reports/portals-dsr-daily.xlsx?date=${encodeURIComponent(date)}`,
+    `Portals_DSR_${date}.xlsx`,
+  );
+}
+
+
+/**
+ * Daily Work Done report (PS-wise aggregated) — one row per PS
+ * summing every daily_work_entry that PS filed on the selected
+ * date. Three colour bands (red/yellow/green) match the paper
+ * template. FIR No column becomes FIR Count; Final Report becomes
+ * "A:n, B:m, C:k".
+ */
+export function downloadDailyWorkDailyPdf(date: string): Promise<void> {
+  return downloadPdf(
+    `/api/v1/reports/daily-work-daily.pdf?date=${encodeURIComponent(date)}`,
+    `Daily_Work_Done_${date}.pdf`,
+  );
+}
+
+export function downloadDailyWorkDailyExcel(date: string): Promise<void> {
+  return downloadPdf(
+    `/api/v1/reports/daily-work-daily.xlsx?date=${encodeURIComponent(date)}`,
+    `Daily_Work_Done_${date}.xlsx`,
+  );
+}

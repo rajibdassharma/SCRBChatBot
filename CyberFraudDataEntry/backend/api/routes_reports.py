@@ -14,7 +14,7 @@ from datetime import date
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import Integer, cast, func as sql_func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -29,6 +29,13 @@ from reports.fir_ps_performance_pdf import render_fir_ps_performance_pdf
 from reports.fir_ps_performance_xlsx import render_fir_ps_performance_xlsx
 from reports.accounts_ps_comparison_pdf import render_accounts_ps_comparison_pdf
 from reports.accounts_ps_comparison_xlsx import render_accounts_ps_comparison_xlsx
+from reports.portals_dsr_daily_pdf import render_portals_dsr_daily_pdf
+from reports.portals_dsr_daily_xlsx import render_portals_dsr_daily_xlsx
+from reports.daily_work_daily_pdf import render_daily_work_daily_pdf
+from reports.daily_work_daily_xlsx import render_daily_work_daily_xlsx
+from models.portals_dsr_entry import PortalsDsrEntry
+from models.daily_work_entry import DailyWorkEntry
+from models.unit import Unit
 from api.routes_dashboard import (
     compute_submission_status,
     compute_fir_ps_performance,
@@ -421,3 +428,223 @@ async def get_accounts_ps_comparison_xlsx(
     rows = await compute_accounts_comparison(db, target_date=target_date, admin=admin)
     xlsx_bytes = render_accounts_ps_comparison_xlsx(rows, target_date=target_date)
     return _xlsx_response(xlsx_bytes, _accounts_ps_filename("xlsx", target_date))
+
+
+# ── Portals DSR daily report + Daily Work Done daily report ────────
+# Both are Police-Station-wise for a single calendar date. Defaults
+# to yesterday on the client so the operator hits Download on the
+# next morning with no fiddling. Server accepts any date.
+
+
+async def _all_active_ps_roster(db: AsyncSession) -> list[dict]:
+    """Return the fixed 45-PS roster sorted district, PS name. Both
+    reports need every PS to render (blank for non-submitters), so
+    we drive the row list off this — not off whatever rows the day
+    happened to produce."""
+    q = (
+        select(
+            PoliceStation.id,
+            PoliceStation.district_name,
+            PoliceStation.station_name,
+        )
+        .where(PoliceStation.is_active == True)  # noqa: E712
+        .order_by(PoliceStation.district_name, PoliceStation.station_name)
+    )
+    result = await db.execute(q)
+    return [
+        {"ps_id": pid, "district": dn, "ps_name": sn}
+        for pid, dn, sn in result.all()
+    ]
+
+
+def _portals_metric_cols() -> list[str]:
+    """25 PortalsDsrEntry columns in the render order."""
+    return [
+        "ncrp_received", "ncrp_disposed", "ncrp_pending",
+        "samanvaya_request_received", "samanvaya_actions",
+        "samanvaya_action_pending", "samanvaya_request_sent",
+        "samanvaya_reply_received", "samanvaya_replies_pending",
+        "sahayog_unlawful_content_removal", "sahayog_intermediary_requests",
+        "sahayog_crypto_requests",
+        "grm_request_received", "grm_action", "grm_pending",
+        "mrm_request_received", "mrm_action", "mrm_pending",
+        "bharatpol_request_received",
+        "ocwc_received", "ocwc_disposed", "ocwc_pending",
+        "ncmec_received", "ncmec_disposed", "ncmec_pending",
+    ]
+
+
+async def compute_portals_dsr_daily(
+    db: AsyncSession, *, target_date: date,
+) -> list[dict]:
+    """One row per active PS. Metric values are the SUM of every
+    submitted PortalsDsrEntry for that PS on target_date. PSes with
+    no submission come back with None for every metric (renderers
+    render blank)."""
+    metric_cols = _portals_metric_cols()
+    agg_cols = [
+        sql_func.coalesce(sql_func.sum(getattr(PortalsDsrEntry, c)), 0).label(c)
+        for c in metric_cols
+    ]
+    q = (
+        select(PortalsDsrEntry.ps_id, *agg_cols)
+        .where(
+            PortalsDsrEntry.report_date == target_date,
+            PortalsDsrEntry.status == "submitted",
+        )
+        .group_by(PortalsDsrEntry.ps_id)
+    )
+    result = await db.execute(q)
+    by_ps: dict[int, dict] = {}
+    for row in result.all():
+        rd = row._mapping
+        by_ps[rd["ps_id"]] = {c: int(rd[c] or 0) for c in metric_cols}
+
+    roster = await _all_active_ps_roster(db)
+    out: list[dict] = []
+    for ps in roster:
+        entry = {"ps_id": ps["ps_id"], "ps_name": ps["ps_name"], "district": ps["district"]}
+        m = by_ps.get(ps["ps_id"])
+        if m is None:
+            # Non-submitter — leave metric keys absent so renderers
+            # draw blank cells (not zeros).
+            entry.update({c: None for c in metric_cols})
+        else:
+            entry.update(m)
+        out.append(entry)
+    return out
+
+
+async def compute_daily_work_daily(
+    db: AsyncSession, *, target_date: date,
+) -> list[dict]:
+    """One row per active PS. Numeric fields SUMMED across every
+    daily_work_entry that PS filed for target_date; final_report
+    split into A/B/C counts (rendered as 'A:n, B:m, C:k')."""
+    numeric_cols = [
+        "notices_35_41a_count",
+        "notices_91_92_94_banks",
+        "notices_91_92_94_intermediary",
+        "notices_91_92_94_account_holder",
+        "notices_91_92_94_cdr_ipdr",
+        "lien_requests_count",
+        "freeze_requests_count",
+        "total_lien_amount",
+        "unlien_requests_count",
+        "defreeze_requests_count",
+        "total_unlien_amount",
+        "arrests_count",
+        "statements_count",
+    ]
+
+    sum_cols = [
+        sql_func.coalesce(sql_func.sum(getattr(DailyWorkEntry, c)), 0).label(c)
+        for c in numeric_cols
+    ]
+
+    q = (
+        select(
+            DailyWorkEntry.ps_id,
+            sql_func.count(DailyWorkEntry.id).label("fir_count"),
+            *sum_cols,
+            sql_func.sum(cast(DailyWorkEntry.final_report == "A", Integer)).label("final_a"),
+            sql_func.sum(cast(DailyWorkEntry.final_report == "B", Integer)).label("final_b"),
+            sql_func.sum(cast(DailyWorkEntry.final_report == "C", Integer)).label("final_c"),
+        )
+        .where(DailyWorkEntry.report_date == target_date)
+        .group_by(DailyWorkEntry.ps_id)
+    )
+    result = await db.execute(q)
+    by_ps: dict[int, dict] = {}
+    for row in result.all():
+        rd = row._mapping
+        ps_id = int(rd["ps_id"])
+        agg = {c: (float(rd[c]) if "amount" in c else int(rd[c] or 0)) for c in numeric_cols}
+        agg["fir_count"] = int(rd["fir_count"] or 0)
+        agg["final_report_a"] = int(rd["final_a"] or 0)
+        agg["final_report_b"] = int(rd["final_b"] or 0)
+        agg["final_report_c"] = int(rd["final_c"] or 0)
+        parts = [
+            f"{L}:{n}"
+            for L, n in [
+                ("A", agg["final_report_a"]),
+                ("B", agg["final_report_b"]),
+                ("C", agg["final_report_c"]),
+            ]
+            if n
+        ]
+        agg["final_report_abc"] = ", ".join(parts) if parts else None
+        by_ps[ps_id] = agg
+
+    roster = await _all_active_ps_roster(db)
+    out: list[dict] = []
+    for ps in roster:
+        entry = {"ps_id": ps["ps_id"], "ps_name": ps["ps_name"], "district": ps["district"]}
+        m = by_ps.get(ps["ps_id"])
+        if m is None:
+            entry.update({c: None for c in numeric_cols})
+            entry["fir_count"] = 0
+            entry["final_report_a"] = 0
+            entry["final_report_b"] = 0
+            entry["final_report_c"] = 0
+            entry["final_report_abc"] = None
+        else:
+            entry.update(m)
+        out.append(entry)
+    return out
+
+
+def _portals_daily_filename(ext: str, target_date: date) -> str:
+    return f"Portals_DSR_{target_date.isoformat()}.{ext}"
+
+
+def _daily_work_daily_filename(ext: str, target_date: date) -> str:
+    return f"Daily_Work_Done_{target_date.isoformat()}.{ext}"
+
+
+@router.get("/portals-dsr-daily.pdf")
+async def get_portals_dsr_daily_pdf(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """PDF export of the Portals DSR daily report, PS-wise."""
+    rows = await compute_portals_dsr_daily(db, target_date=target_date)
+    pdf = render_portals_dsr_daily_pdf(rows, target_date=target_date)
+    return _pdf_response(pdf, _portals_daily_filename("pdf", target_date))
+
+
+@router.get("/portals-dsr-daily.xlsx")
+async def get_portals_dsr_daily_xlsx(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Excel export of the Portals DSR daily report, PS-wise."""
+    rows = await compute_portals_dsr_daily(db, target_date=target_date)
+    xlsx = render_portals_dsr_daily_xlsx(rows, target_date=target_date)
+    return _xlsx_response(xlsx, _portals_daily_filename("xlsx", target_date))
+
+
+@router.get("/daily-work-daily.pdf")
+async def get_daily_work_daily_pdf(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """PDF export of the Daily Work Done report, PS-wise aggregated."""
+    rows = await compute_daily_work_daily(db, target_date=target_date)
+    pdf = render_daily_work_daily_pdf(rows, target_date=target_date)
+    return _pdf_response(pdf, _daily_work_daily_filename("pdf", target_date))
+
+
+@router.get("/daily-work-daily.xlsx")
+async def get_daily_work_daily_xlsx(
+    target_date: date = Query(..., alias="date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Excel export of the Daily Work Done report, PS-wise aggregated."""
+    rows = await compute_daily_work_daily(db, target_date=target_date)
+    xlsx = render_daily_work_daily_xlsx(rows, target_date=target_date)
+    return _xlsx_response(xlsx, _daily_work_daily_filename("xlsx", target_date))
