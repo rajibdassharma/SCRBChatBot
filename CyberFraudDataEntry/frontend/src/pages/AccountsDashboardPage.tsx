@@ -35,13 +35,10 @@ const cardStyle = {
 };
 
 // Reused across cards, bars, and pie slices so the same account-type
-// always reads as the same colour.
-// Victim / Mule / Non-Mule live together on the donut, stacked bars,
-// KPI cards, and per-PS text rows. Victim (green) vs Non-Mule (slate)
-// used to read too similarly at donut-slice size, so Non-Mule moved
-// to a saturated deep blue and Victim to a brighter emerald — three
-// clearly distinct hues at any size.
-const COLOR_VICTIM   = '#15803d';  // emerald-700 — good outcome
+// always reads as the same colour. Victim / Mule / Non-Mule live
+// together on the donut, stacked bars, KPI cards, and per-PS text
+// rows — three clearly distinct hues at any size.
+const COLOR_VICTIM   = '#FACC15';  // yellow-400 — bright, on-brand
 const COLOR_MULE     = '#8b1919';  // dark red — offender
 const COLOR_NONMULE  = '#1d4ed8';  // blue-700 — neutral / unknown
 const COLOR_NAVY     = '#0b2c4a';
@@ -294,15 +291,29 @@ export function AccountsDashboardPage() {
                       <Pie data={typePie} dataKey="value" nameKey="name"
                         cx="50%" cy="45%" innerRadius={48} outerRadius={80}
                         paddingAngle={2}
-                        // Labels live INSIDE the arc as a percentage so
-                        // long category names ("Non-Mule") don't spill
-                        // outside the card. Absolute counts move to the
-                        // legend + tooltip.
-                        label={(d: any) => {
+                        // Labels sit INSIDE the arc as a percentage —
+                        // long category names ("Non-Mule") would spill
+                        // outside the card, and absolute counts live in
+                        // the legend + tooltip. Custom renderer so text
+                        // fill is fixed dark navy regardless of slice
+                        // colour (Recharts default inherits fill from
+                        // the slice, which vanishes on the yellow one).
+                        label={(props: any) => {
                           const total = typePie.reduce((s, x) => s + x.value, 0);
-                          if (!total || !d.value) return '';
-                          const pct = (d.value / total) * 100;
-                          return pct >= 5 ? `${pct.toFixed(0)}%` : '';
+                          if (!total || !props.value) return null;
+                          const pct = (props.value / total) * 100;
+                          if (pct < 5) return null;
+                          const RADIAN = Math.PI / 180;
+                          const r = props.innerRadius + (props.outerRadius - props.innerRadius) * 0.5;
+                          const x = props.cx + r * Math.cos(-props.midAngle * RADIAN);
+                          const y = props.cy + r * Math.sin(-props.midAngle * RADIAN);
+                          return (
+                            <text x={x} y={y} fill={COLOR_NAVY}
+                              fontSize={12} fontWeight={700}
+                              textAnchor="middle" dominantBaseline="central">
+                              {pct.toFixed(0)}%
+                            </text>
+                          );
                         }}
                         labelLine={false}
                       >
