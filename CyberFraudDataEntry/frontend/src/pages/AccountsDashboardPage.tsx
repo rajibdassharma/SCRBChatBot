@@ -36,9 +36,14 @@ const cardStyle = {
 
 // Reused across cards, bars, and pie slices so the same account-type
 // always reads as the same colour.
-const COLOR_VICTIM   = '#0a6b28';
-const COLOR_MULE     = '#8b1919';
-const COLOR_NONMULE  = '#5b6b7a';
+// Victim / Mule / Non-Mule live together on the donut, stacked bars,
+// KPI cards, and per-PS text rows. Victim (green) vs Non-Mule (slate)
+// used to read too similarly at donut-slice size, so Non-Mule moved
+// to a saturated deep blue and Victim to a brighter emerald — three
+// clearly distinct hues at any size.
+const COLOR_VICTIM   = '#15803d';  // emerald-700 — good outcome
+const COLOR_MULE     = '#8b1919';  // dark red — offender
+const COLOR_NONMULE  = '#1d4ed8';  // blue-700 — neutral / unknown
 const COLOR_NAVY     = '#0b2c4a';
 const COLOR_PURPLE   = '#6a1b9a';
 const COLOR_ORANGE   = '#c67c1d';
