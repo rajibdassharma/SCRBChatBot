@@ -234,14 +234,33 @@ export function AccountsDashboardPage() {
                 {dailyGrowth.length === 0 ? (
                   <div className="py-10 text-center italic opacity-60 text-sm">No growth data yet.</div>
                 ) : (
-                  <div style={{ width: '100%', height: 260 }}>
+                  <div style={{ width: '100%', height: 320 }}>
                     <ResponsiveContainer>
                       <LineChart data={dailyGrowth}
-                                margin={{ top: 8, right: 24, left: 10, bottom: 6 }}>
+                                margin={{ top: 8, right: 24, left: 24, bottom: 56 }}>
                         <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
                         <XAxis dataKey="day" tick={{ fontSize: 10 }}
-                          tickFormatter={(v: string) => v.slice(5)} /* MM-DD */ />
-                        <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                          /* interval=0 forces every date to render as a tick;
+                             angle + textAnchor rotates them so 30 days still fit. */
+                          interval={0}
+                          angle={-45}
+                          textAnchor="end"
+                          height={60}
+                          tickFormatter={(v: string) => v.slice(5)} /* MM-DD */
+                          label={{
+                            value: 'Date',
+                            position: 'insideBottom',
+                            offset: -48,
+                            style: { fontSize: 12, fontWeight: 700, fill: COLOR_NAVY },
+                          }} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 11 }}
+                          label={{
+                            value: 'No. of Accounts',
+                            angle: -90,
+                            position: 'insideLeft',
+                            offset: 0,
+                            style: { fontSize: 12, fontWeight: 700, fill: COLOR_NAVY, textAnchor: 'middle' },
+                          }} />
                         <Tooltip
                           formatter={(v) => [formatNumber(Number(v ?? 0)), 'New accounts']}
                           labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
