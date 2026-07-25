@@ -243,6 +243,10 @@ Nginx will serve from `/opt/cyberfraud/frontend/dist/`.
 
 ## 8. Nginx Reverse Proxy
 
+The canonical config lives at `deploy/nginx.conf` in the repo — copy
+that into place rather than hand-editing. Key blocks (paraphrased
+from the current file):
+
 ```nginx
 # /etc/nginx/sites-available/cyberfraud
 
@@ -251,16 +255,33 @@ upstream backend {
 }
 
 server {
-    listen 80;
+    listen 443 ssl;
     server_name <SERVER_IP_OR_DOMAIN>;
+    ssl_certificate     /etc/ssl/certs/cyberfraud.crt;
+    ssl_certificate_key /etc/ssl/private/cyberfraud.key;
 
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-Content-Type-Options "nosniff" always;
-    add_header X-XSS-Protection "1; mode=block" always;
+    add_header Strict-Transport-Security "max-age=31536000" always;
 
-    client_max_body_size 10M;
+    # 25M covers phone-camera JPGs + bank-statement PDFs.
+    # Photo upload endpoint fails with "Failed to fetch" if this is < ~5M.
+    client_max_body_size 25M;
+
     root /opt/cyberfraud/frontend/dist;
     index index.html;
+
+    # Proxy /uploads/* to the backend so the HMAC-signed URL middleware
+    # gates every file download. Without this, nginx would fall through
+    # to try_files → SPA fallback → login redirect.
+    # deploy/update.sh auto-inserts this block on first run if missing.
+    location /uploads/ {
+        proxy_pass http://backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
 
     location /api/ {
         proxy_pass http://backend;
@@ -325,54 +346,39 @@ sudo chown $USER:$USER /var/log/cyberfraud
 
 ---
 
-## 10. Systemd Service File
+## 10. Systemd Service Files
 
-The canonical copy of this file lives at `deploy/cyberfraud-backend.service`
-in the repo. On every deploy, copy it into place so systemd picks up any
-changes:
+Three service units live in the repo under `deploy/`:
 
-```bash
-sudo cp deploy/cyberfraud-backend.service /etc/systemd/system/cyberfraud-backend.service
-sudo systemctl daemon-reload
-sudo systemctl restart cyberfraud-backend
-```
+| File | Purpose |
+|---|---|
+| `deploy/cyberfraud-backend.service` | Gunicorn+Uvicorn worker for the backend |
+| `deploy/cyberfraud-backup.service` | One-shot backup unit (runs `backup-db.sh` + `backup-uploads.sh`) |
+| `deploy/cyberfraud-backup.timer` | Nightly systemd timer that fires the backup service |
 
-```ini
-# /etc/systemd/system/cyberfraud-backend.service
-
-[Unit]
-Description=CyberFraud Data Entry Backend
-After=network.target mysql.service
-Requires=mysql.service
-
-[Service]
-Type=notify
-User=cyberfraud
-Group=cyberfraud
-WorkingDirectory=/opt/cyberfraud/backend
-Environment="PATH=/opt/cyberfraud/backend/venv/bin:/usr/bin"
-EnvironmentFile=/opt/cyberfraud/backend/.env
-ExecStart=/opt/cyberfraud/backend/venv/bin/gunicorn cyber_fraud:app -c gunicorn.conf.py
-ExecReload=/bin/kill -s HUP $MAINPID
-Restart=on-failure
-RestartSec=5
-NoNewPrivileges=true
-ProtectSystem=strict
-ProtectHome=true
-ReadWritePaths=/var/log/cyberfraud /opt/cyberfraud/backend
-PrivateTmp=true
-
-[Install]
-WantedBy=multi-user.target
-```
+Install once:
 
 ```bash
+# Create the runtime user
 sudo useradd --system --no-create-home --shell /usr/sbin/nologin cyberfraud
 sudo chown -R cyberfraud:cyberfraud /opt/cyberfraud /var/log/cyberfraud
+
+# Backend service
+sudo cp /opt/scrb/CyberFraudDataEntry/deploy/cyberfraud-backend.service \
+    /etc/systemd/system/cyberfraud-backend.service
 sudo systemctl daemon-reload
-sudo systemctl enable cyberfraud-backend
-sudo systemctl start cyberfraud-backend
+sudo systemctl enable --now cyberfraud-backend
+
+# Backup timer (see deploy/install-backup.sh for the fully-automated version)
+sudo cp /opt/scrb/CyberFraudDataEntry/deploy/cyberfraud-backup.service /etc/systemd/system/
+sudo cp /opt/scrb/CyberFraudDataEntry/deploy/cyberfraud-backup.timer   /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now cyberfraud-backup.timer
 ```
+
+`update.sh` does NOT re-copy these files on every deploy. If you
+change the service file itself, re-run the `cp + daemon-reload` for
+that unit by hand.
 
 ---
 
@@ -385,9 +391,13 @@ sudo systemctl start cyberfraud-backend
 | `CFDSR_DB_USER` | MySQL user | `cfdsr_app` (NOT root) |
 | `CFDSR_DB_PASSWORD` | MySQL password | Strong random |
 | `CFDSR_DB_NAME` | Database name | `cyber_fraud_dsr` |
-| `CFDSR_JWT_SECRET` | JWT signing key | 64-char random hex |
+| `CFDSR_JWT_SECRET` | JWT signing key — server refuses to start if missing / default / < 32 chars | 64-char random hex (`openssl rand -hex 32`) |
+| `CFDSR_JWT_ALGORITHM` | JWT algorithm | `HS256` |
 | `CFDSR_JWT_EXPIRE_MINUTES` | Token expiry | `480` (8 hours) |
-| `CFDSR_CORS_ORIGINS` | Allowed origins | `http://<SERVER_IP>` |
+| `CFDSR_CORS_ORIGINS` | Allowed origins | `https://<SERVER_IP>` |
+| `CFDSR_UPLOAD_SIGNING_KEY` | HMAC key for signed `/uploads/*` URLs | 64-char random hex |
+| `CFDSR_CHAT_ENABLED` | Feature flag for the Ask-the-Data chat | `false` in prod (until GPU box arrives) |
+| `CFDSR_LLM_API_KEY` | Required only when chat is enabled | (empty when disabled) |
 
 ---
 
@@ -395,20 +405,32 @@ sudo systemctl start cyberfraud-backend
 
 | Data | Source | Count |
 |------|--------|-------|
-| Districts (units) | All District CEN_PS.xlsx Column A | 36 |
-| CCPS Stations | All District CEN_PS.xlsx Columns A+B | 44 |
-| Users | Auto-generated per CCPS | 88 |
+| Districts (units) | seed CSV under `backend/data/` | 36 |
+| Cyber Crime PSes | seed CSV | 45+ |
+| Users | Auto-generated per PS | ~90 (unit_user + admin per PS) |
+| super_admins | Manually seeded via `backend/add_test_users.py` or a bespoke script for SCRB HQ officers | small handful |
 
-### Default Credentials
+### Credential policy (post-VAPT — v1.0.1 closed 2026-05-10)
 
-| Pattern | Password | Role |
-|---------|----------|------|
-| `<ccps_code>_admin` | `admin123` | admin |
-| `<ccps_code>_user` | `police123` | unit_user |
+- **No default passwords.** `seed.py` generates a random secure
+  password per user and writes them to `seed_credentials_<timestamp>.csv`.
+  Distribute that CSV to operators via out-of-band channel and then
+  delete it.
+- **Every seeded user has `must_change_password = true`.** All routes
+  except `/auth/change-password` return 403 until the operator sets a
+  new password on first login.
+- **Password reset** goes through `/api/v1/users/{id}/reset-password`
+  (admin+ only) — the API generates a new random password and returns
+  it once. The reset user is flagged `must_change_password = true`
+  again.
 
-Example: `belagavi_city_cen_crime_ps_user` / `police123`
+### Roles (3, not 2)
 
-**CRITICAL**: Change default passwords before production use.
+| Role | Scope | Set at seed time? |
+|---|---|---|
+| `unit_user` | own submissions within own `(unit_id, ps_id)` | yes (one per PS) |
+| `admin` | full read + write on own `(unit_id, ps_id)` | yes (one per PS) |
+| `super_admin` | cross-PS oversight; only role that can use chat | manually — SCRB HQ officers only |
 
 ---
 
@@ -432,14 +454,34 @@ sudo openssl req -x509 -nodes -days 3650 \
 
 ## 14. Security Hardening
 
-- Generate strong JWT secret: `openssl rand -hex 32`
-- Restrict CORS to server IP only
-- Disable FastAPI `/docs` in production (`docs_url=None, redoc_url=None`)
-- Add rate limiting on login endpoint (`slowapi`)
-- MySQL: revoke DROP/CREATE after initial setup
-- SSH: disable root login, use key-based auth
-- Install `fail2ban`
-- Change default passwords
+Almost all of the below is already applied in the shipping code — see
+[SecurityAudit.md](./SecurityAudit.md) for the current posture and
+VAPT v1.0.1 closure status. This section is a bring-up checklist for
+the OS / MySQL / SSH layer that lives outside the app.
+
+Already applied by the app (nothing to do):
+
+- JWT token expiry (`verify_exp=True`, 480-min lifetime)
+- JWT secret validation (server refuses to start on missing / default / < 32 chars)
+- Per-record `(unit_id, ps_id)` scoping — every mutation route enforces it
+- Free-text HTML/script sanitisation on every write (`strip_html`)
+- File upload MIME-type + size limits (25 MB nginx cap, per-endpoint app-side check)
+- HMAC-signed `/uploads/*` URLs — leaked links die within 1 hour
+- Login rate limiting (in-memory, per-IP)
+- Security headers (X-Frame-Options, X-Content-Type-Options, HSTS)
+- FastAPI `/docs` + `/openapi.json` disabled in production
+- Token revocation on logout (`revoked_tokens` table)
+
+Bring-up checklist for the OS + MySQL + SSH layer:
+
+- [ ] Generate a strong `CFDSR_JWT_SECRET`: `openssl rand -hex 32`
+- [ ] Generate a strong `CFDSR_UPLOAD_SIGNING_KEY`: same
+- [ ] Restrict `CFDSR_CORS_ORIGINS` to your actual server URL — no wildcards
+- [ ] MySQL: create dedicated `cfdsr_app` user (see §5); revoke DROP/CREATE after seed
+- [ ] SSH: disable root login (`PermitRootLogin no`), use key-based auth only
+- [ ] Install `fail2ban` for SSH brute-force protection
+- [ ] UFW rules from §3 applied and `ufw enable` run
+- [ ] SSL certificate installed (§13) — even self-signed is better than plain HTTP
 
 ---
 
@@ -463,43 +505,45 @@ Health check cron:
 
 ## 16. Backup Strategy
 
-### Daily DB Backup (cron at 2 AM)
-```bash
-mysqldump -u cfdsr_app -p'<PASSWORD>' --single-transaction \
-    --databases cyber_fraud_dsr | gzip > /opt/cyberfraud/backups/db/$(date +%Y%m%d).sql.gz
-```
+Nightly automated via **systemd timer** — no cron.
 
-Retain 30 days. Test restores periodically.
+- `cyberfraud-backup.timer` (nightly) → `cyberfraud-backup.service` →
+  runs `deploy/backup-db.sh` + `deploy/backup-uploads.sh` as the
+  `cyberfraud` user
+- Both scripts: gzipped mysqldump / uploads tarball, timestamped,
+  **retention keeps only the newest snapshot** (name-exclusion prune)
+- Install once via `deploy/install-backup.sh`
+
+See [Operations.md § Database Backup](./Operations.md#database-backup)
+for the check / restore commands. A schema-only snapshot for audit /
+handover use goes through `deploy/dump-schema.sh` (see the same doc).
 
 ---
 
 ## 17. Update / Deployment Procedure
 
-### Pull latest from GitHub
+**One command.** Do not run individual steps by hand.
+
 ```bash
-cd /opt/SCRBChatBot
-git pull
-sudo cp -r CyberFraudDataEntry/* /opt/cyberfraud/
+cd /opt/scrb && git pull && sudo bash CyberFraudDataEntry/deploy/update.sh
 ```
 
-### Backend
-```bash
-cd /opt/cyberfraud/backend
-source venv/bin/activate
-pip install -r requirements.txt
-python seed.py  # idempotent — creates new tables, doesn't alter existing
-# Run any schema patches (e.g., ALTER TABLE) if listed in release notes
-sudo systemctl restart cyberfraud-backend
-curl http://localhost/health
-```
+`update.sh` does:
 
-### Frontend
-```bash
-cd /opt/cyberfraud/frontend
-npm ci
-npm run build
-sudo systemctl reload nginx
-```
+1. `git pull` (again, in case the script itself changed)
+2. Upgrade pip deps under the `cyberfraud` venv
+3. Run additive DB migrations 001 → 004, 006 → 018 (idempotent; 005 skipped until chat lands)
+4. Frontend `npm install && npm run build` — TS strict must pass
+5. rsync backend + `frontend/dist/` into `/opt/cyberfraud/`
+6. `systemctl restart cyberfraud-backend`
+7. Auto-insert nginx `/uploads/` proxy block if missing + `nginx -t` + reload
+8. Self-verify: `/health`, every new route responds 401, every migration's schema landed
+
+Any single failure aborts the deploy. Idempotent — safe to re-run.
+
+See [Operations.md § Deploying Updates](./Operations.md#deploying-updates)
+for the full step-by-step breakdown, or read
+`deploy/update.sh` directly.
 
 ---
 

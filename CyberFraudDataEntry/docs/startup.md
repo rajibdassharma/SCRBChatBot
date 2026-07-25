@@ -1,7 +1,9 @@
 # Startup — Cyber Fraud Data Entry
 
 Multi-unit data entry platform for Karnataka State Police cyber fraud units.
-44 stations, 88 users. **Active**, running in production.
+45+ Cyber Crime Police Stations across 36 districts, ~90 users
+(unit_user + admin per PS, plus super_admins at SCRB HQ).
+**Active**, running in production.
 
 **Ports** — backend `8000`, frontend `5175` (see port scheme below)
 
@@ -129,52 +131,41 @@ Nginx reverse proxy on 443 with Let's Encrypt SSL, internal KSWAN network.
 
 ### Update procedure
 
-**Step 0 — Run the security regression suite locally first** (see the
-"Security regression tests" section above). Only proceed if 14/14 pass.
-Deploy is blocked on any regression in a VAPT finding.
+**Step 0 — Local sanity first.** Backend AST-parse + `npm run build`
+must pass. If you touched anything security-sensitive, run the
+regression suite locally (see [Operations.md](./Operations.md)).
+
+One command on the server:
 
 ```bash
-# On server
-cd /opt/cyberfraud
-git pull
-
-# Sync systemd service + nginx configs whenever deploy/ files change
-sudo cp deploy/cyberfraud-backend.service /etc/systemd/system/cyberfraud-backend.service
-sudo cp deploy/nginx.conf /etc/nginx/sites-available/cyberfraud
-sudo systemctl daemon-reload
-
-# Rebuild frontend
-cd frontend && npm run build
-cd ..
-
-# Restart backend + reload nginx
-sudo systemctl restart cyberfraud-backend
-sudo nginx -t && sudo systemctl reload nginx
+cd /opt/scrb && git pull && sudo bash CyberFraudDataEntry/deploy/update.sh
 ```
 
-The systemd service file lives in `deploy/cyberfraud-backend.service` in
-the repo, so `git pull` brings down both code and service config together.
-The `cp` + `daemon-reload` step is only required when the service file
-itself changes.
+`deploy/update.sh` handles everything — pip deps, migrations 001 →
+018 (idempotent), frontend build, sync into runtime, backend restart,
+nginx `/uploads/` proxy fixup, and a self-verify panel that aborts on
+the first schema / route regression. See
+[Operations.md § Deploying Updates](./Operations.md#deploying-updates)
+for the full step-by-step breakdown.
 
 ### Post-deploy verification
 
-```bash
-sudo systemctl status cyberfraud-backend       # should be active (running)
-curl -k https://<server-domain>/health          # through nginx
-sudo journalctl -u cyberfraud-backend -n 50     # last 50 log lines
-```
+The self-verify block already runs these; check the deploy output for
+the ✓ marks. If a check aborts the deploy, that same command shows
+exactly which one.
 
 ### Rollback
 
 ```bash
-cd /opt/cyberfraud
+cd /opt/scrb
 git log --oneline -10                    # find previous good SHA
 git checkout <previous-sha>
-sudo cp deploy/cyberfraud-backend.service /etc/systemd/system/cyberfraud-backend.service
-sudo systemctl daemon-reload
-sudo systemctl restart cyberfraud-backend
+sudo bash CyberFraudDataEntry/deploy/update.sh   # re-run — idempotent
 ```
+
+Migrations don't roll back (additive-only post-VAPT); if a migration
+introduced a regression, forward-fix with a new migration rather than
+reverting.
 
 ## Common troubleshooting
 
