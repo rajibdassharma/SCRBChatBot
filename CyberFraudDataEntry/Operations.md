@@ -121,60 +121,91 @@ tail -50 /var/log/mysql/slow.log
 
 ## Deploying Updates
 
-### Pull latest code
+**One command. Do not run the individual steps by hand.**
+
 ```bash
-cd /opt/SCRBChatBot
-git pull
-sudo cp -r CyberFraudDataEntry/* /opt/cyberfraud/
-sudo chown -R cyberfraud:cyberfraud /opt/cyberfraud
+cd /opt/scrb && git pull && sudo bash CyberFraudDataEntry/deploy/update.sh
 ```
 
-### Update backend
-```bash
-cd /opt/cyberfraud/backend
-source venv/bin/activate
-pip install -r requirements.txt
-python seed.py
-sudo systemctl restart cyberfraud-backend
-curl http://localhost/health
-```
+The leading `git pull` picks up the latest `update.sh` itself; the
+script then re-pulls internally to be safe. Idempotent end-to-end
+(safe to re-run). Aborts on the first failure — `set -euo pipefail`.
 
-### Update frontend
-```bash
-cd /opt/cyberfraud/frontend
-npm ci
-npx vite build
-sudo systemctl reload nginx
-```
+### What update.sh does
+
+| # | Step | Notes |
+|---|---|---|
+| 1 | `git pull` on `/opt/scrb` | Fetches the latest source. Prints the new HEAD. |
+| 2 | `pip install -r requirements.txt` | Upgrades Python deps under `cyberfraud` user's venv. Catches new packages added since last deploy. |
+| 3 | Run additive DB migrations 001 → 004, 006 → 018 | Copies `migrations/` into runtime, runs each in order under the app's venv. Every migration is idempotent (INFORMATION_SCHEMA guards); no-op if already applied. **005 is deliberately skipped** (chat feature not enabled in prod). |
+| 4 | `npm install && npm run build` (frontend) | Runs `tsc -b && vite build` — TS strict must pass or the deploy aborts here. |
+| 5 | Sync backend + `frontend/dist/` into runtime | `sudo cp -r … /opt/cyberfraud/`, then chown to `cyberfraud:cyberfraud`. |
+| 6 | Restart `cyberfraud-backend.service` | `systemctl restart` + 2 s sleep + `is-active` check. |
+| 7 | Ensure nginx proxies `/uploads/*` to the backend | Auto-inserts the `location /uploads/` block into `/etc/nginx/sites-enabled/*cyberfraud*` if missing. Backs up the site config first; runs `nginx -t` before reloading; rolls back on failure. Idempotent — a re-run notices the block is already there and does nothing. |
+| 8 | Self-verify | Runs a large panel of checks: `/health` responds, every new API route returns 401/403 (proof it's mounted), every migration's target schema landed (INFORMATION_SCHEMA queries). Any single failed check aborts the deploy. |
+
+**No pre-migration backup step** — removed 2026-07-24 after too much
+friction on routine deploys. The nightly systemd timer covers it (see
+"Database Backup" below); run `backup-db.sh` / `backup-uploads.sh` by
+hand before a risky deploy if you want the extra insurance snapshot.
+
+### After a deploy
+
+- Refresh the browser (Ctrl+F5) once, so stale JS from the previous
+  build isn't cached.
+- If the deploy shows all ✓ marks and "Incremental update complete,"
+  everything's in. If it aborts mid-way, the last successful step is
+  the state you're in — re-run after fixing the issue.
 
 ---
 
 ## Database Backup
 
-### Manual backup
+Nightly automated backups via **systemd timer** — no cron. Two
+scripts run under the `cyberfraud` user:
+
+- **`deploy/backup-db.sh`** — `mysqldump --single-transaction` of
+  `cyber_fraud_dsr`, gzipped, timestamped, into a backup dir.
+  **Retention: keeps only the newest snapshot** (name-exclusion prune,
+  deterministic — no `-mtime` guesswork).
+- **`deploy/backup-uploads.sh`** — tarball of `backend/uploads/`,
+  same retention.
+
+Both are invoked together by `cyberfraud-backup.service`, triggered
+nightly by `cyberfraud-backup.timer`. Installed once via
+`deploy/install-backup.sh`.
+
+### Check the timer is running
+
 ```bash
-mysqldump -u root -pCyberFraud@KSP2026 --single-transaction cyber_fraud_dsr > /opt/cyberfraud/backups/$(date +%Y%m%d_%H%M%S).sql
+sudo systemctl status cyberfraud-backup.timer
+sudo systemctl list-timers cyberfraud-backup.timer
 ```
 
-### Restore from backup
+### Run a backup by hand (before a risky deploy)
+
 ```bash
-mysql -u root -pCyberFraud@KSP2026 cyber_fraud_dsr < /opt/cyberfraud/backups/FILENAME.sql
+sudo -u cyberfraud /opt/cyberfraud/deploy/backup-db.sh
+sudo -u cyberfraud /opt/cyberfraud/deploy/backup-uploads.sh
+# or both at once:
+sudo -u cyberfraud /opt/cyberfraud/deploy/backup-all.sh
 ```
 
-### Setup daily backup cron (2 AM)
-```bash
-sudo mkdir -p /opt/cyberfraud/backups
-sudo chown cyberfraud:cyberfraud /opt/cyberfraud/backups
+### Restore from a backup
 
-sudo crontab -e
-# Add this line:
-0 2 * * * mysqldump -u root -pCyberFraud@KSP2026 --single-transaction cyber_fraud_dsr | gzip > /opt/cyberfraud/backups/$(date +\%Y\%m\%d).sql.gz
+```bash
+# Newest DB snapshot (whatever the retention left)
+LATEST=$(ls -1t /opt/cyberfraud/backups/*.sql.gz | head -1)
+gunzip -c "$LATEST" | mysql -u root -p"$CFDSR_DB_PASSWORD" cyber_fraud_dsr
+
+# Newest uploads snapshot
+LATEST_UPLOADS=$(ls -1t /opt/cyberfraud/backups/uploads-*.tar.gz | head -1)
+sudo tar -xzf "$LATEST_UPLOADS" -C /opt/cyberfraud/backend/
+sudo chown -R cyberfraud:cyberfraud /opt/cyberfraud/backend/uploads
 ```
 
-### Cleanup old backups (keep 30 days)
-```bash
-find /opt/cyberfraud/backups -name "*.sql.gz" -mtime +30 -delete
-```
+Adjust paths if your install put the backup dir somewhere else — check
+`backup-db.sh` for the exact `BACKUP_DIR` it uses.
 
 ---
 
