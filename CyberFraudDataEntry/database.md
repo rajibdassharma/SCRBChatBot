@@ -1,9 +1,9 @@
 # Database Design Conventions — CyberFraud Data Entry
 
 Source of truth for **how to write schema-changing code** that won't break
-on deploy. Architecture.md describes the logical schema; this file
-describes the physical constraints that the LLM / a human refactor will
-trip over if they ignore them.
+on deploy. [Architecture.md](./Architecture.md) describes the logical
+schema; this file describes the physical constraints that the LLM / a
+human refactor will trip over if they ignore them.
 
 > **TL;DR for migration authors:** new tables/columns that reference an
 > existing column **must match its `CHARSET`, `COLLATE`, and exact type**.
@@ -53,9 +53,8 @@ parent records. Mixed legacy and new pattern is in play, so the rule is:
 | Auth (`users`, `revoked_tokens`) | `INT AUTO_INCREMENT` | Legacy; not exposed to client |
 | Reference fields to lookups (e.g. `unit_id`, `ps_id`, `submitted_by`) | `INT` | Match the lookup PK |
 
-**Architecture.md still shows the old `INT AUTO_INCREMENT` for parent
-records — it's stale on this point.** Source of truth = the SQLAlchemy
-models in `backend/models/*.py`.
+Source of truth for any specific table = the SQLAlchemy model in
+`backend/models/*.py`.
 
 ---
 
@@ -123,17 +122,33 @@ referencing column. The combination must match.
 ### 4.4 Migrations must be idempotent
 
 Every migration must check `INFORMATION_SCHEMA` for tables / columns /
-indexes / constraints before creating them. Pattern in
-`migrations/001_*.py` through `migrations/004_*.py` — re-use the helper
-functions (`_table_exists`, `_column_exists`, `_index_exists`,
-`_fk_exists`).
+indexes / constraints before creating them. Re-use the helper functions
+established in `migrations/001_*.py` through `migrations/004_*.py`
+(`_table_exists`, `_column_exists`, `_index_exists`, `_fk_exists`). Data
+migrations (018) use `WHERE ... REGEXP '\\bCEN\\b'` guards so re-runs
+touch 0 rows.
 
-### 4.5 Migrations must be reversible in principle
+### 4.5 Migrations must be additive and reversible in principle
 
-For now we don't ship explicit `down()` functions, but each forward
-operation should be cleanly reversible (no destructive `DROP TABLE` on
-existing data without explicit operator action, etc.). The pre-migration
-backup taken by `deploy/update.sh` is the rollback path.
+Post-VAPT the app is production — **additive changes only**. No `DROP
+TABLE`, no `DROP COLUMN`, no destructive `UPDATE` without a WHERE guard
+that can be re-run safely. The nightly `deploy/backup-db.sh` mysqldump
+is the rollback path (kept as the newest snapshot on the server);
+`update.sh` itself no longer takes a pre-migration backup (the nightly
+timer covers it, and the pre-migration step was removed after adding
+too much friction to routine deploys).
+
+### 4.6 Every schema change must be self-verified in update.sh
+
+For each new migration, add TWO lines to `deploy/update.sh`:
+1. The migration invocation in step 3 (in numeric order)
+2. A self-verify block in step 8 that asserts the change actually
+   landed — an `INFORMATION_SCHEMA` query that returns 1 for a new
+   column / table / index, or a data query that returns 0 rows for a
+   rewrite migration (e.g. "no standalone 'CEN' left" for 018)
+
+Skipping the self-verify block means a partial migration failure ships
+silently. See existing checks in `update.sh` step 8 for the pattern.
 
 ---
 
@@ -167,16 +182,28 @@ Likely sources of drift:
 | 004 | `004_break_victim_address.py` | Adds structured address columns to `victims`; deprecates the original `address` TEXT column |
 | 005 | `005_add_chat_messages.py` | Adds `chat_messages` audit table (only deploy if chat feature is enabled) |
 | 006 | `006_add_is_financial_to_cases.py` | Adds `is_financial TINYINT(1) NOT NULL DEFAULT 1` to `cases`; backfills all existing rows as Financial |
-| 007 | `007_add_daily_nil_declarations.py` | Creates `daily_nil_declarations` table — lets a PS explicitly mark a date as "no activity"; UNIQUE `(unit_id, ps_id, nil_date)` |
-| 008 | `008_add_ps_id_to_dsr_entries.py` | Adds `ps_id` to `dsr_entries`; re-scopes uniqueness from `(unit_id, report_date)` to `(unit_id, ps_id, report_date)`. DSR becomes per-PS. Backfills from `users.ps_id` via `submitted_by`. |
+| 007 | `007_add_daily_nil_declarations.py` | Creates `daily_nil_declarations` table; UNIQUE `(unit_id, ps_id, nil_date)` |
+| 008 | `008_add_ps_id_to_dsr_entries.py` | Adds `ps_id` to `dsr_entries`; re-scopes uniqueness to `(unit_id, ps_id, report_date)`. Backfills from `users.ps_id` via `submitted_by` |
+| 009 | `009_add_all_accounts_tables.py` | Creates `all_accounts` + `all_account_mule_herders` tables for the All Accounts module. UNIQUE `(unit_id, ps_id, serial_no)` |
+| 010 | `010_add_branch_district_to_all_accounts.py` | Adds `branch_district` to `all_accounts` |
+| 011 | `011_add_account_statement_path_to_all_accounts.py` | Adds `account_statement_path` (file path for bank-statement uploads) |
+| 012 | `012_add_layer_and_state_to_all_accounts.py` | Adds `layer INT` + `branch_state VARCHAR(100)` to `all_accounts` |
+| 013 | `013_add_portals_dsr_entries.py` | Creates `portals_dsr_entries` (25-metric-column table across 8 external portals). NO UNIQUE — multiple shift-batches per `(unit_id, ps_id, report_date)` are legal, dashboards SUM |
+| 014 | `014_add_daily_work_entries.py` | Creates `daily_work_entries` (per-FIR daily activity: notices, lien/unlien, arrests, statements, final_report). UNIQUE `(unit_id, ps_id, fir_no, report_date)` |
+| 015 | `015_add_sections_to_cases.py` | Adds `sections VARCHAR(500) NULL` to `cases` (free-text BNS / BNSS / IT-Act sections) |
+| 016 | `016_add_crime_type_expansion.py` | Widens `cases.crime_type` from `VARCHAR(30)` to `VARCHAR(200)` for the 31-entry KSP Cyber Crime classification; adds `crime_type_other VARCHAR(500) NULL` for the "Others → free text" case |
+| 017 | `017_add_victim_and_accused_accounts.py` | Creates `victim_accounts` + `accused_accounts` tables (multi-account rows on DSR → New FIR). Both CASCADE from `cases.id` |
+| 018 | `018_rename_cen_to_cyber_in_ps_names.py` | Data migration: `UPDATE police_stations SET station_name = REGEXP_REPLACE(station_name, '\bCEN\b', 'Cyber')`. Word-boundary regex protects "BANGALORE CENTRAL JAIL" etc. Requires MySQL 8+ (`REGEXP_REPLACE`) |
 
 All migrations are idempotent — safe to re-run. Order matters only when
-later migrations depend on earlier columns/tables existing.
+later migrations depend on earlier columns / tables existing.
 
-**Deploy:** `deploy/update.sh` runs 001 → 004, 006, 007, 008 in sequence
-(005 is skipped on prod until the chat GPU box is in place). The script
-includes a pre-migration backup and post-migration sanity checks. NEVER
-run migrations by hand on prod unless `update.sh` itself is broken.
+**Deploy:** `deploy/update.sh` runs `001 → 004, 006 → 018` in sequence
+(005 is deliberately skipped on prod until the chat GPU box is in place
+— no point provisioning an audit table for a feature the app doesn't
+expose). Every migration has a self-verify block in step 8 that aborts
+the deploy if the schema change didn't land. NEVER run migrations by
+hand on prod unless `update.sh` itself is broken.
 
 ---
 
@@ -244,7 +271,8 @@ WHERE referenced_table_schema = 'cyber_fraud_dsr'
 
 ## 9. When in doubt
 
-1. **Read the actual prod schema, not Architecture.md** — `SHOW CREATE TABLE x\G`.
+1. **Read the actual prod schema, not any doc** — `SHOW CREATE TABLE x\G`.
 2. **Match the referenced column's full definition** when writing FKs.
-3. **Test the migration on a copy of prod data** before pushing — `deploy/backup-db.sh` produces a gzipped dump that can be restored to a scratch DB.
-4. **Run migrations through `deploy/update.sh`**, never by hand on prod — the script has the right ordering, backup, and verification baked in.
+3. **Test the migration on a copy of prod data** before pushing — the nightly `deploy/backup-db.sh` mysqldump can be restored to a scratch DB.
+4. **Run migrations through `deploy/update.sh`**, never by hand on prod — the script has the right ordering + a self-verify block per migration.
+5. **Additive changes only** — post-VAPT no `DROP TABLE`, no `DROP COLUMN`, no unconditional data rewrites.
