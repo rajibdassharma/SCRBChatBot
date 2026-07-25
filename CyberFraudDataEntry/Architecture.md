@@ -1,712 +1,487 @@
 # Architecture — Cyber Fraud Data Entry
 
-## System Overview
-
-```
-                        ┌───────────────────────┐
-                        │   React 19 SPA        │
-                        │   Vite (port 5173)    │
-                        │   Tailwind + Zustand  │
-                        └───────────┬───────────┘
-                                    │ /api/* proxy
-                        ┌───────────▼───────────┐
-                        │   Nginx (prod only)   │
-                        │   SSL + static files  │
-                        └───────────┬───────────┘
-                                    │
-                        ┌───────────▼───────────┐
-                        │   FastAPI (port 8000) │
-                        │   Gunicorn + Uvicorn  │
-                        └──┬────────────────┬───┘
-                           │                │
-              ┌────────────▼──┐    ┌────────▼────────┐
-              │   MySQL 8+    │    │  File Storage   │
-              │ cyber_fraud_  │    │  (photos, Excel)│
-              │     dsr       │    │                 │
-              └───────────────┘    └─────────────────┘
-```
-
-**Request flow:**
-1. User interacts with React SPA
-2. Frontend calls `/api/v1/*` endpoints (proxied via Vite dev server or Nginx)
-3. FastAPI validates JWT token, checks role/unit authorization
-4. SQLAlchemy async session executes queries against MySQL
-5. Response returned as JSON (Pydantic-serialized)
+Technical reference for the system. See [SRS.md](./SRS.md) for what the product does; this file explains **how** it's built.
 
 ---
 
-## Authentication & Authorization
-
-### JWT Token Flow
+## 1. System Overview
 
 ```
-Login Request                Backend                     Frontend
-    │                           │                           │
-    ├── POST /auth/login ──────▶│                           │
-    │   {username, password}    │                           │
-    │                           ├── verify bcrypt hash      │
-    │                           ├── create JWT token        │
-    │◀── {token, role, unit} ──┤                           │
-    │                           │                           │
-    │                           │     ┌─────────────────────┤
-    │                           │     │ Store in localStorage│
-    │                           │     │ + Zustand store      │
-    │                           │     └─────────────────────┤
-    │                           │                           │
-    ├── GET /api/v1/cases ─────▶│                           │
-    │   Authorization: Bearer   │                           │
-    │                           ├── decode JWT              │
-    │                           ├── check unit_id scope     │
-    │◀── {cases: [...]} ───────┤                           │
+                            ┌───────────────────────────┐
+                            │   React 19 SPA (Vite)     │
+                            │   TypeScript strict       │
+                            │   Tailwind + Zustand      │
+                            │   Recharts, Sonner        │
+                            └───────────┬───────────────┘
+                                        │ /api/* proxy
+                            ┌───────────▼───────────────┐
+                            │   Nginx (prod)            │
+                            │   TLS + static dist/      │
+                            │   client_max_body_size 25M│
+                            └───────────┬───────────────┘
+                                        │
+                            ┌───────────▼───────────────┐
+                            │   FastAPI (port 8000)     │
+                            │   Gunicorn + Uvicorn      │
+                            │   async SQLAlchemy 2.0    │
+                            └──┬─────────────────┬──────┘
+                               │                 │
+                     ┌─────────▼─────────┐   ┌───▼──────────────┐
+                     │   MySQL 8+        │   │  File storage    │
+                     │   cyber_fraud_dsr │   │  backend/uploads │
+                     │   utf8mb4         │   │  (photos, xlsx)  │
+                     └───────────────────┘   └──────────────────┘
 ```
 
-### JWT Token Structure
-
-```json
-{
-  "sub": "user_id",
-  "role": "admin | unit_user",
-  "unit_id": 123
-}
-```
-
-- **Algorithm:** HS256
-- **Expiry:** 480 minutes (8 hours), configurable
-- **Password hashing:** bcrypt (passlib CryptContext)
-- **Note:** `decode_token` uses `verify_exp=False` — expiry handled by frontend
-
-### Role-Based Access Control
-
-| Role | Data Scope | Dashboard | User Management |
-|------|-----------|-----------|-----------------|
-| `admin` | All units | Yes | Yes |
-| `unit_user` | Own unit only | No | No |
-
-### Authorization Dependencies (api/deps.py)
-
-```python
-get_current_user()    # Extracts user from JWT, returns CurrentUser
-require_admin()       # Raises 403 if role != admin
-require_unit_user()   # Raises 403 if role != unit_user
-```
+**Request flow (typical read):**
+1. Operator interacts with the React SPA.
+2. Frontend calls `/api/v1/*`. Vite proxies to `localhost:8000` in dev; nginx reverse-proxies in prod.
+3. FastAPI dependency layer decodes JWT → `CurrentUser` → applies per-record `(unit_id, ps_id)` scoping (or bypasses for super_admin on read routes).
+4. Async SQLAlchemy runs the query with `selectinload(...)` for eager children.
+5. Pydantic serialises the response. Files (PDF / XLSX) stream back through `StreamingResponse`.
 
 ---
 
-## Database Schema
+## 2. Authentication & Authorization
 
-### Entity Relationship Diagram
+### JWT
+
+- Algorithm: HS256
+- Expiry: `CFDSR_JWT_EXPIRE_MINUTES` (default 480 = 8 h)
+- Secret: `CFDSR_JWT_SECRET`. Backend refuses to start if missing, still-default, or < 32 chars — enforced in `config.py`
+- Claims: `sub` (user_id), `role`, `unit_id`, `ps_id`, `must_change_password`
+- Revocation: `revoked_tokens` table checked on every request; logout inserts the token id
+- Token expiry now enforced (`verify_exp=True`) — VAPT v1.0.1 fix
+
+### Roles
+
+| Role | Data scope | Dashboards | User mgmt | Chat |
+|---|---|---|---|---|
+| `super_admin` | Every PS across the state | Yes (all PSes) | Yes (any PS) | Yes (only role that can) |
+| `admin` | Own `(unit_id, ps_id)` only | Yes (own PS) | Yes (own PS) | No |
+| `unit_user` | Own submissions within own `(unit_id, ps_id)` | No | No | No |
+
+### Dependencies (`api/deps.py`)
+
+- `get_current_user()` — parses + verifies JWT, returns `CurrentUser`
+- `require_admin()` — accepts `admin` or `super_admin`
+- `require_unit_user()` — restricts to `unit_user`
+- `check_record_access(record, user)` — per-record scope check; bypasses for super_admin (2026-07-23)
+- `require_password_changed()` — blocks all routes for users flagged `must_change_password`
+
+Every mutation route calls these dependencies before touching the DB. VAPT 7.7 + 7.8 are enforced at this layer, not at application logic.
+
+---
+
+## 3. Repository Structure
 
 ```
-units ──────┬──── users
-            │
-            ├──── cases ──────┬──── arrests ──────┬──── accomplices
-            │                 │                   └──── accused_details
-            │                 ├──── petitions
-            │                 ├──── lien_accounts
-            │                 ├──── unfreeze_details
-            │                 └──── refunds
-            │
-            ├──── mule_reports ───┬──── money_transfers
-            │                    ├──── other_transactions
-            │                    ├──── transactions_on_hold
-            │                    ├──── others_less_than_500
-            │                    ├──── aeps_transactions
-            │                    └──── atm_withdrawals
-            │
-            ├──── mule_entries
-            └──── dsr_entries
-
-police_stations (standalone lookup table)
-```
-
-### Table Definitions
-
-#### users
-
-```sql
-CREATE TABLE users (
-    id              INT AUTO_INCREMENT PRIMARY KEY,
-    username        VARCHAR(50) UNIQUE NOT NULL,
-    hashed_password VARCHAR(255) NOT NULL,
-    full_name       VARCHAR(150),
-    role            ENUM('admin', 'unit_user') NOT NULL,
-    unit_id         INT REFERENCES units(id),
-    ps_id           INT REFERENCES police_stations(id),
-    is_active       BOOLEAN DEFAULT TRUE,
-    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### units
-
-```sql
-CREATE TABLE units (
-    id         INT AUTO_INCREMENT PRIMARY KEY,
-    name       VARCHAR(100) UNIQUE NOT NULL,
-    code       VARCHAR(50) UNIQUE NOT NULL,
-    is_active  BOOLEAN DEFAULT TRUE,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### police_stations
-
-```sql
-CREATE TABLE police_stations (
-    id            INT AUTO_INCREMENT PRIMARY KEY,
-    district_name VARCHAR(100) NOT NULL,
-    station_name  VARCHAR(200) NOT NULL,
-    is_active     BOOLEAN DEFAULT TRUE,
-    created_at    DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### cases
-
-```sql
-CREATE TABLE cases (
-    id                INT AUTO_INCREMENT PRIMARY KEY,
-    unit_id           INT NOT NULL REFERENCES units(id),
-    fir_no            VARCHAR(50),
-    petition_no       VARCHAR(50),
-    registration_date DATE,
-    case_type         VARCHAR(20),        -- NCRP, Walk-In, Petition
-    crime_type        VARCHAR(30),        -- Internet, Digital, Crypto
-    facts             TEXT,
-    status            VARCHAR(20) DEFAULT 'draft',  -- draft, submitted
-    submitted_by      INT REFERENCES users(id),
-    created_at        DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at        DATETIME ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY (unit_id, fir_no)
-);
-```
-
-#### arrests
-
-```sql
-CREATE TABLE arrests (
-    id              INT AUTO_INCREMENT PRIMARY KEY,
-    case_id         INT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-    name            VARCHAR(200) NOT NULL,
-    address         TEXT,
-    email           VARCHAR(200),
-    aadhar          VARCHAR(12),
-    pan             VARCHAR(10),
-    date_of_arrest  DATE,
-    statement       TEXT,
-    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### accomplices
-
-```sql
-CREATE TABLE accomplices (
-    id                     INT AUTO_INCREMENT PRIMARY KEY,
-    arrest_id              INT NOT NULL REFERENCES arrests(id) ON DELETE CASCADE,
-    where_met              VARCHAR(500),
-    where_stayed           VARCHAR(500),
-    interrogation_details  TEXT,
-    created_at             DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### accused_details
-
-```sql
-CREATE TABLE accused_details (
-    id          INT AUTO_INCREMENT PRIMARY KEY,
-    arrest_id   INT NOT NULL REFERENCES arrests(id) ON DELETE CASCADE,
-    photo_path  VARCHAR(500),
-    email       VARCHAR(200),
-    mobile      VARCHAR(20),
-    occupation  VARCHAR(100),
-    remarks     TEXT,
-    created_at  DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### petitions
-
-```sql
-CREATE TABLE petitions (
-    id              INT AUTO_INCREMENT PRIMARY KEY,
-    case_id         INT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-    petition_no     VARCHAR(50),
-    fir_registered  VARCHAR(20),          -- yes, no, transferred
-    why_not         TEXT,
-    nature          VARCHAR(100),
-    petition_type   VARCHAR(30),          -- amount_lost, fraud_case
-    amount          NUMERIC(18,2) DEFAULT 0,
-    created_at      DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### lien_accounts
-
-```sql
-CREATE TABLE lien_accounts (
-    id                      INT AUTO_INCREMENT PRIMARY KEY,
-    case_id                 INT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-    case_type               VARCHAR(20),   -- FIR, NCRP, Petition
-    account_no              VARCHAR(50) NOT NULL,
-    amount_lien_marked      NUMERIC(18,2) DEFAULT 0,
-    layer                   INT DEFAULT 1,
-    total_amount_in_account NUMERIC(18,2) DEFAULT 0,
-    bank_name               VARCHAR(200),
-    created_at              DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### unfreeze_details
-
-```sql
-CREATE TABLE unfreeze_details (
-    id             INT AUTO_INCREMENT PRIMARY KEY,
-    case_id        INT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-    unfreeze_type  VARCHAR(20),           -- letter, court_order
-    crime_no       VARCHAR(50),
-    bank_name      VARCHAR(200),
-    account_no     VARCHAR(50),
-    amount         NUMERIC(18,2) DEFAULT 0,
-    created_at     DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### refunds
-
-```sql
-CREATE TABLE refunds (
-    id                       INT AUTO_INCREMENT PRIMARY KEY,
-    case_id                  INT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-    refunded                 VARCHAR(20),  -- yes, no
-    victim_name              VARCHAR(200),
-    amount                   NUMERIC(18,2) DEFAULT 0,
-    crime_no_or_petition_no  VARCHAR(50),
-    created_at               DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### mule_reports
-
-```sql
-CREATE TABLE mule_reports (
-    id                 INT AUTO_INCREMENT PRIMARY KEY,
-    unit_id            INT NOT NULL REFERENCES units(id),
-    acknowledgement_no VARCHAR(50) UNIQUE,
-    fir_no             VARCHAR(50) UNIQUE,
-    status             VARCHAR(20) DEFAULT 'draft',
-    submitted_by       INT REFERENCES users(id),
-    created_at         DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at         DATETIME ON UPDATE CURRENT_TIMESTAMP
-);
-```
-
-#### money_transfers
-
-```sql
-CREATE TABLE money_transfers (
-    id                    INT AUTO_INCREMENT PRIMARY KEY,
-    report_id             INT NOT NULL REFERENCES mule_reports(id) ON DELETE CASCADE,
-    account_no            VARCHAR(50),
-    transaction_id        VARCHAR(100),
-    bank                  VARCHAR(200),
-    layer                 INT,
-    dest_account_no       VARCHAR(50),
-    ifsc_code             VARCHAR(20),
-    transaction_date      DATE,
-    dest_transaction_id   VARCHAR(100),
-    transaction_amount    NUMERIC(18,2),
-    disputed_amount       NUMERIC(18,2),
-    reference_no          VARCHAR(100),
-    remarks               TEXT,
-    action_taken_by_bank  VARCHAR(500),
-    date_of_action        DATE,
-    created_at            DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### other_transactions
-
-```sql
-CREATE TABLE other_transactions (
-    id                    INT AUTO_INCREMENT PRIMARY KEY,
-    report_id             INT NOT NULL REFERENCES mule_reports(id) ON DELETE CASCADE,
-    account_no            VARCHAR(50),
-    transaction_id        VARCHAR(100),
-    transaction_date      DATE,
-    transaction_amount    NUMERIC(18,2),
-    reference_no          VARCHAR(100),
-    remarks               TEXT,
-    action_taken_by_bank  VARCHAR(500),
-    date_of_action        DATE,
-    created_at            DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### transactions_on_hold
-
-```sql
-CREATE TABLE transactions_on_hold (
-    id                    INT AUTO_INCREMENT PRIMARY KEY,
-    report_id             INT NOT NULL REFERENCES mule_reports(id) ON DELETE CASCADE,
-    account_no            VARCHAR(50),
-    transaction_id        VARCHAR(100),
-    hold_date             DATE,
-    hold_amount           NUMERIC(18,2),
-    action_taken_by_bank  VARCHAR(500),
-    date_of_action        DATE,
-    layer                 INT,
-    created_at            DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### others_less_than_500
-
-```sql
-CREATE TABLE others_less_than_500 (
-    id                    INT AUTO_INCREMENT PRIMARY KEY,
-    report_id             INT NOT NULL REFERENCES mule_reports(id) ON DELETE CASCADE,
-    account_no            VARCHAR(50),
-    transaction_id        VARCHAR(100),
-    reference_no          VARCHAR(100),
-    remarks               TEXT,
-    action_taken_by_bank  VARCHAR(500),
-    date_of_action        DATE,
-    created_at            DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### aeps_transactions
-
-```sql
-CREATE TABLE aeps_transactions (
-    id                    INT AUTO_INCREMENT PRIMARY KEY,
-    report_id             INT NOT NULL REFERENCES mule_reports(id) ON DELETE CASCADE,
-    account_no            VARCHAR(50),
-    transaction_id        VARCHAR(100),
-    withdrawal_date       DATE,
-    withdrawal_amount     NUMERIC(18,2),
-    reference_no          VARCHAR(100),
-    remarks               TEXT,
-    action_taken_by_bank  VARCHAR(500),
-    date_of_action        DATE,
-    layer                 INT,
-    created_at            DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### atm_withdrawals
-
-```sql
-CREATE TABLE atm_withdrawals (
-    id                    INT AUTO_INCREMENT PRIMARY KEY,
-    report_id             INT NOT NULL REFERENCES mule_reports(id) ON DELETE CASCADE,
-    account_no            VARCHAR(50),
-    transaction_id        VARCHAR(100),
-    withdrawal_datetime   DATETIME,
-    withdrawal_amount     NUMERIC(18,2),
-    disputed_amount       NUMERIC(18,2),
-    atm_id                VARCHAR(100),
-    atm_location          VARCHAR(500),
-    reference_no          VARCHAR(100),
-    remarks               TEXT,
-    action_taken_by_bank  VARCHAR(500),
-    date_of_action        DATE,
-    created_at            DATETIME DEFAULT CURRENT_TIMESTAMP
-);
-```
-
-#### mule_entries
-
-```sql
-CREATE TABLE mule_entries (
-    id                              INT AUTO_INCREMENT PRIMARY KEY,
-    unit_id                         INT NOT NULL REFERENCES units(id),
-    report_date                     DATE NOT NULL,
-    accounts_most_liens             TEXT,
-    recruiters_for_lien_accounts    TEXT,
-    accounts_max_money_routed       TEXT,
-    accounts_max_transactions       TEXT,
-    recency_atm_transactions        TEXT,
-    cash_withdrawals_mule_wise      TEXT,
-    atm_geo_identification          TEXT,
-    atm_table_by_transactions       TEXT,
-    cheque_withdrawal_branches      TEXT,
-    money_left_system_stats         TEXT,
-    crypto_mule_accounts            TEXT,
-    submitted_by                    INT REFERENCES users(id),
-    created_at                      DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at                      DATETIME ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY (unit_id, report_date)
-);
-```
-
-#### dsr_entries
-
-```sql
-CREATE TABLE dsr_entries (
-    id                                  INT AUTO_INCREMENT PRIMARY KEY,
-    unit_id                             INT NOT NULL REFERENCES units(id),
-    report_date                         DATE NOT NULL,
-    cases                               INT DEFAULT 0,
-    petitions                           INT DEFAULT 0,
-    details_of_arrest                   INT DEFAULT 0,
-    case_type                           VARCHAR(20),
-    cumulative_amount_lien_marked       NUMERIC(18,2) DEFAULT 0,
-    cumulative_accounts_lien_marked     INT DEFAULT 0,
-    cumulative_accounts_defreezed       INT DEFAULT 0,
-    amount_refunded_to_victim           NUMERIC(18,2) DEFAULT 0,
-    ui_cases_pending_2021               INT DEFAULT 0,
-    ui_cases_pending_2022               INT DEFAULT 0,
-    ui_cases_pending_2023               INT DEFAULT 0,
-    ui_cases_pending_2024               INT DEFAULT 0,
-    ui_cases_pending_2025               INT DEFAULT 0,
-    ui_cases_pending_2026               INT DEFAULT 0,
-    disposed_detected_chargesheeted     INT DEFAULT 0,
-    disposed_transferred                INT DEFAULT 0,
-    disposed_false                      INT DEFAULT 0,
-    disposed_undetected                 INT DEFAULT 0,
-    trial_convicted                     INT DEFAULT 0,
-    trial_discharged                    INT DEFAULT 0,
-    trial_acquitted                     INT DEFAULT 0,
-    trial_abated                        INT DEFAULT 0,
-    trial_compounded                    INT DEFAULT 0,
-    trial_ut                            INT DEFAULT 0,
-    submitted_by                        INT REFERENCES users(id),
-    created_at                          DATETIME DEFAULT CURRENT_TIMESTAMP,
-    updated_at                          DATETIME ON UPDATE CURRENT_TIMESTAMP,
-    UNIQUE KEY (unit_id, report_date)
-);
+CyberFraudDataEntry/
+├── backend/                    # FastAPI server (Python 3.10+)
+│   ├── cyber_fraud.py          # App entry — CORS, router mounting, lifespan
+│   ├── config.py               # Pydantic Settings, env prefix CFDSR_
+│   ├── database.py             # Async engine + session factory
+│   ├── seed.py                 # Seed units + PSes + admin user
+│   ├── requirements.txt
+│   ├── .env                    # NEVER commit
+│   ├── api/                    # Route handlers (13 files)
+│   │   ├── deps.py             # Auth + scoping dependencies
+│   │   ├── routes_auth.py      # Login, /me, change-password
+│   │   ├── routes_users.py     # User CRUD (admin+)
+│   │   ├── routes_case.py      # Case CRUD + search
+│   │   ├── routes_mule_report.py  # Mule report CRUD + Excel upload/parse
+│   │   ├── routes_all_accounts.py # All accounts CRUD
+│   │   ├── routes_dsr.py       # DSR upsert + history
+│   │   ├── routes_mule.py      # Mule intel entry upsert + history
+│   │   ├── routes_daily_work.py   # Daily Work Done CRUD + dashboard
+│   │   ├── routes_portals_dsr.py  # Portals DSR CRUD + dashboard
+│   │   ├── routes_nil.py       # NIL declarations
+│   │   ├── routes_dashboard.py # All admin dashboards + aggregators
+│   │   ├── routes_reports.py   # PDF + Excel + JSON preview endpoints
+│   │   └── routes_chat.py      # Ask-the-Data chat (super_admin only)
+│   ├── auth/security.py        # JWT create/decode, bcrypt hashing
+│   ├── models/                 # SQLAlchemy ORM (30 files, one per table)
+│   ├── schemas/                # Pydantic (one file per domain)
+│   ├── reports/                # PDF + Excel renderers
+│   │   ├── base.py             # Shared chrome (title, page header, tables)
+│   │   ├── dsr_aggregator.py
+│   │   ├── case_pdf.py
+│   │   ├── dsr_pdf.py
+│   │   ├── mule_pdf.py
+│   │   ├── submission_status_pdf.py
+│   │   ├── fir_ps_performance_{pdf,xlsx}.py
+│   │   ├── accounts_ps_comparison_{pdf,xlsx}.py
+│   │   ├── portals_dsr_daily_{pdf,xlsx}.py    # 2026-07-24
+│   │   └── daily_work_daily_{pdf,xlsx}.py     # 2026-07-24
+│   ├── chat/schema_description.py  # LLM schema-hint prompt
+│   ├── utils/
+│   │   ├── validators.py       # amount cap, FIR No format
+│   │   └── sanitize.py         # strip_html for all free text
+│   └── migrations/             # 001–018, idempotent, hand-rolled
+├── frontend/                   # React 19 SPA (Vite + TypeScript strict)
+│   ├── src/
+│   │   ├── App.tsx             # React Router routes
+│   │   ├── main.tsx
+│   │   ├── index.css           # Tailwind + KSP palette vars
+│   │   ├── assets/ksp_logo.png
+│   │   ├── components/
+│   │   │   ├── auth/           # LoginForm, ProtectedRoute, ChangePassword
+│   │   │   └── layout/         # AppShell, Sidebar, HomeTiles
+│   │   ├── pages/              # One per route (32 files)
+│   │   ├── lib/
+│   │   │   ├── api/            # Typed fetch wrappers (15 files)
+│   │   │   ├── stores/         # Zustand — auth only
+│   │   │   └── utils/          # format, modules, indian-states,
+│   │   │                       # karnataka-districts, fir-no,
+│   │   │                       # portals-tabs, crime-types
+│   │   └── types/index.ts      # ALL TypeScript interfaces
+│   ├── vite.config.ts          # /api → localhost:8000 proxy
+│   └── package.json
+├── deploy/                     # Deploy scripts
+│   ├── update.sh               # git pull → pip → migrations → build → sync → restart → self-verify
+│   ├── backup-db.sh            # nightly mysqldump, keep newest
+│   └── backup-uploads.sh       # nightly tarball, keep newest
+├── proddata/                   # DB backups (historical snapshots)
+├── SRS.md                      # Product bible
+├── Architecture.md             # This file
+├── CLAUDE.md                   # Working notes for Claude
+├── PLAN.md                     # Roadmap
+├── Operations.md               # Runbook
+├── ProductionDeployment.md     # Full server bring-up guide
+├── SecurityAudit.md            # VAPT v1.0.1 tracking
+├── database.md                 # Migration + charset conventions
+├── OfflineGitSetup.md          # Air-gapped git workflow
+└── startup.md                  # Dev quickstart
 ```
 
 ---
 
-## API Reference
+## 4. Database Schema
 
-### Authentication (`/api/v1/auth`)
+MySQL 8+ / InnoDB / `utf8mb4` / `utf8mb4_unicode_ci`. `cases.id` is `VARCHAR(36)` (UUIDv4, VAPT v1.0.1 rec #2). Everything else that references `cases.id` MUST match its full column type or MySQL 3780 fires (see [database.md](./database.md)).
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/login` | None | Login, returns JWT + user info |
-| GET | `/me` | Bearer | Get current user |
+### Core identity
 
-### Public Data (no auth)
+| Table | Purpose |
+|---|---|
+| `units` | 44 districts (name, code, active) |
+| `police_stations` | 45+ Cyber Crime PSes (district, station name, active). Migration 018 renamed `CEN` → `Cyber` in station_name |
+| `users` | Login accounts (username, hashed_password, role, unit_id, ps_id, is_active, must_change_password) |
+| `revoked_tokens` | JWT logout / rotation list |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/v1/units` | List active units |
-| GET | `/api/v1/units/public` | Units for login form |
-| GET | `/api/v1/districts/public` | List all districts |
-| GET | `/api/v1/police-stations/public?district={name}` | Police stations by district |
+### Cases module
 
-### Cases (`/api/v1/cases`)
+| Table | UNIQUE | Notes |
+|---|---|---|
+| `cases` | `(unit_id, ps_id, fir_no)` | 31-entry crime_type since migration 016; `sections` free-text; `is_financial` bool |
+| `arrests` | CASCADE from cases | Per-case arrests |
+| `accomplices` | CASCADE from arrests | Per-arrest accomplices |
+| `accused_details` | CASCADE from arrests | Photos, contact, occupation |
+| `petitions` | CASCADE from cases | Includes petition_type + amount |
+| `lien_accounts` | CASCADE from cases | Frozen accounts with layer tracking |
+| `unfreeze_details` | CASCADE from cases | Court order / letter defreezes |
+| `refunds` | CASCADE from cases | Per-case victim refunds |
+| `victims` | UNIQUE (case_id), CASCADE | 1:1 with cases; primary bank account fields |
+| `victim_accounts` | CASCADE from cases | Additional victim accounts (migration 017) |
+| `accused_accounts` | CASCADE from cases | Bank accounts money went to (migration 017) |
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/` | Bearer | Create case with nested children |
-| GET | `/` | Bearer | List own unit cases (limit/offset) |
-| GET | `/all` | Admin | List all cases |
-| GET | `/{case_id}` | Bearer | Get case with all children |
-| GET | `/search?fir_no={fir}` | Bearer | Search by FIR number |
-| GET | `/search-petition?petition_no={no}` | Bearer | Search by petition number |
-| PUT | `/{case_id}` | Bearer | Update case |
-| DELETE | `/{case_id}` | Bearer | Delete case (CASCADE) |
+### NCRP Data module
 
-### Mule Reports (`/api/v1/mule-reports`)
+| Table | UNIQUE | Notes |
+|---|---|---|
+| `mule_reports` | `acknowledgement_no`, `fir_no` | Parent for six txn tables |
+| `money_transfers` | CASCADE from mule_reports | Bank-to-bank transfers |
+| `other_transactions` | CASCADE from mule_reports | |
+| `transactions_on_hold` | CASCADE from mule_reports | |
+| `others_less_than_500` | CASCADE from mule_reports | |
+| `aeps_transactions` | CASCADE from mule_reports | Aadhar-enabled withdrawals |
+| `atm_withdrawals` | CASCADE from mule_reports | |
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/` | Bearer | Create mule report with transactions |
-| GET | `/` | Bearer | List own unit reports (limit/offset) |
-| GET | `/{report_id}` | Bearer | Get report with all transactions |
-| GET | `/search?ack_no={no}` | Bearer | Search by acknowledgement number |
-| PUT | `/{report_id}` | Bearer | Update mule report |
-| DELETE | `/{report_id}` | Bearer | Delete report (CASCADE) |
-| POST | `/upload-excel` | Bearer | Upload bank Excel files (batch) |
-| POST | `/parse-excel` | Bearer | Preview parsed Excel (no save) |
+### All Accounts module
 
-### Mule Entries (`/api/v1/mule`)
+| Table | UNIQUE | Notes |
+|---|---|---|
+| `all_accounts` | `(unit_id, ps_id, serial_no)` | account_type Victim/Mule/Non-Mule; branch_state + layer since migration 012 |
+| `all_account_mule_herders` | CASCADE from all_accounts | Multiple mule-herders per account |
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/` | Bearer | Upsert mule entry (unit_id + date) |
-| GET | `/?date={YYYY-MM-DD}` | Bearer | Get own unit entry for date |
-| GET | `/history?limit=30` | Bearer | Get own unit history |
-| GET | `/all?date={YYYY-MM-DD}` | Admin | Get all units for date |
+### DSR module
 
-### DSR (`/api/v1/dsr`)
+| Table | UNIQUE | Notes |
+|---|---|---|
+| `dsr_entries` | `(unit_id, ps_id, report_date)` | Legacy district-level DSR — ps_id added migration 008 |
+| `mule_entries` | `(unit_id, report_date)` | Mule intel free-text summaries |
+| `daily_work_entries` | `(unit_id, ps_id, fir_no, report_date)` | Per-FIR daily activity (migration 014) |
+| `portals_dsr_entries` | none | Multiple shift-batches per (unit, ps, date) legal (migration 013) |
+| `daily_nil_declarations` | `(unit_id, ps_id, nil_date)` | NIL activity flag (migration 007) |
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/` | Bearer | Upsert DSR entry (unit_id + date) |
-| GET | `/?date={YYYY-MM-DD}` | Bearer | Get own unit entry for date |
-| GET | `/history?limit=30` | Bearer | Get own unit history |
-| GET | `/all?date={YYYY-MM-DD}` | Admin | Get all units for date |
+### Admin module
 
-### Dashboard (`/api/v1/dashboard`) — Admin only
+| Table | Notes |
+|---|---|
+| `chat_messages` | Every question + answer + SQL for audit (migration 005) |
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/summary` | KPI totals (cases, arrests, lien amount, refunds) |
-| GET | `/unit-comparison` | Per-unit comparison stats |
+Total: ~30 tables. Every child table CASCADE-deletes with its parent; every operator-created row carries `submitted_by`.
 
-### Uploads (`/api/v1/uploads`)
+### Migration discipline
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/photo` | Bearer | Upload accused photo |
+- Numbered, idempotent, hand-rolled Python scripts under `backend/migrations/`
+- Each migration guards changes with INFORMATION_SCHEMA checks — safe to re-run
+- Applied automatically by `deploy/update.sh` on every deploy
+- No `reset_db.py` anymore — post-VAPT the app is production and dropping tables is banned. Every schema change goes via a new migration
+- 001–018 currently in the pipeline (001–004 initial + fixups; 005 chat; 006 financial; 007 NIL; 008 ps_id on DSR; 009–012 All Accounts; 013 Portals DSR; 014 Daily Work; 015 sections; 016 crime types; 017 victim + accused accounts; 018 CEN → Cyber rename)
+
+---
+
+## 5. API Surface
+
+Everything under `/api/v1/`. Each route module scopes writes to `(unit_id, ps_id)` and enforces the role dependency.
+
+### Authentication
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/auth/login` | none | Login → JWT |
+| POST | `/auth/logout` | Bearer | Revoke current token |
+| GET | `/auth/me` | Bearer | Return current user |
+| POST | `/auth/change-password` | Bearer | Change password, clear must_change_password flag |
+
+### Public lookups (no auth)
+
+| Method | Path |
+|---|---|
+| GET | `/units/public` |
+| GET | `/districts/public` |
+| GET | `/police-stations/public?district=` |
+
+### Users
+
+| Method | Path | Auth |
+|---|---|---|
+| GET | `/users` | admin+ |
+| POST | `/users` | admin+ |
+| PATCH | `/users/{id}` | admin+ |
+| POST | `/users/{id}/reset-password` | admin+ |
+
+### Cases
+
+| Method | Path | Auth |
+|---|---|---|
+| POST | `/cases/` | Bearer |
+| GET | `/cases/` | Bearer |
+| GET | `/cases/all` | admin+ |
+| GET | `/cases/{id}` | Bearer (per-record) |
+| GET | `/cases/search?fir_no=` | Bearer |
+| GET | `/cases/search-petition?petition_no=` | Bearer |
+| PUT | `/cases/{id}` | Bearer (per-record) |
+| DELETE | `/cases/{id}` | Bearer (per-record) |
+
+### Mule reports
+
+| Method | Path | Auth |
+|---|---|---|
+| POST | `/mule-reports/` | Bearer |
+| GET | `/mule-reports/` | Bearer |
+| GET | `/mule-reports/{id}` | Bearer (per-record) |
+| GET | `/mule-reports/search?ack_no=` | Bearer |
+| PUT | `/mule-reports/{id}` | Bearer (per-record) |
+| DELETE | `/mule-reports/{id}` | Bearer (per-record) |
+| POST | `/mule-reports/upload-excel` | Bearer |
+| POST | `/mule-reports/parse-excel` | Bearer |
+
+### All Accounts
+
+| Method | Path | Auth |
+|---|---|---|
+| POST | `/all-accounts/` | Bearer |
+| GET | `/all-accounts/` | Bearer |
+| GET | `/all-accounts/{id}` | Bearer (per-record) |
+| PUT | `/all-accounts/{id}` | Bearer (per-record) |
+| DELETE | `/all-accounts/{id}` | Bearer (per-record) |
+
+### DSR / Daily Work / Portals DSR / NIL
+
+| Method | Path | Auth |
+|---|---|---|
+| POST/GET | `/dsr/` | Bearer |
+| POST/GET | `/mule/` | Bearer (mule intel entry, distinct from mule-reports) |
+| GET/POST/PUT/DELETE | `/daily-work/` | Bearer |
+| GET | `/daily-work/dashboard` | admin+ |
+| GET/POST/PUT/DELETE | `/portals-dsr/` | Bearer |
+| POST | `/nil/` | admin+ (NIL declaration) |
+
+### Dashboards (admin+ only)
+
+| Method | Path | Notes |
+|---|---|---|
+| GET | `/dashboard/summary` | Cases module KPIs |
+| GET | `/dashboard/unit-comparison` | |
+| GET | `/dashboard/submission-status?date=` | Cross-PS submitted / NIL flags |
+| GET | `/dashboard/fir-ps-performance?from=&to=` | FIR Dashboard |
+| GET | `/dashboard/portals-summary?from=&to=` | Portals DSR KPIs |
+| GET | `/dashboard/portals-comparison?from=&to=` | Per-PS Portals DSR |
+| GET | `/dashboard/accounts-summary?date=` | Accounts KPIs |
+| GET | `/dashboard/accounts-comparison?date=` | Per-PS accounts (with yesterday col) |
+| GET | `/dashboard/accounts-daily-growth` | Line chart data |
+
+### Reports (admin+)
+
+| Method | Path | Format |
+|---|---|---|
+| GET | `/reports/case.pdf?fir_no=` | Case file PDF |
+| GET | `/reports/mule.pdf?ack_no=` | Mule report PDF |
+| GET | `/reports/dsr.pdf?from=&to=&ps_id=` | DSR aggregated PDF |
+| GET | `/reports/submission-status.pdf?date=` | |
+| GET | `/reports/fir-ps-performance.{pdf,xlsx}?from=&to=` | |
+| GET | `/reports/accounts-ps-comparison.{pdf,xlsx}?date=` | |
+| GET | `/reports/portals-dsr-daily.{pdf,xlsx,json}?date=` | Daily PS-wise (2026-07-24) |
+| GET | `/reports/daily-work-daily.{pdf,xlsx,json}?date=` | Daily PS-wise (2026-07-24) |
+
+`.json` variants return the same aggregated data the PDF/XLSX use, letting the frontend render an on-screen preview before download.
+
+### Chat (super_admin only)
+
+| Method | Path |
+|---|---|
+| POST | `/chat/ask` |
+| GET | `/chat/history` |
+
+### Uploads
+
+| Method | Path | Auth |
+|---|---|---|
+| POST | `/uploads/photo` | Bearer |
+| POST | `/uploads/statement` | Bearer |
 
 ### Health
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Service health check |
+| Method | Path |
+|---|---|
+| GET | `/health` |
 
 ---
 
-## Frontend Architecture
+## 6. Frontend Architecture
+
+### Modules
+
+Frontend is organised around five modules defined once in `src/lib/utils/modules.ts`. The landing page renders a tile grid; the sidebar shows only the current module's links.
+
+```
+cases      → /cases/*, /petitions/*, /dashboard, /reports
+ncrp       → /mule/*
+accounts   → /all-accounts/*, /accounts-dashboard
+dsr        → /dsr/*, /daily-work/*, /portals-dsr/*
+admin      → /users, /chat
+```
+
+`getCurrentModule(pathname)` matches URL prefixes to the module def. Adding a new sidebar entry = one edit to `modules.ts`.
 
 ### Routing
 
-```
-/login                    → LoginPage (public)
-/                         → Redirect to /cases/new
-/cases/new                → CaseEntryPage
-/cases/:id                → CaseEntryPage (edit mode)
-/cases/update             → CaseUpdatePage (search + edit)
-/cases                    → CaseListPage
-/petitions/new            → PetitionEntryPage
-/petitions/:id            → PetitionUpdatePage
-/petitions/update         → PetitionUpdatePage (search)
-/mule/new                 → MuleReportEntryPage
-/mule/:id                 → MuleReportEntryPage (edit)
-/mule/update              → MuleUpdatePage (search)
-/mule/upload              → MuleUploadPage (Excel)
-/mule/reports             → MuleReportListPage
-/mule/entry               → MuleEntryPage
-/dsr                      → DsrEntryPage
-/history                  → HistoryPage (DSR + Mule)
-/dashboard                → DashboardPage (admin only)
-```
+React Router 7 flat routes in `App.tsx`. Every authenticated route is wrapped in `<ProtectedRoute>`; admin-only ones add `requireAdmin`. URLs stay stable even when the module reorganises (e.g. DSR module owns `/portals-dsr/*` even though those URLs predate the DSR module).
 
-### State Management
+### State
 
-**Zustand auth store** — minimal global state:
-```typescript
-interface AuthState {
-  token: string | null
-  user: User | null
-  setAuth(token: string, user: User): void
-  logout(): void
-  loadFromStorage(): void
-}
-```
+Zustand for auth only (`token`, `user`). Everything else is local component state — no global stores. `localStorage` persists the token so refreshes work.
 
-- Token + user persisted in `localStorage`
-- All other state is local to page components (useState)
+### API client
 
-### API Client Pattern
+`lib/api/client.ts` exports `apiFetch<T>(path, opts)` which:
+- Auto-injects `Authorization: Bearer {token}`
+- Extracts human-readable error from Pydantic 422 responses (was `[object Object]` before the fix)
+- Redirects to `/login` on 401
 
-```typescript
-// lib/api/client.ts
-async function apiFetch<T>(path: string, options?: RequestInit): Promise<T>
-```
+Every domain has its own typed wrapper (`lib/api/cases.ts`, `lib/api/reports.ts`, etc.) that re-uses `apiFetch`. Downloads use a separate `downloadPdf` helper in `reports.ts` that fetches a blob + triggers a save dialog.
 
-- Auto-injects `Authorization: Bearer {token}` header
-- On 401: clears localStorage, redirects to `/login`
-- All domain-specific API files use this base function
+### Types
 
-### Component Hierarchy
+Every server-facing interface lives in `src/types/index.ts`. Consolidated (not split by domain) so it's one grep to find any shape.
 
-```
-App.tsx (Router)
-  └─ ProtectedRoute (auth guard)
-       └─ AppShell (layout)
-            ├─ Sidebar (navigation)
-            └─ Page Component
-                 ├─ Form sections (inline)
-                 ├─ DsrForm (reusable)
-                 └─ MuleForm (reusable)
-```
+### Nested forms
 
-### Nested Form Pattern (Cases)
+Cases are the deepest — 6 nested collections + a 1:1 victim. State managed via plain `useState` + array-manipulation helpers. Never introduce `react-hook-form` or similar without discussion.
 
-Cases use deeply nested forms with dynamic add/remove:
-```
-CaseEntryPage
-  ├─ Case fields (fir_no, case_type, crime_type, facts)
-  ├─ Arrests[] (dynamic array)
-  │    ├─ Arrest fields (name, address, aadhar, pan)
-  │    ├─ Accomplices[] (nested dynamic array)
-  │    └─ AccusedDetails[] (nested dynamic array)
-  ├─ Petitions[] (dynamic array)
-  ├─ LienAccounts[] (dynamic array)
-  ├─ UnfreezeDetails[] (dynamic array)
-  └─ Refunds[] (dynamic array)
-```
+### Styling
 
-All managed via React `useState` with array manipulation helpers.
+Tailwind CSS with a KSP palette on CSS custom properties (`--ksp-navy`, `--ksp-yellow`, `--ksp-red`). No component library — utilities + a few reusable primitives (`AppShell`, `Sidebar`, `KpiCard`, `ChartCard`).
+
+### Charts
+
+Recharts. Common patterns: Bar / Line / Pie with a KSP-tuned palette. Every metric that spans multiple charts (Victim / Mule / Non-Mule) uses shared constants at the top of each dashboard page.
 
 ---
 
-## Production Deployment
+## 7. Report Generation
 
-### Server Architecture
+### Shared chrome (`reports/base.py`)
 
-```
-Internet → Nginx (443/SSL) → Gunicorn (8000) → FastAPI
-                           → Static files (frontend/dist)
-```
+- `KSP_NAVY`, `KSP_YELLOW`, `KSP_RED` colors
+- `_draw_page_chrome()` — yellow header band, KSP logo, page footer
+- `build_pdf()` — wraps SimpleDocTemplate with A4 portrait / landscape defaults + 15mm margins
+- `data_table()`, `report_title()`, `section_heading()`, `spacer()`, `kv_table()`
 
-### Stack
-- **OS:** Ubuntu 22.04 VM (4 vCPU, 8 GB RAM, 50 GB SSD)
-- **Reverse proxy:** Nginx with SSL termination
-- **ASGI server:** Gunicorn with Uvicorn workers
-- **Process manager:** systemd
-- **Database:** MySQL 8.0
+Most reports use `build_pdf()`. Wide reports (Portals DSR daily, Daily Work daily) drive `SimpleDocTemplate` directly to tighten margins to 8mm so 25+ columns fit on A4 landscape.
 
-### Nginx Configuration
+### XLSX renderers
 
-- Serves `frontend/dist/` as static files at `/`
-- Proxies `/api/*` and `/health` to Gunicorn on port 8000
-- SSL with Let's Encrypt certificates
-- Gzip compression enabled
+openpyxl. Convention: title row + subtitle row + blank + header row + data rows + grand total row. Header uses navy fill + white bold; data rows alternate white / soft-grey; grand total row uses KSP yellow fill.
 
-### systemd Service
+### Streaming responses
 
-- Service name: `cyberfraud-api`
-- Working directory: `/opt/cyberfraud/backend`
-- Command: `gunicorn cyber_fraud:app -k uvicorn.workers.UvicornWorker -w 4 -b 0.0.0.0:8000`
-- Auto-restart on failure
+`_pdf_response(bytes, filename)` and `_xlsx_response(bytes, filename)` wrap raw bytes in `StreamingResponse` with the right MIME + `Content-Disposition: attachment` header. Frontend `downloadPdf()` prefers server-provided filename, falls back to a client-provided default.
+
+### Preview endpoints
+
+Every daily report has a `.json` sibling that returns the same aggregated rows the PDF / XLSX renderers consume. Frontend renders an on-screen table before the operator downloads — preview and file are always the same shape.
 
 ---
 
-## Excel Upload Pipeline
+## 8. Deployment
 
-### Supported Sheet Types
+### Production stack
 
-| Sheet Name | Maps To | Key Fields |
-|------------|---------|------------|
-| Money Transfers | `money_transfers` | account_no, transaction_id, bank, layer, dest_account_no, amounts |
-| Other Transactions | `other_transactions` | account_no, transaction_id, amounts |
-| Transactions on Hold | `transactions_on_hold` | account_no, hold_date, hold_amount |
-| Others < 500 | `others_less_than_500` | account_no, transaction_id, reference_no |
-| AEPS | `aeps_transactions` | account_no, withdrawal_date, withdrawal_amount |
-| ATM Withdrawals | `atm_withdrawals` | account_no, withdrawal_datetime, atm_id, atm_location |
+- Ubuntu 24.04 VM (4 vCPU / 8 GB / 50 GB SSD)
+- MySQL 8.0 on localhost
+- Backend: Gunicorn (4 workers) + Uvicorn, systemd unit `cyberfraud-backend`
+- Nginx TLS termination (self-signed), reverse proxy `/api/*` and `/health`, static `dist/`
+- Nightly systemd timer runs `deploy/backup-db.sh` + `backup-uploads.sh`
 
-### Flow
+### update.sh flow
 
-1. User uploads Excel file(s) via `/mule/upload` page
-2. Frontend sends to `POST /api/v1/mule-reports/parse-excel` for preview
-3. User reviews parsed data
-4. Frontend sends to `POST /api/v1/mule-reports/upload-excel` to save
-5. Backend creates `MuleReport` + child transaction records
-6. `acknowledgement_no` extracted from first data row of Excel
+1. `git pull` on `/opt/scrb`
+2. pip install
+3. Run migrations 001 → 018 (idempotent — each is a no-op when already applied)
+4. `npm install && npm run build` (frontend)
+5. rsync backend + frontend/dist into runtime
+6. Restart `cyberfraud-backend.service`
+7. Reload nginx
+8. Self-verify — hits `/health`, checks every migration's target schema landed, checks admin routes respond 401 (not 500 / 404)
 
-### Processing (openpyxl)
+Self-verify aborts the deploy if any check fails, so you don't ship a half-migrated schema. See `deploy/update.sh` for the current check list.
 
-- Reads each sheet by name
-- First non-empty row = headers
-- Subsequent rows mapped to typed transaction objects
-- Skips empty rows and sheets with no data
+### Backups
+
+- `backup-db.sh` → nightly mysqldump, keeps only the newest snapshot (retention pruned by name-exclusion)
+- `backup-uploads.sh` → nightly tarball, same retention
+- Both scripts are safe to run mid-day (the mysqldump uses `--single-transaction`)
+
+---
+
+## 9. Feature Flags
+
+- `CFDSR_CHAT_ENABLED` — gates the Ask-the-Data chat page + API. Default false in prod; requires the LLM API key to be set for it to work at all. Even when on, only super_admins can use it.
+
+---
+
+## 10. Known Constraints
+
+- FastAPI async only — every route is `async def`; every DB call uses `AsyncSession`. Sync code is not allowed
+- No raw SQL — SQLAlchemy ORM exclusively (a small number of `func.count` etc. in aggregators is fine, hand-written SQL is not)
+- Free-text on write → `strip_html` — VAPT v1.0.1 rec, applied via Pydantic `field_validator`
+- File uploads go to `backend/uploads/` — never to `frontend/public` or a CDN
+- Every case update rebuilds the entire nested tree — the update route deletes all children and re-inserts, so PUT bodies MUST include the complete state (except `victim_accounts` / `accused_accounts`, which are Optional pass-through)
+- Adding an env var → `CFDSR_` prefix + `config.py` registration or the setting won't be read
+
+---
+
+_See [SRS.md](./SRS.md) for the product view. See [database.md](./database.md) for migration + charset conventions. See [ProductionDeployment.md](./ProductionDeployment.md) for full server bring-up._
