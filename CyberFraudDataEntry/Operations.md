@@ -178,6 +178,36 @@ find /opt/cyberfraud/backups -name "*.sql.gz" -mtime +30 -delete
 
 ---
 
+## Schema Snapshot (Structure Only, No Rows)
+
+Sometimes you need the current DDL for an auditor / new dev / offline
+reader who can't SSH into the DB. Use `deploy/dump-schema.sh` — it
+runs `mysqldump --no-data` and drops a timestamped `.sql` file into
+`proddata/`.
+
+```bash
+cd /opt/cyberfraud
+./deploy/dump-schema.sh
+# ⇒ proddata/schema-snapshot-YYYYMMDD.sql
+```
+
+Reads DB creds from `backend/.env`. NOT wired into `update.sh` (no
+need to snapshot on every deploy). Regenerate on demand:
+
+- Before / after a migration you want to compare
+- For a VAPT / audit handoff
+- For a new-dev handover pack
+
+Commit the resulting file if you want to preserve it as a dated
+artefact — otherwise it's a working file you can discard.
+
+The canonical, always-current source of truth for the schema is the
+SQLAlchemy models under `backend/models/*.py`, plus the tables
+embedded in [database.md](./database.md#10-current-schema-reference).
+The snapshot is for people / tools that can't read Python.
+
+---
+
 ## Useful Commands
 
 | Task | Command |
