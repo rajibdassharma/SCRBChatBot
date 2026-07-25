@@ -4,9 +4,9 @@ A multi-unit law enforcement data entry platform for Karnataka State Police (SCR
 
 **In production.** All schema changes go via numbered migrations. Local test before every push. Deploy is a single `./update.sh` on the server.
 
-See @SRS.md for what the product does — 5 modules, 3 roles, functional requirements.
-See @Architecture.md for how it's built — schema, routes, deploy flow.
-See @Operations.md, @ProductionDeployment.md, @database.md for runtime + deployment.
+See @docs/SRS.md for what the product does — 5 modules, 3 roles, functional requirements.
+See @docs/Architecture.md for how it's built — schema, routes, deploy flow.
+See @docs/Operations.md, @docs/ProductionDeployment.md, @docs/database.md for runtime + deployment.
 
 ---
 

@@ -142,15 +142,16 @@ CyberFraudDataEntry/
 │   ├── backup-db.sh            # nightly mysqldump, keep newest
 │   └── backup-uploads.sh       # nightly tarball, keep newest
 ├── proddata/                   # DB backups (historical snapshots)
-├── SRS.md                      # Product bible
-├── Architecture.md             # This file
-├── CLAUDE.md                   # Working notes for Claude
-├── Operations.md               # Runbook
-├── ProductionDeployment.md     # Full server bring-up guide
-├── SecurityAudit.md            # VAPT v1.0.1 tracking
-├── database.md                 # Migration + charset conventions
-├── OfflineGitSetup.md          # Air-gapped git workflow
-└── startup.md                  # Dev quickstart
+├── CLAUDE.md                   # Working notes for Claude (auto-loaded from root)
+└── docs/                       # Everything else (human docs)
+    ├── SRS.md                      # Product bible
+    ├── Architecture.md             # This file
+    ├── Operations.md               # Runbook
+    ├── ProductionDeployment.md     # Full server bring-up guide
+    ├── SecurityAudit.md            # VAPT v1.0.1 tracking
+    ├── database.md                 # Migration + charset conventions
+    ├── OfflineGitSetup.md          # Air-gapped git workflow
+    └── startup.md                  # Dev quickstart
 ```
 
 ---
