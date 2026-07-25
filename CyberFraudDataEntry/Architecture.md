@@ -145,7 +145,6 @@ CyberFraudDataEntry/
 ├── SRS.md                      # Product bible
 ├── Architecture.md             # This file
 ├── CLAUDE.md                   # Working notes for Claude
-├── PLAN.md                     # Roadmap
 ├── Operations.md               # Runbook
 ├── ProductionDeployment.md     # Full server bring-up guide
 ├── SecurityAudit.md            # VAPT v1.0.1 tracking

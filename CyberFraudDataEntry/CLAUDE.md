@@ -6,7 +6,6 @@ A multi-unit law enforcement data entry platform for Karnataka State Police (SCR
 
 See @SRS.md for what the product does — 5 modules, 3 roles, functional requirements.
 See @Architecture.md for how it's built — schema, routes, deploy flow.
-See @PLAN.md for roadmap.
 See @Operations.md, @ProductionDeployment.md, @database.md for runtime + deployment.
 
 ---
