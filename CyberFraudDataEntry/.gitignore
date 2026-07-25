@@ -16,3 +16,35 @@ frontend/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# ─── Sensitive: never commit ─────────────────────────────────────
+# Real production data that landed in this folder for local work.
+# Every entry below is a live tripwire for `git add -A`.
+
+# Operator credentials — one-time password lists, never in git.
+backend/Passwords*.csv
+backend/Passwords*.xlsx
+backend/Production_passwords*.xlsx
+backend/Production_passwords*.csv
+
+# XSS / pen-test payloads left over from VAPT — not for public repo.
+backend/case_xss.json
+
+# Live user-uploaded files (accused photos, bank statements).
+# The dir exists on disk with real evidence; commit nothing under it.
+backend/uploads/
+
+# DB snapshots — production data at rest. Restore locally, never push.
+# dump-schema.sh writes schema-only snapshots here too; commit those
+# explicitly with `git add -f proddata/schema-snapshot-YYYYMMDD.sql`
+# if you want to preserve a dated schema artefact.
+proddata/*.sql
+proddata/*.sql.gz
+proddata/*.tar.gz
+!proddata/README.md              # keep docs about proddata/, if any
+
+# Bank-provided operator working files that ended up here by accident.
+CyberCrimeData/
+*BankAction*.xlsx
+DSR*formate*.xlsx
+All District*.xlsx
