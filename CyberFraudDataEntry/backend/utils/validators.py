@@ -11,22 +11,32 @@ import re
 from decimal import Decimal
 
 
-# XXXX/YYYY — exactly 4 digits, slash, 4-digit year. Standard KSP
-# convention (leading zeros expected — e.g. `0001/2026`). Matches the
-# regex already established on AllAccountEntryPage before this shared
-# validator existed. Enforced at every entry point (Cases, Daily
-# Work, All Accounts) so cross-app reconciliation doesn't fragment on
-# format drift. Search boxes stay permissive — that's a UX call, not
-# a validator concern.
-_FIR_NO_RE = re.compile(r"^\d{4}/\d{4}$")
+# FIR No format: server-side accepts 1-4 digits, slash, 4-digit year.
+# The 4/4 canonical form is XXXX/YYYY (e.g. 0001/2026) and is what
+# every UI entry point ENFORCES CLIENT-SIDE (fir-no.ts). The server
+# regex is deliberately looser to grandfather legacy rows created
+# before the format was standardised — early operators sometimes
+# entered `42/2024` (2-digit numerator, no leading zeros) and the
+# system accepted it. Those rows must still update cleanly today.
+#
+# Cases.fir_no is immutable-after-create (the PUT route silently
+# ignores changes), so this validator only really matters for
+# create-time writes — where the client already enforces 4/4. Any
+# curl / Postman actor could POST a legacy-shaped value, but that
+# would be a data-quality problem, not a security one.
+_FIR_NO_RE = re.compile(r"^\d{1,4}/\d{4}$")
 
 
 def validate_fir_no(cls, v):  # noqa: N805 — Pydantic v2 validator signature
-    """Enforce the FIR-number format `XXXX/YYYY` (e.g. `0001/2026`).
+    """Enforce the FIR-number format on the server.
 
-    - Passes empty / None through unchanged so schemas can still accept
-      draft submissions where the field is optional (e.g. Case draft
-      status). Enforce non-emptiness at the caller if you need it.
+    Accepts `X/YYYY` through `XXXX/YYYY` — the strict 4/4 form is
+    enforced client-side for NEW writes; the loose 1-4/4 range is
+    what legacy rows (created before the standard landed) look like.
+    See the comment on `_FIR_NO_RE` above for the rationale.
+
+    - Passes empty / None through unchanged so schemas can still
+      accept draft submissions where the field is optional.
     - Trims surrounding whitespace before validating.
 
     Use with `field_validator(...)`:
@@ -38,7 +48,8 @@ def validate_fir_no(cls, v):  # noqa: N805 — Pydantic v2 validator signature
     s = str(v).strip()
     if not _FIR_NO_RE.fullmatch(s):
         raise ValueError(
-            "FIR No must be in XXXX/YYYY format (e.g. 0001/2026). "
+            "FIR No must be numeric in the shape N/YYYY through NNNN/YYYY "
+            "(new entries should use XXXX/YYYY, e.g. 0001/2026). "
             "Received: " + repr(s)
         )
     return s

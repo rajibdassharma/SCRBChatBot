@@ -25,7 +25,10 @@ AccountType = Literal["Victim", "Mule", "Non-Mule"]
 # depth). Rules confirmed with operators 2026-07-20.
 
 _NUMERIC = re.compile(r"^\d+$")
-_FIR_NO = re.compile(r"^\d{4}/\d{4}$")
+# Server accepts legacy 1-3 digit numerators too — matches the shared
+# validator in utils/validators.py. UI enforces strict 4/4 for new
+# writes; loose match grandfathers pre-standard rows.
+_FIR_NO = re.compile(r"^\d{1,4}/\d{4}$")
 
 
 def _validate_layer(v: Optional[int]) -> Optional[int]:
