@@ -30,17 +30,21 @@ export async function getAccountsTopBanks(
   );
 }
 
-/** Portals DSR — grand totals across the caller's scope + window. */
-export async function getPortalsSummary(from: string, to: string): Promise<PortalsDsrKpiSummary> {
+/** Portals DSR — grand totals for a SINGLE DSR date. Non-pending
+ *  metrics summed across the day's shift-batches; pending metrics
+ *  take the LATEST value per PS. Only submitted entries counted. */
+export async function getPortalsSummary(date: string): Promise<PortalsDsrKpiSummary> {
   return apiFetch<PortalsDsrKpiSummary>(
-    `/api/v1/dashboard/portals-summary?from=${from}&to=${to}`,
+    `/api/v1/dashboard/portals-summary?date=${encodeURIComponent(date)}`,
   );
 }
 
-/** Portals DSR — one row per PS with entry count + summed total. */
-export async function getPortalsComparison(from: string, to: string): Promise<PortalsDsrPsComparison[]> {
+/** Portals DSR — one row per ACTIVE PS on the selected date, every
+ *  metric column populated. Silent PSes come back as zeros so the
+ *  UI can show who has and hasn't reported. */
+export async function getPortalsComparison(date: string): Promise<PortalsDsrPsComparison[]> {
   return apiFetch<PortalsDsrPsComparison[]>(
-    `/api/v1/dashboard/portals-comparison?from=${from}&to=${to}`,
+    `/api/v1/dashboard/portals-comparison?date=${encodeURIComponent(date)}`,
   );
 }
 

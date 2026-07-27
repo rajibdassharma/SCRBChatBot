@@ -153,15 +153,64 @@ class PortalsDsrKpiSummary(BaseModel):
 
 
 class PortalsDsrPsComparison(BaseModel):
-    """One row per PS. `total` is a coarse ranking metric — sum of
-    every counter this PS has submitted in the window."""
+    """One row per PS for the single-date Portals DSR view.
+
+    Semantics per metric (2026-07-27):
+      * "pending" fields = LATEST value on the target date (a point-
+        in-time snapshot; taking SUM across shifts would double-count)
+      * every other field = SUM across all shift-batches on the date
+      * `total` = sum of every non-pending metric on the date (coarse
+        ranking column used by the Top-10 chart)
+      * `entries` = shift-batch count on the date (0 if no submissions)
+
+    Every active PS appears -- LEFT JOIN from police_stations means
+    silent stations come through with zeros so the frontend can show
+    who hasn't reported.
+    """
     unit_id: int
     unit_name: str
     ps_id: int
     ps_name: str
     entries: int = 0
     total: int = 0
-    # Submissions with report_date = YESTERDAY (server today − 1 day),
-    # independent of the from/to window. Surfaces "last 24h" pulse
-    # next to the Entries / Grand Total columns — added 2026-07-25.
-    yesterday_count: int = 0
+
+    # NCRP
+    ncrp_received: int = 0
+    ncrp_disposed: int = 0
+    ncrp_pending: int = 0
+
+    # Samanvaya
+    samanvaya_request_received: int = 0
+    samanvaya_actions: int = 0
+    samanvaya_action_pending: int = 0
+    samanvaya_request_sent: int = 0
+    samanvaya_reply_received: int = 0
+    samanvaya_replies_pending: int = 0
+
+    # Sahayog
+    sahayog_unlawful_content_removal: int = 0
+    sahayog_intermediary_requests: int = 0
+    sahayog_crypto_requests: int = 0
+
+    # GRM
+    grm_request_received: int = 0
+    grm_action: int = 0
+    grm_pending: int = 0
+
+    # MRM
+    mrm_request_received: int = 0
+    mrm_action: int = 0
+    mrm_pending: int = 0
+
+    # Bharatpol
+    bharatpol_request_received: int = 0
+
+    # OCWC
+    ocwc_received: int = 0
+    ocwc_disposed: int = 0
+    ocwc_pending: int = 0
+
+    # NCMEC Tipline
+    ncmec_received: int = 0
+    ncmec_disposed: int = 0
+    ncmec_pending: int = 0

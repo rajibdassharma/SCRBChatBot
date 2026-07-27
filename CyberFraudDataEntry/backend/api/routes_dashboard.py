@@ -1788,141 +1788,149 @@ def _scope_portals(query, admin: CurrentUser):
     )
 
 
+
+# ── Portals DSR — per-day dashboard (2026-07-27) ──────────────────
+# Every metric is a Daily Status Report counter. Two semantic
+# classes drive how we aggregate multiple shift-batches on the SAME
+# date:
+#   * "*_pending" fields = current point-in-time snapshot. Take the
+#     LATEST entry's value (SUM would double-count outstanding work).
+#   * every other field = SUM across the day's shifts (they're
+#     counts of that day's activity).
+# The dashboard is date-per-day (not a range) so operators can pick
+# a specific DSR to review.
+
+_PORTAL_PENDING_METRICS = frozenset({
+    "ncrp_pending",
+    "samanvaya_action_pending",
+    "samanvaya_replies_pending",
+    "grm_pending",
+    "mrm_pending",
+    "ocwc_pending",
+    "ncmec_pending",
+})
+
+
+async def _compute_portals_per_ps_on_date(
+    db: AsyncSession,
+    *,
+    target_date: date,
+    admin: CurrentUser,
+) -> list[dict]:
+    """Return one dict per active PS in scope, with all 25 metric
+    fields aggregated according to the per-day pending/sum rules
+    above. Silent PSes (no submissions on target_date) come back
+    with zeros across every metric.
+
+    Shared by `get_portals_summary` and `get_portals_comparison`.
+    Both endpoints run this single call and either roll up further
+    (summary) or hand back verbatim (comparison)."""
+
+    # 1) Fixed roster: every active PS -- so silent stations appear.
+    ps_q = (
+        select(
+            PoliceStation.id.label("ps_id"),
+            PoliceStation.station_name.label("ps_name"),
+            Unit.id.label("unit_id"),
+            Unit.name.label("unit_name"),
+        )
+        .join(Unit, Unit.name == PoliceStation.district_name)
+        .where(PoliceStation.is_active == True)  # noqa: E712
+        .order_by(PoliceStation.district_name, PoliceStation.station_name)
+    )
+    if admin.role != "super_admin":
+        ps_q = ps_q.where(PoliceStation.id == admin.ps_id)
+    roster = (await db.execute(ps_q)).all()
+
+    # 2) Every submitted entry on the date, ordered by created_at ASC
+    #    so the LAST row per PS is the most recent -- makes the
+    #    "latest for pending" pick trivial in Python.
+    entry_q = (
+        select(PortalsDsrEntry)
+        .where(
+            PortalsDsrEntry.status == "submitted",
+            PortalsDsrEntry.report_date == target_date,
+        )
+        .order_by(PortalsDsrEntry.ps_id, PortalsDsrEntry.created_at.asc())
+    )
+    if admin.role != "super_admin":
+        entry_q = entry_q.where(PortalsDsrEntry.ps_id == admin.ps_id)
+    entries = (await db.execute(entry_q)).scalars().all()
+
+    # 3) Group entries by ps_id, apply pending=LATEST / other=SUM per
+    #    metric column. Roster ensures every PS lands even with zero
+    #    entries.
+    by_ps: dict[int, list[PortalsDsrEntry]] = {}
+    for e in entries:
+        by_ps.setdefault(int(e.ps_id), []).append(e)
+
+    out: list[dict] = []
+    for r in roster:
+        ps_entries = by_ps.get(int(r.ps_id), [])
+        latest = ps_entries[-1] if ps_entries else None  # entries already ordered ASC
+
+        row: dict = {
+            "unit_id": int(r.unit_id),
+            "unit_name": r.unit_name,
+            "ps_id": int(r.ps_id),
+            "ps_name": r.ps_name,
+            "entries": len(ps_entries),
+        }
+        grand_total = 0
+        for f in _PORTAL_METRICS:
+            if f in _PORTAL_PENDING_METRICS:
+                # Latest snapshot only. No submissions today -> 0.
+                v = int(getattr(latest, f) or 0) if latest else 0
+            else:
+                v = sum(int(getattr(e, f) or 0) for e in ps_entries)
+            row[f] = v
+            grand_total += v
+        row["total"] = grand_total
+        out.append(row)
+
+    # Chart-friendly ordering: highest activity first, name tiebreak.
+    out.sort(key=lambda r: (-r["total"], r["ps_name"]))
+    return out
+
+
 @router.get("/portals-summary", response_model=PortalsDsrKpiSummary)
 async def get_portals_summary(
-    from_date: date = Query(..., alias="from", description="Start of the report window (inclusive)"),
-    to_date: date = Query(..., alias="to", description="End of the report window (inclusive)"),
+    target_date: date = Query(..., alias="date", description="Single DSR date to summarise"),
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """Portals DSR grand totals across the caller's scope + window.
-    Only submitted entries counted."""
-    # Build one SUM(col) per metric.
-    sums = [
-        func.coalesce(func.sum(getattr(PortalsDsrEntry, f)), 0).label(f)
-        for f in _PORTAL_METRICS
-    ]
-    entry_count = func.count(PortalsDsrEntry.id).label("total_entries")
+    """Portals DSR grand totals across the caller's scope for ONE
+    date. Non-pending fields sum across the day's shift-batches;
+    pending fields take the LATEST value per PS (then sum across
+    PSes). Only submitted entries counted."""
+    per_ps = await _compute_portals_per_ps_on_date(db, target_date=target_date, admin=admin)
 
-    q = select(entry_count, *sums).where(
-        PortalsDsrEntry.status == "submitted",
-        PortalsDsrEntry.report_date >= from_date,
-        PortalsDsrEntry.report_date <= to_date,
-    )
-    q = _scope_portals(q, admin)
-    row = (await db.execute(q)).one()
-
-    # Coverage — how many PSes have any submitted entry in the window.
-    if admin.role == "super_admin":
-        units_submitted = (await db.execute(
-            select(func.count(func.distinct(PortalsDsrEntry.ps_id)))
-            .where(
-                PortalsDsrEntry.status == "submitted",
-                PortalsDsrEntry.report_date >= from_date,
-                PortalsDsrEntry.report_date <= to_date,
-            )
-        )).scalar() or 0
-        units_total = (await db.execute(
-            select(func.count(PoliceStation.id))
-        )).scalar() or 0
-    else:
-        units_submitted = 1 if (row.total_entries or 0) > 0 else 0
-        units_total = 1
-
-    payload = {"total_entries": int(row.total_entries or 0)}
+    payload: dict = {"total_entries": sum(r["entries"] for r in per_ps)}
     for f in _PORTAL_METRICS:
-        payload[f] = int(getattr(row, f) or 0)
-    payload["units_submitted"] = int(units_submitted)
-    payload["units_total"] = int(units_total)
+        payload[f] = sum(int(r.get(f, 0)) for r in per_ps)
+
+    # Coverage: how many PSes actually submitted at least one row.
+    if admin.role == "super_admin":
+        payload["units_submitted"] = sum(1 for r in per_ps if r["entries"] > 0)
+        payload["units_total"] = len(per_ps)
+    else:
+        payload["units_submitted"] = 1 if payload["total_entries"] > 0 else 0
+        payload["units_total"] = 1
+
     return PortalsDsrKpiSummary(**payload)
 
 
 @router.get("/portals-comparison", response_model=List[PortalsDsrPsComparison])
 async def get_portals_comparison(
-    from_date: date = Query(..., alias="from", description="Start of the report window (inclusive)"),
-    to_date: date = Query(..., alias="to", description="End of the report window (inclusive)"),
+    target_date: date = Query(..., alias="date", description="Single DSR date"),
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
-    """One row per PS. `total` is the coarse ranking metric — sum of
-    all 25 counters this PS has submitted in the window. `entries`
-    is how many submissions the PS made."""
-    # Sum of every metric column, expressed as a single grand-total
-    # per row so SQL does the addition (avoids pulling all 25 back
-    # into Python just to sum them).
-    metric_sum = sum(
-        (func.coalesce(func.sum(getattr(PortalsDsrEntry, f)), 0) for f in _PORTAL_METRICS),
-        start=0,
-    )
-
-    q = (
-        select(
-            PortalsDsrEntry.unit_id,
-            Unit.name.label("unit_name"),
-            PortalsDsrEntry.ps_id,
-            PoliceStation.station_name.label("ps_name"),
-            func.count(PortalsDsrEntry.id).label("entries"),
-            metric_sum.label("total"),
-        )
-        .join(Unit, Unit.id == PortalsDsrEntry.unit_id)
-        .join(PoliceStation, PoliceStation.id == PortalsDsrEntry.ps_id)
-        .where(
-            PortalsDsrEntry.status == "submitted",
-            PortalsDsrEntry.report_date >= from_date,
-            PortalsDsrEntry.report_date <= to_date,
-        )
-        .group_by(
-            PortalsDsrEntry.unit_id, Unit.name,
-            PortalsDsrEntry.ps_id, PoliceStation.station_name,
-        )
-        .order_by(func.count(PortalsDsrEntry.id).desc())
-    )
-    if admin.role != "super_admin":
-        q = q.where(
-            PortalsDsrEntry.unit_id == admin.unit_id,
-            PortalsDsrEntry.ps_id == admin.ps_id,
-        )
-
-    rows = (await db.execute(q)).all()
-
-    # Second query — YESTERDAY's submissions per PS (report_date = today − 1),
-    # independent of the from/to window. Same status='submitted' + same
-    # scope filter as the main aggregate.
-    yesterday = date.today() - timedelta(days=1)
-    yday_q = (
-        select(
-            PortalsDsrEntry.unit_id,
-            PortalsDsrEntry.ps_id,
-            func.count(PortalsDsrEntry.id),
-        )
-        .where(
-            PortalsDsrEntry.status == "submitted",
-            PortalsDsrEntry.report_date == yesterday,
-        )
-        .group_by(PortalsDsrEntry.unit_id, PortalsDsrEntry.ps_id)
-    )
-    if admin.role != "super_admin":
-        yday_q = yday_q.where(
-            PortalsDsrEntry.unit_id == admin.unit_id,
-            PortalsDsrEntry.ps_id == admin.ps_id,
-        )
-    yday_rows = (await db.execute(yday_q)).all()
-    yday_counts: dict[tuple[int, int], int] = {
-        (int(uid), int(pid)): int(n or 0) for uid, pid, n in yday_rows
-    }
-
-    return [
-        PortalsDsrPsComparison(
-            unit_id=r.unit_id,
-            unit_name=r.unit_name,
-            ps_id=r.ps_id,
-            ps_name=r.ps_name,
-            entries=int(r.entries or 0),
-            total=int(r.total or 0),
-            yesterday_count=yday_counts.get((int(r.unit_id), int(r.ps_id)), 0),
-        )
-        for r in rows
-    ]
+    """One row per active PS for the selected date. All 25 metric
+    columns populated per the pending/sum rules. Silent PSes appear
+    with zeros so the frontend can show every station."""
+    per_ps = await _compute_portals_per_ps_on_date(db, target_date=target_date, admin=admin)
+    return [PortalsDsrPsComparison(**r) for r in per_ps]
 
 
 # ── FIR Dashboard (DSR module) — PS-performance table ──────────────────

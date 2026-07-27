@@ -859,16 +859,16 @@ export interface PortalsDsrKpiSummary extends PortalsDsrMetrics {
   units_total: number;
 }
 
-export interface PortalsDsrPsComparison {
+export interface PortalsDsrPsComparison extends PortalsDsrMetrics {
   unit_id: number;
   unit_name: string;
   ps_id: number;
   ps_name: string;
+  /** Number of shift-batch submissions on the target date. */
   entries: number;
+  /** Grand total across all 25 metric columns (pending as LATEST,
+   *  others as SUM within the day). Coarse ranking metric only. */
   total: number;
-  /** Submitted rows whose report_date is yesterday (server today - 1),
-   *  independent of the from/to window. Added 2026-07-25. */
-  yesterday_count: number;
 }
 
 // -- Daily Work Done (Investigation Log) --
