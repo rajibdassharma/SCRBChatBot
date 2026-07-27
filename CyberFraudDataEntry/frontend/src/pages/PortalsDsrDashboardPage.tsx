@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { BarChart3, Trophy } from 'lucide-react';
+import { BarChart3, Trophy, TrendingDown } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
@@ -104,23 +104,36 @@ export function PortalsDsrDashboardPage() {
     [portalKey],
   );
 
-  // Per-portal top-10 — same portal dropdown drives both the chart
-  // and the table. A PS's portal activity = sum of every metric in
-  // that portal (pending included; matches how the tile total works
-  // and keeps the chart intuitive next to the numeric tiles).
-  const top10 = useMemo(() => {
-    const withPortalTotal = rows.map((r) => {
-      const portalTotal = selectedPortal.metrics.reduce(
-        (s, m) => s + ((r[m.key as keyof PortalsDsrMetrics] as number) || 0),
-        0,
-      );
-      return { ...r, portal_total: portalTotal };
-    });
-    return withPortalTotal
+  // Per-portal top / bottom rankings — both charts and the table
+  // are driven by the same portalKey dropdown up top. A PS's portal
+  // activity = sum of every metric in that portal (pending included;
+  // matches how the tile total works). Zero-activity PSes are
+  // excluded from both charts because a Bottom-10 full of zeros
+  // isn't a portal-specific signal (it's just the same silent PSes
+  // for every portal); the per-PS table below still lists all PSes
+  // with zeros so silent stations stay visible in that view.
+  const rowsWithPortalTotal = useMemo(() => rows.map((r) => {
+    const portalTotal = selectedPortal.metrics.reduce(
+      (s, m) => s + ((r[m.key as keyof PortalsDsrMetrics] as number) || 0),
+      0,
+    );
+    return { ...r, portal_total: portalTotal };
+  }), [rows, selectedPortal]);
+
+  const top10 = useMemo(
+    () => rowsWithPortalTotal
       .filter((r) => r.portal_total > 0)
       .sort((a, b) => b.portal_total - a.portal_total || a.ps_name.localeCompare(b.ps_name))
-      .slice(0, 10);
-  }, [rows, selectedPortal]);
+      .slice(0, 10),
+    [rowsWithPortalTotal],
+  );
+  const bottom10 = useMemo(
+    () => rowsWithPortalTotal
+      .filter((r) => r.portal_total > 0)
+      .sort((a, b) => a.portal_total - b.portal_total || a.ps_name.localeCompare(b.ps_name))
+      .slice(0, 10),
+    [rowsWithPortalTotal],
+  );
 
   return (
     <div>
@@ -181,93 +194,119 @@ export function PortalsDsrDashboardPage() {
             })}
           </div>
 
-          {/* Top-10 PS — ranked by the SELECTED portal's activity
-               (same dropdown as the table below drives this too). */}
-          <div className="rounded-2xl overflow-hidden" style={cardStyle}>
-            <div className="px-5 py-3 flex flex-wrap items-center justify-between gap-3"
-                 style={{ borderTop: '4px solid #0b2c4a' }}>
-              <div>
+          {/* Shared portal-filter bar — drives Top-10 chart,
+               Bottom-10 chart, and the per-PS comparison table
+               below. One dropdown for everything portal-scoped so
+               the three views can never drift out of sync. */}
+          <div className="rounded-2xl px-5 py-3 flex items-center justify-between flex-wrap gap-3"
+               style={{ background: 'rgba(11,44,74,0.04)', border: '1px solid rgba(11,44,74,0.10)' }}>
+            <div className="text-sm">
+              <span className="font-bold" style={{ color: 'var(--ksp-navy)' }}>Portal filter:</span>{' '}
+              <span className="opacity-70">applies to the two charts and the table below.</span>
+            </div>
+            <label className="flex items-center gap-2 text-sm">
+              <span className="font-semibold" style={{ color: 'var(--ksp-navy)' }}>Portal:</span>
+              <select value={portalKey}
+                onChange={(e) => setPortalKey(e.target.value)}
+                className="px-3 py-1.5 rounded-lg text-sm font-semibold"
+                style={{
+                  border: '2px solid var(--ksp-navy)',
+                  background: selectedPortal.accent,
+                  color: '#fff',
+                }}>
+                {PORTAL_TABS.map((t) => (
+                  <option key={t.key} value={t.key} style={{ background: '#fff', color: '#000' }}>
+                    {t.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+
+          {/* Top-10 (left) + Bottom-10 (right) — both ranked by the
+               selected portal's total activity for the date. Zero-
+               activity PSes excluded on both sides (they'd otherwise
+               dominate the Bottom-10 and match nothing portal-specific). */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div className="rounded-2xl overflow-hidden" style={cardStyle}>
+              <div className="px-5 py-3" style={{ borderTop: '4px solid #0b2c4a' }}>
                 <h3 className="text-sm font-bold flex items-center gap-2" style={{ color: 'var(--ksp-navy)' }}>
                   <Trophy className="w-4 h-4" style={{ color: '#c67c1d' }} />
-                  Top {Math.min(10, top10.length)} Police Stations — {selectedPortal.label}
+                  Top {Math.min(10, top10.length)} PSes — {selectedPortal.label}
                 </h3>
                 <p className="text-xs opacity-60 mt-0.5">
-                  Ranked by total {selectedPortal.label} activity for the date. PSes with zero {selectedPortal.label} counters excluded.
+                  Highest {selectedPortal.label} activity for the date.
                 </p>
               </div>
-              <label className="flex items-center gap-2 text-sm">
-                <span className="font-semibold" style={{ color: 'var(--ksp-navy)' }}>Portal:</span>
-                <select value={portalKey}
-                  onChange={(e) => setPortalKey(e.target.value)}
-                  className="px-3 py-1.5 rounded-lg text-sm font-semibold"
-                  style={{
-                    border: '2px solid var(--ksp-navy)',
-                    background: selectedPortal.accent,
-                    color: '#fff',
-                  }}>
-                  {PORTAL_TABS.map((t) => (
-                    <option key={t.key} value={t.key} style={{ background: '#fff', color: '#000' }}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="px-5 pb-5">
+                {top10.length === 0 ? (
+                  <div className="py-10 text-center italic opacity-60 text-sm">
+                    No {selectedPortal.label} activity on this date.
+                  </div>
+                ) : (
+                  <div style={{ width: '100%', height: 40 + top10.length * 34 }}>
+                    <ResponsiveContainer>
+                      <BarChart data={top10} layout="vertical"
+                                margin={{ top: 6, right: 30, left: 10, bottom: 6 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
+                        <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                        <YAxis type="category" dataKey="ps_name" tick={{ fontSize: 11 }} width={150} />
+                        <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]} />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        <Bar dataKey="portal_total" name={`${selectedPortal.label} total`} fill={selectedPortal.accent} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </div>
             </div>
-            <div className="px-5 pb-5">
-              {top10.length === 0 ? (
-                <div className="py-10 text-center italic opacity-60 text-sm">
-                  No {selectedPortal.label} activity on this date.
-                </div>
-              ) : (
-                <div style={{ width: '100%', height: 40 + top10.length * 34 }}>
-                  <ResponsiveContainer>
-                    <BarChart data={top10} layout="vertical"
-                              margin={{ top: 6, right: 30, left: 10, bottom: 6 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
-                      <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-                      <YAxis type="category" dataKey="ps_name" tick={{ fontSize: 11 }} width={150} />
-                      <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]} />
-                      <Legend wrapperStyle={{ fontSize: 11 }} />
-                      <Bar dataKey="portal_total" name={`${selectedPortal.label} total`} fill={selectedPortal.accent} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
+
+            <div className="rounded-2xl overflow-hidden" style={cardStyle}>
+              <div className="px-5 py-3" style={{ borderTop: '4px solid #6a1b9a' }}>
+                <h3 className="text-sm font-bold flex items-center gap-2" style={{ color: 'var(--ksp-navy)' }}>
+                  <TrendingDown className="w-4 h-4" style={{ color: '#6a1b9a' }} />
+                  Bottom {Math.min(10, bottom10.length)} PSes — {selectedPortal.label}
+                </h3>
+                <p className="text-xs opacity-60 mt-0.5">
+                  Lowest {selectedPortal.label} activity for the date (still non-zero — silent PSes shown in the table below).
+                </p>
+              </div>
+              <div className="px-5 pb-5">
+                {bottom10.length === 0 ? (
+                  <div className="py-10 text-center italic opacity-60 text-sm">
+                    No {selectedPortal.label} activity on this date.
+                  </div>
+                ) : (
+                  <div style={{ width: '100%', height: 40 + bottom10.length * 34 }}>
+                    <ResponsiveContainer>
+                      <BarChart data={bottom10} layout="vertical"
+                                margin={{ top: 6, right: 30, left: 10, bottom: 6 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
+                        <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                        <YAxis type="category" dataKey="ps_name" tick={{ fontSize: 11 }} width={150} />
+                        <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]} />
+                        <Legend wrapperStyle={{ fontSize: 11 }} />
+                        <Bar dataKey="portal_total" name={`${selectedPortal.label} total`} fill={selectedPortal.accent} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </div>
+                )}
+              </div>
             </div>
           </div>
 
-          {/* Per-PS comparison table — filtered to ONE portal at a time
-               via the dropdown. Shows every active PS (zeros for
+          {/* Per-PS comparison table — filtered by the shared portal
+               dropdown above. Shows every active PS (zeros for
                silent stations). */}
           <div className="rounded-2xl overflow-hidden" style={cardStyle}>
-            <div className="px-5 py-3 flex flex-wrap items-center justify-between gap-3"
-                 style={{ borderTop: '4px solid #0b2c4a' }}>
-              <div>
-                <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>
-                  Per-PS Comparison — {selectedPortal.label}
-                </h3>
-                <p className="text-xs opacity-60 mt-0.5">
-                  Every active Police Station shown; zero rows = no submission on this date.
-                  Pending column reflects the latest snapshot on the day.
-                </p>
-              </div>
-              <label className="flex items-center gap-2 text-sm">
-                <span className="font-semibold" style={{ color: 'var(--ksp-navy)' }}>Portal:</span>
-                <select value={portalKey}
-                  onChange={(e) => setPortalKey(e.target.value)}
-                  className="px-3 py-1.5 rounded-lg text-sm font-semibold"
-                  style={{
-                    border: '2px solid var(--ksp-navy)',
-                    background: selectedPortal.accent,
-                    color: '#fff',
-                  }}>
-                  {PORTAL_TABS.map((t) => (
-                    <option key={t.key} value={t.key} style={{ background: '#fff', color: '#000' }}>
-                      {t.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
+            <div className="px-5 py-3" style={{ borderTop: '4px solid #0b2c4a' }}>
+              <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>
+                Per-PS Comparison — {selectedPortal.label}
+              </h3>
+              <p className="text-xs opacity-60 mt-0.5">
+                Every active Police Station shown; zero rows = no submission on this date.
+                Pending column reflects the latest snapshot on the day.
+              </p>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
