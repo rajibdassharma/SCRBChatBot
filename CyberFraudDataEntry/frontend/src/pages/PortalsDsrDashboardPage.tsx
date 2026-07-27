@@ -228,8 +228,7 @@ export function PortalsDsrDashboardPage() {
                       <YAxis type="category" dataKey="ps_name" tick={{ fontSize: 11 }} width={150} />
                       <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]} />
                       <Legend wrapperStyle={{ fontSize: 11 }} />
-                      <Bar dataKey="entries"      name="Shift-batches"                    fill="#0b2c4a" />
-                      <Bar dataKey="portal_total" name={`${selectedPortal.label} total`}  fill={selectedPortal.accent} />
+                      <Bar dataKey="portal_total" name={`${selectedPortal.label} total`} fill={selectedPortal.accent} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
