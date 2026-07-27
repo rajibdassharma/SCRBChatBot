@@ -1412,6 +1412,16 @@ async def get_accounts_summary(
         .where(AllAccount.account_type == "Mule")
     )).scalar() or 0
 
+    # KA-branch subset of mule_accounts. branch_state was added by
+    # migration 012 -- older rows are NULL and won't be counted, which
+    # matches operator intent (unknown state != confirmed KA).
+    karnataka_mule_accounts = (await db.execute(
+        _scope_accounts(select(func.count(AllAccount.id)), admin)
+        .where(func.date(AllAccount.created_at) <= target_date)
+        .where(AllAccount.account_type == "Mule")
+        .where(AllAccount.branch_state == "Karnataka")
+    )).scalar() or 0
+
     non_mule_accounts = (await db.execute(
         _scope_accounts(select(func.count(AllAccount.id)), admin)
         .where(func.date(AllAccount.created_at) <= target_date)
@@ -1461,6 +1471,7 @@ async def get_accounts_summary(
         victim_accounts=int(victim_accounts),
         mule_accounts=int(mule_accounts),
         non_mule_accounts=int(non_mule_accounts),
+        karnataka_mule_accounts=int(karnataka_mule_accounts),
         unique_banks=int(unique_banks),
         unique_mule_herders=int(unique_mule_herders),
         accounts_with_photo=int(accounts_with_photo),
@@ -1482,38 +1493,59 @@ async def compute_accounts_comparison(
     on the calendar day BEFORE `target_date`, so the on-screen table
     can show a "last 24 hours" column alongside the cumulative Total.
 
+    Every active police station appears, even when it has zero
+    accounts on the target date (2026-07-27) -- silent PSes need to
+    stay visible so operators can see who hasn't reported. The join
+    is driven by `police_stations` LEFT JOIN `all_accounts`, so
+    zero-count rows come back with total=0 across every metric.
+
     Shared by the JSON /accounts-comparison route and the PDF + XLSX
     report routes so all three reflect identical numbers."""
     yesterday = target_date - timedelta(days=1)
 
+    # LEFT JOIN driven by police_stations so every active PS surfaces.
+    # The `and_` on the join predicate is critical -- moving the date
+    # filter into a WHERE clause would filter OUT PSes that have zero
+    # accounts on that date (turning the LEFT JOIN into an INNER).
+    from sqlalchemy import and_
+
     q = (
         select(
-            AllAccount.unit_id,
-            Unit.name.label("unit_name"),
-            AllAccount.ps_id,
+            PoliceStation.id.label("ps_id"),
             PoliceStation.station_name.label("ps_name"),
-            func.count(AllAccount.id).label("total"),
-            func.sum(
+            Unit.id.label("unit_id"),
+            Unit.name.label("unit_name"),
+            func.coalesce(func.count(AllAccount.id), 0).label("total"),
+            func.coalesce(func.sum(
                 case((func.date(AllAccount.created_at) == yesterday, 1), else_=0)
-            ).label("yesterday_count"),
-            func.sum(
+            ), 0).label("yesterday_count"),
+            func.coalesce(func.sum(
                 case((AllAccount.account_type == "Victim", 1), else_=0)
-            ).label("victims"),
-            func.sum(
+            ), 0).label("victims"),
+            func.coalesce(func.sum(
                 case((AllAccount.account_type == "Mule", 1), else_=0)
-            ).label("mules"),
-            func.sum(
+            ), 0).label("mules"),
+            func.coalesce(func.sum(
                 case((AllAccount.account_type == "Non-Mule", 1), else_=0)
-            ).label("non_mules"),
+            ), 0).label("non_mules"),
         )
-        .join(Unit, Unit.id == AllAccount.unit_id)
-        .join(PoliceStation, PoliceStation.id == AllAccount.ps_id)
-        .where(func.date(AllAccount.created_at) <= target_date)
-        .group_by(AllAccount.unit_id, Unit.name, AllAccount.ps_id, PoliceStation.station_name)
-        .order_by(func.count(AllAccount.id).desc())
+        .join(Unit, Unit.name == PoliceStation.district_name)
+        .outerjoin(
+            AllAccount,
+            and_(
+                AllAccount.ps_id == PoliceStation.id,
+                func.date(AllAccount.created_at) <= target_date,
+            ),
+        )
+        .where(PoliceStation.is_active == True)  # noqa: E712
+        .group_by(
+            PoliceStation.id, PoliceStation.station_name,
+            Unit.id, Unit.name,
+        )
+        .order_by(func.count(AllAccount.id).desc(), PoliceStation.station_name.asc())
     )
     if admin.role != "super_admin":
-        q = q.where(AllAccount.unit_id == admin.unit_id, AllAccount.ps_id == admin.ps_id)
+        q = q.where(PoliceStation.id == admin.ps_id)
 
     rows = (await db.execute(q)).all()
     return [

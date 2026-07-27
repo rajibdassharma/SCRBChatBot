@@ -744,6 +744,8 @@ export interface AccountsKpiSummary {
   victim_accounts: number;
   mule_accounts: number;
   non_mule_accounts: number;
+  /** Subset of mule_accounts whose branch_state = 'Karnataka'. Added 2026-07-27. */
+  karnataka_mule_accounts: number;
   unique_banks: number;
   unique_mule_herders: number;
   accounts_with_photo: number;

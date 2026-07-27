@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
-  BarChart3, Users, ShieldAlert, HelpCircle, Landmark, UserPlus, Camera,
+  BarChart3, Users, ShieldAlert, HelpCircle, MapPin, Camera,
   Trophy, FileDown, FileSpreadsheet,
 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -9,7 +9,7 @@ import {
   LineChart, Line, PieChart, Pie, Cell, ResponsiveContainer,
 } from 'recharts';
 import {
-  getAccountsSummary, getAccountsComparison, getAccountsTopBanks,
+  getAccountsSummary, getAccountsComparison,
   getAccountsDailyGrowth,
 } from '../lib/api/dashboard';
 import {
@@ -18,7 +18,7 @@ import {
 import { formatNumber, todayISO } from '../lib/utils/format';
 import { AccountsPsDetailPanel } from '../components/dashboard/AccountsPsDetailPanel';
 import type {
-  AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
+  AccountsKpiSummary, AccountsPsComparison,
   AccountsDailyPoint,
 } from '../types';
 
@@ -103,7 +103,6 @@ export function AccountsDashboardPage() {
   const [date, setDate] = useState(todayISO());
   const [summary, setSummary] = useState<AccountsKpiSummary | null>(null);
   const [rows, setRows] = useState<AccountsPsComparison[]>([]);
-  const [topBanks, setTopBanks] = useState<AccountsBankConcentration[]>([]);
   const [dailyGrowth, setDailyGrowth] = useState<AccountsDailyPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [drilldown, setDrilldown] = useState<AccountsPsComparison | null>(null);
@@ -119,22 +118,27 @@ export function AccountsDashboardPage() {
     Promise.allSettled([
       getAccountsSummary(date),
       getAccountsComparison(date),
-      getAccountsTopBanks(date, 10),
       getAccountsDailyGrowth(growthCutoff, 30),
-    ]).then(([s, u, b, g]) => {
+    ]).then(([s, u, g]) => {
       if (s.status === 'fulfilled') setSummary(s.value);
       else { setSummary(null); toast.error(`Summary: ${(s as any).reason?.message ?? 'failed'}`); }
       if (u.status === 'fulfilled') setRows(u.value);
       else { setRows([]); toast.error(`Per-PS: ${(u as any).reason?.message ?? 'failed'}`); }
-      if (b.status === 'fulfilled') setTopBanks(b.value);
-      else { setTopBanks([]); toast.error(`Top banks: ${(b as any).reason?.message ?? 'failed'}`); }
       if (g.status === 'fulfilled') setDailyGrowth(g.value);
       else { setDailyGrowth([]); toast.error(`Growth: ${(g as any).reason?.message ?? 'failed'}`); }
     }).finally(() => setLoading(false));
   }, [date]);
 
-  // Top 10 PSes by total — sorted desc so the tallest bar is on top.
+  // Top 10 PSes by total — backend already sorts DESC. Bottom 10 =
+  // the 10 lowest-count PSes (zeros bubble to the top of the bottom
+  // list, which is exactly the "silent stations" signal we want).
   const top10Ps = useMemo(() => rows.slice(0, 10), [rows]);
+  const bottom10Ps = useMemo(
+    () => [...rows]
+      .sort((a, b) => (a.total - b.total) || a.ps_name.localeCompare(b.ps_name))
+      .slice(0, 10),
+    [rows],
+  );
 
   // Yesterday date derived from the "as of" picker — drives both the
   // Yesterday column header and the tooltip inside the table.
@@ -197,14 +201,16 @@ export function AccountsDashboardPage() {
         <div className="text-center py-16 font-semibold" style={{ color: 'var(--ksp-navy)' }}>Loading dashboard...</div>
       ) : (
         <div className="space-y-6">
-          {/* Colourful KPI cards row — one accent per metric. */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-7 gap-4">
+          {/* Colourful KPI cards row — one accent per metric.
+               Six cards since the 2026-07-27 reshape: dropped Unique
+               Banks + Mule Herders, added Karnataka Mule Accounts
+               (subset of Mule with branch_state='Karnataka'). */}
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
             <KpiCard label="Total Accounts"     value={formatNumber(summary?.total_accounts     ?? 0)} accent={COLOR_NAVY}    Icon={BarChart3} />
             <KpiCard label="Victim Accounts"    value={formatNumber(summary?.victim_accounts    ?? 0)} accent={COLOR_VICTIM}  Icon={Users} />
             <KpiCard label="Mule Accounts"      value={formatNumber(summary?.mule_accounts      ?? 0)} accent={COLOR_MULE}    Icon={ShieldAlert} />
+            <KpiCard label="KA Mule Accounts"   value={formatNumber(summary?.karnataka_mule_accounts ?? 0)} accent={COLOR_ORANGE} Icon={MapPin} sub="branch in KA" />
             <KpiCard label="Non-Mule Accounts"  value={formatNumber(summary?.non_mule_accounts  ?? 0)} accent={COLOR_NONMULE} Icon={HelpCircle} />
-            <KpiCard label="Unique Banks"       value={formatNumber(summary?.unique_banks       ?? 0)} accent={COLOR_PURPLE}  Icon={Landmark} />
-            <KpiCard label="Mule Herders"       value={formatNumber(summary?.unique_mule_herders ?? 0)} accent={COLOR_ORANGE}  Icon={UserPlus} sub="distinct names" />
             <KpiCard label="With ID Photo"      value={formatNumber(summary?.accounts_with_photo ?? 0)} accent={COLOR_TEAL}    Icon={Camera} />
           </div>
 
@@ -329,40 +335,15 @@ export function AccountsDashboardPage() {
             </ChartCard>
           </div>
 
-          {/* Row 2 — Top 10 Banks + Top 10 PS side by side (both
-               horizontal bars, stacked by type). Halved from full-
-               width so they sit alongside each other per the
-               2026-07-24 reshape. */}
+          {/* Row 2 — Top 10 PS (left) + Bottom 10 PS (right), both
+               horizontal bars stacked by account type. Bottom-10
+               surfaces the silent stations (all-zero rows bubble to
+               the top of the bottom list) so operators can see at a
+               glance who hasn't reported. */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <ChartCard title={`Top ${Math.min(10, topBanks.length)} Banks by Account Count`}
-              hint="Banks that appear most often across the account records in scope."
-              accent={COLOR_PURPLE}
-            >
-              {topBanks.length === 0 ? (
-                <div className="py-10 text-center italic opacity-60 text-sm">No bank data yet.</div>
-              ) : (
-                <div style={{ width: '100%', height: 40 + topBanks.length * 30 }}>
-                  <ResponsiveContainer>
-                    <BarChart data={topBanks} layout="vertical"
-                              margin={{ top: 6, right: 24, left: 6, bottom: 6 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
-                      <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
-                      <YAxis type="category" dataKey="bank_name" tick={{ fontSize: 10 }} width={130} />
-                      <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]}
-                        labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
-                      <Legend wrapperStyle={{ fontSize: 11 }} />
-                      <Bar dataKey="victims"   stackId="b" name="Victim"   fill={COLOR_VICTIM} />
-                      <Bar dataKey="mules"     stackId="b" name="Mule"     fill={COLOR_MULE} />
-                      <Bar dataKey="non_mules" stackId="b" name="Non-Mule" fill={COLOR_NONMULE} />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </ChartCard>
-
             <ChartCard
               title={`Top ${Math.min(10, top10Ps.length)} Police Stations by Account Count`}
-              hint="Click a row in the table below to drill into any PS."
+              hint="Highest account counts as of the selected date. Click a table row below to drill in."
               accent={COLOR_NAVY}
             >
               {top10Ps.length === 0 ? (
@@ -381,6 +362,33 @@ export function AccountsDashboardPage() {
                       <Bar dataKey="victims"   stackId="a" name="Victim"   fill={COLOR_VICTIM} />
                       <Bar dataKey="mules"     stackId="a" name="Mule"     fill={COLOR_MULE} />
                       <Bar dataKey="non_mules" stackId="a" name="Non-Mule" fill={COLOR_NONMULE} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </ChartCard>
+
+            <ChartCard
+              title={`Bottom ${Math.min(10, bottom10Ps.length)} Police Stations by Account Count`}
+              hint="Lowest account counts, ascending. Zero-account PSes rise to the top — a fast read on who hasn't reported."
+              accent={COLOR_PURPLE}
+            >
+              {bottom10Ps.length === 0 ? (
+                <div className="py-10 text-center italic opacity-60 text-sm">No PS data yet.</div>
+              ) : (
+                <div style={{ width: '100%', height: 40 + bottom10Ps.length * 30 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={bottom10Ps} layout="vertical"
+                              margin={{ top: 6, right: 24, left: 6, bottom: 6 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
+                      <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <YAxis type="category" dataKey="ps_name" tick={{ fontSize: 10 }} width={130} />
+                      <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]}
+                        labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar dataKey="victims"   stackId="b" name="Victim"   fill={COLOR_VICTIM} />
+                      <Bar dataKey="mules"     stackId="b" name="Mule"     fill={COLOR_MULE} />
+                      <Bar dataKey="non_mules" stackId="b" name="Non-Mule" fill={COLOR_NONMULE} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>

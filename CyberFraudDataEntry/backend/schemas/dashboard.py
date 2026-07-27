@@ -37,6 +37,10 @@ class AccountsKpiSummary(BaseModel):
     victim_accounts: int = 0
     mule_accounts: int = 0
     non_mule_accounts: int = 0
+    # Mule accounts whose bank branch is in Karnataka -- a subset of
+    # mule_accounts, surfaces the in-state exposure separately from
+    # cross-border ones (2026-07-27).
+    karnataka_mule_accounts: int = 0
     unique_banks: int = 0
     unique_mule_herders: int = 0
     accounts_with_photo: int = 0
