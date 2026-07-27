@@ -52,17 +52,29 @@ function KpiCard({
   label: string; value: string; sub?: string; accent: string;
   Icon?: typeof Users;
 }) {
+  // Fixed slots keep labels/numbers/subs aligned across every card in
+  // the row even when label text length varies (e.g. "Total Accounts"
+  // fits 1 line, "KA Mule Accounts" wraps to 2) and when some cards
+  // have a `sub` line and others don't. Sub slot always renders (with
+  // a non-breaking space when empty) so the card heights match.
+  //
+  // Numbers use `tabular-nums` so digit widths line up column-to-
+  // column when the row is scanned diagonally.
   return (
-    <div className="rounded-2xl p-4 relative overflow-hidden"
+    <div className="rounded-2xl p-4 relative overflow-hidden flex flex-col"
       style={{ ...cardStyle, borderLeft: `6px solid ${accent}` }}>
       {Icon && (
         <Icon className="absolute right-3 top-3 opacity-10 w-14 h-14"
           style={{ color: accent }} />
       )}
-      <p className="text-[11px] uppercase tracking-wide font-bold mb-1"
+      <p className="text-[11px] uppercase tracking-wide font-bold leading-tight
+                    min-h-[1.75rem] flex items-start"
         style={{ color: accent }}>{label}</p>
-      <p className="text-2xl font-bold" style={{ color: 'var(--ksp-navy)' }}>{value}</p>
-      {sub && <p className="text-xs mt-1 opacity-60">{sub}</p>}
+      <p className="text-2xl font-bold tabular-nums leading-none mt-1"
+        style={{ color: 'var(--ksp-navy)' }}>{value}</p>
+      <p className="text-xs opacity-60 mt-1 leading-tight min-h-[1rem]">
+        {sub || ' '}
+      </p>
     </div>
   );
 }
