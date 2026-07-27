@@ -99,11 +99,28 @@ export function PortalsDsrDashboardPage() {
     }).finally(() => setLoading(false));
   }, [date]);
 
-  const top10 = useMemo(() => rows.slice(0, 10), [rows]);
   const selectedPortal = useMemo(
     () => PORTAL_TABS.find((t) => t.key === portalKey) ?? PORTAL_TABS[0],
     [portalKey],
   );
+
+  // Per-portal top-10 — same portal dropdown drives both the chart
+  // and the table. A PS's portal activity = sum of every metric in
+  // that portal (pending included; matches how the tile total works
+  // and keeps the chart intuitive next to the numeric tiles).
+  const top10 = useMemo(() => {
+    const withPortalTotal = rows.map((r) => {
+      const portalTotal = selectedPortal.metrics.reduce(
+        (s, m) => s + ((r[m.key as keyof PortalsDsrMetrics] as number) || 0),
+        0,
+      );
+      return { ...r, portal_total: portalTotal };
+    });
+    return withPortalTotal
+      .filter((r) => r.portal_total > 0)
+      .sort((a, b) => b.portal_total - a.portal_total || a.ps_name.localeCompare(b.ps_name))
+      .slice(0, 10);
+  }, [rows, selectedPortal]);
 
   return (
     <div>
@@ -164,30 +181,55 @@ export function PortalsDsrDashboardPage() {
             })}
           </div>
 
-          {/* Top-10 PS by activity total (sum across all 25 metrics per PS). */}
+          {/* Top-10 PS — ranked by the SELECTED portal's activity
+               (same dropdown as the table below drives this too). */}
           <div className="rounded-2xl overflow-hidden" style={cardStyle}>
-            <div className="px-5 py-3" style={{ borderTop: '4px solid #0b2c4a' }}>
-              <h3 className="text-sm font-bold flex items-center gap-2" style={{ color: 'var(--ksp-navy)' }}>
-                <Trophy className="w-4 h-4" style={{ color: '#c67c1d' }} />
-                Top {Math.min(10, top10.filter((r) => r.total > 0).length)} Police Stations by Activity
-              </h3>
-              <p className="text-xs opacity-60 mt-0.5">Bars show grand total across all 25 portal counters for the date.</p>
+            <div className="px-5 py-3 flex flex-wrap items-center justify-between gap-3"
+                 style={{ borderTop: '4px solid #0b2c4a' }}>
+              <div>
+                <h3 className="text-sm font-bold flex items-center gap-2" style={{ color: 'var(--ksp-navy)' }}>
+                  <Trophy className="w-4 h-4" style={{ color: '#c67c1d' }} />
+                  Top {Math.min(10, top10.length)} Police Stations — {selectedPortal.label}
+                </h3>
+                <p className="text-xs opacity-60 mt-0.5">
+                  Ranked by total {selectedPortal.label} activity for the date. PSes with zero {selectedPortal.label} counters excluded.
+                </p>
+              </div>
+              <label className="flex items-center gap-2 text-sm">
+                <span className="font-semibold" style={{ color: 'var(--ksp-navy)' }}>Portal:</span>
+                <select value={portalKey}
+                  onChange={(e) => setPortalKey(e.target.value)}
+                  className="px-3 py-1.5 rounded-lg text-sm font-semibold"
+                  style={{
+                    border: '2px solid var(--ksp-navy)',
+                    background: selectedPortal.accent,
+                    color: '#fff',
+                  }}>
+                  {PORTAL_TABS.map((t) => (
+                    <option key={t.key} value={t.key} style={{ background: '#fff', color: '#000' }}>
+                      {t.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
             </div>
             <div className="px-5 pb-5">
-              {top10.filter((r) => r.total > 0).length === 0 ? (
-                <div className="py-10 text-center italic opacity-60 text-sm">No submitted entries on this date.</div>
+              {top10.length === 0 ? (
+                <div className="py-10 text-center italic opacity-60 text-sm">
+                  No {selectedPortal.label} activity on this date.
+                </div>
               ) : (
                 <div style={{ width: '100%', height: 40 + top10.length * 34 }}>
                   <ResponsiveContainer>
-                    <BarChart data={top10.filter((r) => r.total > 0)} layout="vertical"
+                    <BarChart data={top10} layout="vertical"
                               margin={{ top: 6, right: 30, left: 10, bottom: 6 }}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#eee" horizontal={false} />
                       <XAxis type="number" allowDecimals={false} tick={{ fontSize: 11 }} />
                       <YAxis type="category" dataKey="ps_name" tick={{ fontSize: 11 }} width={150} />
                       <Tooltip formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]} />
                       <Legend wrapperStyle={{ fontSize: 11 }} />
-                      <Bar dataKey="entries" name="Shift-batches" fill="#0b2c4a" />
-                      <Bar dataKey="total"   name="Grand Total"   fill="#c67c1d" />
+                      <Bar dataKey="entries"      name="Shift-batches"                    fill="#0b2c4a" />
+                      <Bar dataKey="portal_total" name={`${selectedPortal.label} total`}  fill={selectedPortal.accent} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
