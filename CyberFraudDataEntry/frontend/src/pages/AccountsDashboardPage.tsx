@@ -15,7 +15,7 @@ import {
 import {
   downloadAccountsPsComparisonExcel, downloadAccountsPsComparisonPdf,
 } from '../lib/api/reports';
-import { formatNumber, todayISO } from '../lib/utils/format';
+import { formatNumber, todayISO, localISO } from '../lib/utils/format';
 import { AccountsPsDetailPanel } from '../components/dashboard/AccountsPsDetailPanel';
 import type {
   AccountsKpiSummary, AccountsPsComparison,
@@ -99,16 +99,21 @@ function ChartCard({
 }
 
 /** Compute yesterday's date (relative to the "as of" picker), both
- *  the ISO string and a short human label like "22 Jul". */
+ *  the ISO string and a short human label like "22 Jul".
+ *
+ *  Uses `localISO` for the ISO output -- the old `.toISOString()`
+ *  path was wrong: any local-midnight date in a +HH:MM zone (IST is
+ *  UTC+5:30) serialises to the PREVIOUS UTC day, so "yesterday" came
+ *  back as two days ago through the growth chart. */
 function yesterdayOf(dateISO: string): { iso: string; label: string; header: string } {
-  // Parse as local — the picker gives us a bare YYYY-MM-DD.
   const [y, m, d] = dateISO.split('-').map(Number);
   const dt = new Date(y, (m || 1) - 1, d || 1);
   dt.setDate(dt.getDate() - 1);
-  const iso = dt.toISOString().slice(0, 10);
-  const label = dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' });
-  const header = dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' });
-  return { iso, label, header };
+  return {
+    iso: localISO(dt),
+    label: dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
+    header: dt.toLocaleDateString('en-IN', { day: '2-digit', month: 'short', year: '2-digit' }),
+  };
 }
 
 export function AccountsDashboardPage() {

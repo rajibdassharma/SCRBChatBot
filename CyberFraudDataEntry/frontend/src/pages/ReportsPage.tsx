@@ -3,6 +3,7 @@ import { toast } from 'sonner';
 import { FileDown, Calendar, MapPin, Building2, Hash, FileText, ClipboardList, Coins } from 'lucide-react';
 import { downloadDsrPdf, downloadMulePdf, downloadCasePdf } from '../lib/api/reports';
 import { useAuthStore } from '../lib/stores/auth-store';
+import { todayISO } from '../lib/utils/format';
 
 /**
  * Reports page — tabbed UX. Each tab is one report type and gets its
@@ -72,7 +73,9 @@ function DsrSection() {
   const { user } = useAuthStore();
   const isSuperAdmin = user?.role === 'super_admin';
 
-  const today = new Date().toISOString().slice(0, 10);
+  // todayISO from shared helper -- local-zone date (was previously
+  // toISOString().slice(0,10) which drops back a day at IST midnight).
+  const today = todayISO();
   const [dateFrom, setDateFrom] = useState(today);
   const [dateTo, setDateTo] = useState(today);
 

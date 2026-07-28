@@ -5,7 +5,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer,
 } from 'recharts';
 import { getPortalsSummary, getPortalsComparison } from '../lib/api/dashboard';
-import { formatNumber, todayISO } from '../lib/utils/format';
+import { formatNumber, todayISO, yesterdayISO } from '../lib/utils/format';
 import { PORTAL_TABS } from '../lib/utils/portals-tabs';
 import type {
   PortalsDsrKpiSummary, PortalsDsrPsComparison, PortalsDsrMetrics,
@@ -22,11 +22,8 @@ import type {
  *  time via a dropdown, and every active PS appears whether or not
  *  it submitted (zeros surface silent stations). */
 
-function yesterdayISO(): string {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
-}
+// yesterdayISO imported from lib/utils/format -- the local copy used
+// .toISOString() which drops back a day at IST midnight.
 
 const cardStyle = {
   background: '#fff',

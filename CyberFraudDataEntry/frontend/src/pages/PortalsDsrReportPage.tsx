@@ -6,6 +6,7 @@ import {
   downloadPortalsDsrDailyPdf,
   fetchPortalsDsrDailyPreview,
 } from '../lib/api/reports';
+import { todayISO, yesterdayISO } from '../lib/utils/format';
 import type { PortalsDsrDailyPreviewRow } from '../types';
 
 /** Portals DSR daily report -- date picker, on-screen preview table
@@ -13,14 +14,10 @@ import type { PortalsDsrDailyPreviewRow } from '../types';
  *
  *  Defaults to yesterday: the report is almost always pulled the next
  *  morning to reconcile the previous day's submissions.
- */
-
-function yesterdayISO(): string {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
-}
-function todayISO(): string { return new Date().toISOString().slice(0, 10); }
+ *
+ *  todayISO / yesterdayISO imported from the shared helper -- the
+ *  old local copies used .toISOString() which drops back a day at
+ *  IST midnight. */
 
 const cardStyle = {
   background: '#fff',

@@ -6,18 +6,15 @@ import {
   downloadDailyWorkDailyPdf,
   fetchDailyWorkDailyPreview,
 } from '../lib/api/reports';
+import { todayISO, yesterdayISO } from '../lib/utils/format';
 import type { DailyWorkDailyPreviewRow } from '../types';
 
 /** Daily Work Done report -- date picker, on-screen preview
  *  (per-PS totals), 2 download buttons. Defaults to yesterday.
- */
-
-function yesterdayISO(): string {
-  const d = new Date();
-  d.setDate(d.getDate() - 1);
-  return d.toISOString().slice(0, 10);
-}
-function todayISO(): string { return new Date().toISOString().slice(0, 10); }
+ *
+ *  todayISO / yesterdayISO imported from the shared helper -- the
+ *  old local copies used .toISOString() which drops back a day at
+ *  IST midnight. */
 function fmtNum(v: number | null | undefined): string {
   if (v === null || v === undefined || v === 0) return '';
   return v.toLocaleString('en-IN');

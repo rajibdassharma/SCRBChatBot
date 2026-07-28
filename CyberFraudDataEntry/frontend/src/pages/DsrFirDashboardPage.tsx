@@ -5,6 +5,7 @@ import { getFirPsPerformance } from '../lib/api/dashboard';
 import {
   downloadFirPsPerformanceExcel, downloadFirPsPerformancePdf,
 } from '../lib/api/reports';
+import { todayISO, isoDaysAgo } from '../lib/utils/format';
 import type { FirPsPerformanceRow } from '../types';
 
 /** DSR → FIR Dashboard.
@@ -25,15 +26,9 @@ import type { FirPsPerformanceRow } from '../types';
  *                    included so under-performers show up.
  */
 
-function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function isoNDaysAgo(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
-}
+// todayISO + isoDaysAgo imported from lib/utils/format -- the local
+// copies used .toISOString() which drops back a day at IST midnight.
+const isoNDaysAgo = isoDaysAgo;
 
 function fmtInt(n: number): string { return n.toLocaleString('en-IN'); }
 

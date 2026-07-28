@@ -8,7 +8,7 @@ import {
   getAtmHotspots, getLayerDistribution, getAccountsAtLayer,
   getDisposalSummary, getTrialSummary, getPendingByYear,
 } from '../lib/api/dashboard';
-import { formatINR, formatNumber, todayISO } from '../lib/utils/format';
+import { formatINR, formatNumber, todayISO, localISO } from '../lib/utils/format';
 import type {
   KpiSummary, UnitComparison, PsComparison, TrendPoint, SubmissionStatus,
   QuietUnit, TimeToArrestRow, BankSlaRow,
@@ -141,7 +141,9 @@ function OverviewTab({ date }: { date: string }) {
     const d = new Date(date);
     const from = new Date(d);
     from.setDate(from.getDate() - 30);
-    const fromStr = from.toISOString().split('T')[0];
+    // localISO not .toISOString() -- .toISOString() drops back a day
+    // at IST midnight (local midnight = previous UTC day at 18:30).
+    const fromStr = localISO(from);
 
     Promise.allSettled([
       getSummary(date),

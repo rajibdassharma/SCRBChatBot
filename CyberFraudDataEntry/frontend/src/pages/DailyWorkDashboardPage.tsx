@@ -5,6 +5,7 @@ import {
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import { getDailyWorkDashboard } from '../lib/api/daily-work';
+import { todayISO, isoDaysAgo } from '../lib/utils/format';
 import type { DailyWorkDashboard } from '../types';
 
 /** Admin dashboard for Daily Work Done.
@@ -18,15 +19,9 @@ import type { DailyWorkDashboard } from '../types';
  *  rather than blanks.
  */
 
-function todayISO(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-function isoNDaysAgo(n: number): string {
-  const d = new Date();
-  d.setDate(d.getDate() - n);
-  return d.toISOString().slice(0, 10);
-}
+// todayISO + isoDaysAgo imported from lib/utils/format -- the local
+// copies used .toISOString() which drops back a day at IST midnight.
+const isoNDaysAgo = isoDaysAgo;
 
 function fmtInt(n: number): string { return n.toLocaleString('en-IN'); }
 function fmtInr(n: number): string {
