@@ -38,6 +38,10 @@ export type ModuleDef = {
   urlPrefixes: string[];
   /** Gate the tile itself. e.g. only admins see the Admin tile. */
   requiresPsAdmin?: boolean;
+  /** If set, only users whose `ps_name` is in this list see the tile.
+   *  super_admin bypasses (cross-PS oversight). Exact-string match
+   *  against the users.ps_name value stored in the DB. */
+  visibleForPsNames?: string[];
   /** Should this module's sidebar include the "Mark NIL Today" button? */
   hasNilButton?: boolean;
   /** URL to land on when the tile is clicked (usually the first link). */
@@ -71,6 +75,10 @@ export const MODULES: ModuleDef[] = [
     icon: Building2,
     accent: '#8b1919',   // red
     urlPrefixes: ['/mule'],
+    // NCRP data entry is a CID-only workflow; other PSes don't touch
+    // this. Test PS kept so the dev / QA account can still exercise
+    // the flow. super_admin bypasses this gate.
+    visibleForPsNames: ['CID', 'Test PS'],
     landingUrl: '/mule/new',
     links: [
       { to: '/mule/new',    label: 'New Report',       icon: FilePlus },
@@ -143,4 +151,24 @@ export function getCurrentModule(pathname: string): ModuleDef | null {
     }
   }
   return null;
+}
+
+/** Should the given user see the given module tile on the landing
+ *  page? Combines every gate the ModuleDef exposes:
+ *    - requiresPsAdmin: admin or super_admin role
+ *    - visibleForPsNames: user's ps_name is in the allow-list
+ *      (super_admin bypasses so HQ officers see everything)
+ *  A module with no gates set is visible to everyone. */
+export function isModuleVisibleForUser(
+  m: ModuleDef,
+  user: { role?: string | null; ps_name?: string | null } | null,
+): boolean {
+  if (m.requiresPsAdmin) {
+    if (user?.role !== 'admin' && user?.role !== 'super_admin') return false;
+  }
+  if (m.visibleForPsNames && m.visibleForPsNames.length > 0) {
+    if (user?.role === 'super_admin') return true;
+    if (!user?.ps_name || !m.visibleForPsNames.includes(user.ps_name)) return false;
+  }
+  return true;
 }

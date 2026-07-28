@@ -1,6 +1,6 @@
 import { useNavigate } from 'react-router';
 import { useAuthStore } from '../lib/stores/auth-store';
-import { MODULES, type ModuleDef } from '../lib/utils/modules';
+import { MODULES, type ModuleDef, isModuleVisibleForUser } from '../lib/utils/modules';
 
 /** Tile-grid landing page — the post-login home. One tile per top-
  *  level module (Cases / NCRP / All Accounts / Portals DSR / Admin).
@@ -36,9 +36,10 @@ export function HomePage() {
   const navigate = useNavigate();
   const { user } = useAuthStore();
 
-  // Gate the Admin tile — same rule as the current sidebar.
-  const isPsAdmin = user?.role === 'admin' || user?.role === 'super_admin';
-  const visible = MODULES.filter((m) => !m.requiresPsAdmin || isPsAdmin);
+  // Per-module visibility gates — role AND PS-name allow-list.
+  // Admin tile gates on admin+; NCRP tile gates on ps_name being
+  // 'CID' or 'Test PS' (super_admin bypasses).
+  const visible = MODULES.filter((m) => isModuleVisibleForUser(m, user ?? null));
 
   return (
     <div>
