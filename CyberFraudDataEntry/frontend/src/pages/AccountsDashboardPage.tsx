@@ -263,7 +263,7 @@ export function AccountsDashboardPage() {
             </div>
           </div>
 
-          {/* Row 1 — Daily growth (2/3) + Layer comparison (1/3).
+          {/* Row 1 — Daily growth (1/2) + Layer comparison (1/2).
                Layer comparison replaces the old Type Distribution
                donut on the 2026-07-29 reshape -- the V/M/NM split
                is already surfaced by the KPI cards above, whereas
@@ -272,8 +272,8 @@ export function AccountsDashboardPage() {
                one grouped bar chart (KA and Rest side by side per
                layer) so the two sides compare directly instead of
                requiring an eye jump between two cards. */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <div className="lg:col-span-2">
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <div>
               <ChartCard
                 title="Daily Growth — Accounts"
                 hint="New accounts created per day. Series runs from 20 Jul 2026 launch through yesterday (today's partial-day count is omitted so the trendline doesn't dip artificially). Zero days shown so the line stays continuous."
@@ -347,7 +347,7 @@ export function AccountsDashboardPage() {
                   <ResponsiveContainer>
                     <BarChart data={layerSeries}
                               margin={{ top: 8, right: 8, bottom: 30, left: 8 }}
-                              barCategoryGap="18%" barGap={2}>
+                              barCategoryGap="8%" barGap={3}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
                       <XAxis dataKey="layer" tick={{ fontSize: 11 }}
                         label={{
