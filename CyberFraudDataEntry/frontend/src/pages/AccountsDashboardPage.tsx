@@ -177,22 +177,25 @@ export function AccountsDashboardPage() {
     }
   };
 
-  // Layer 1..15 zero-filled series for the two bar charts. Both KA
-  // and Rest use the SAME 1..15 axis so the two charts line up
-  // visually side by side. Layers with zero count on both sides
-  // still render (as an empty gap) -- that's the point of a fixed
-  // axis for money-trail comparison.
-  const layerAxis = useMemo(() => Array.from({ length: 15 }, (_, i) => i + 1), []);
-  const kaLayerSeries = useMemo(() => {
-    const bucketMap = new Map<number, number>((layerDist?.ka ?? []).map((b) => [b.layer, b.count]));
-    return layerAxis.map((layer) => ({ layer, count: bucketMap.get(layer) ?? 0 }));
-  }, [layerDist, layerAxis]);
-  const restLayerSeries = useMemo(() => {
-    const bucketMap = new Map<number, number>((layerDist?.rest ?? []).map((b) => [b.layer, b.count]));
-    return layerAxis.map((layer) => ({ layer, count: bucketMap.get(layer) ?? 0 }));
-  }, [layerDist, layerAxis]);
-  const kaTotal = useMemo(() => kaLayerSeries.reduce((s, p) => s + p.count, 0), [kaLayerSeries]);
-  const restTotal = useMemo(() => restLayerSeries.reduce((s, p) => s + p.count, 0), [restLayerSeries]);
+  // Layer 1..15 zero-filled + merged into a single series so the
+  // BarChart can render one grouped bar (KA next to Rest) per
+  // layer. Fixed axis means every layer is present even when both
+  // sides are zero -- which is the whole point of a money-trail
+  // comparison chart.
+  const layerSeries = useMemo(() => {
+    const kaMap = new Map<number, number>((layerDist?.ka ?? []).map((b) => [b.layer, b.count]));
+    const restMap = new Map<number, number>((layerDist?.rest ?? []).map((b) => [b.layer, b.count]));
+    return Array.from({ length: 15 }, (_, i) => {
+      const layer = i + 1;
+      return {
+        layer,
+        ka: kaMap.get(layer) ?? 0,
+        rest: restMap.get(layer) ?? 0,
+      };
+    });
+  }, [layerDist]);
+  const kaTotal = useMemo(() => layerSeries.reduce((s, p) => s + p.ka, 0), [layerSeries]);
+  const restTotal = useMemo(() => layerSeries.reduce((s, p) => s + p.rest, 0), [layerSeries]);
 
   // Drill-down: full account detail grid for a single PS, with Excel + PDF export.
   // Clicking a row in the per-PS comparison table sets this; the Back button on
@@ -260,13 +263,16 @@ export function AccountsDashboardPage() {
             </div>
           </div>
 
-          {/* Row 1 — Daily growth (2/4) + KA Layer bar (1/4) + Rest Layer bar (1/4).
-               Layer distribution replaces the old Type Distribution
-               donut on the 2026-07-29 reshape -- the V/M/NM split is
-               already surfaced by the KPI cards above, whereas
-               layer histograms answer "how deep is the money trail
-               in / outside Karnataka" at a glance. */}
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
+          {/* Row 1 — Daily growth (2/3) + Layer comparison (1/3).
+               Layer comparison replaces the old Type Distribution
+               donut on the 2026-07-29 reshape -- the V/M/NM split
+               is already surfaced by the KPI cards above, whereas
+               a KA-vs-Rest layer chart answers "how deep is the
+               money trail on each side" at a glance. Rendered as
+               one grouped bar chart (KA and Rest side by side per
+               layer) so the two sides compare directly instead of
+               requiring an eye jump between two cards. */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
             <div className="lg:col-span-2">
               <ChartCard
                 title="Daily Growth — Accounts"
@@ -318,21 +324,30 @@ export function AccountsDashboardPage() {
               </ChartCard>
             </div>
 
-            <ChartCard title={`Layers — Karnataka  (${formatNumber(kaTotal)})`}
+            <ChartCard
+              title={`Layers — KA vs Rest  (KA ${formatNumber(kaTotal)} · Rest ${formatNumber(restTotal)})`}
               hint={
-                layerDist && layerDist.unknown_layer_ka > 0
-                  ? `Money-trail depth 1..15. ${formatNumber(layerDist.unknown_layer_ka)} KA account(s) with unknown layer excluded.`
-                  : 'Money-trail depth 1..15 for branch_state = Karnataka.'
+                (() => {
+                  const ka = layerDist?.unknown_layer_ka ?? 0;
+                  const rest = layerDist?.unknown_layer_rest ?? 0;
+                  const parts: string[] = [];
+                  if (ka > 0) parts.push(`${formatNumber(ka)} KA`);
+                  if (rest > 0) parts.push(`${formatNumber(rest)} Rest`);
+                  return parts.length
+                    ? `Money-trail depth 1..15. Unknown-layer accounts excluded: ${parts.join(' · ')}.`
+                    : 'Money-trail depth 1..15. Rest bucket includes accounts with unknown branch_state.';
+                })()
               }
               accent={COLOR_ORANGE}
             >
-              {kaTotal === 0 ? (
-                <div className="py-10 text-center italic opacity-60 text-sm">No Karnataka accounts with a layer yet.</div>
+              {kaTotal === 0 && restTotal === 0 ? (
+                <div className="py-10 text-center italic opacity-60 text-sm">No layered accounts yet.</div>
               ) : (
-                <div style={{ width: '100%', height: 280 }}>
+                <div style={{ width: '100%', height: 320 }}>
                   <ResponsiveContainer>
-                    <BarChart data={kaLayerSeries}
-                              margin={{ top: 8, right: 8, bottom: 30, left: 8 }}>
+                    <BarChart data={layerSeries}
+                              margin={{ top: 8, right: 8, bottom: 30, left: 8 }}
+                              barCategoryGap="18%" barGap={2}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
                       <XAxis dataKey="layer" tick={{ fontSize: 11 }}
                         label={{
@@ -342,44 +357,13 @@ export function AccountsDashboardPage() {
                           style: { fontSize: 12, fontWeight: 700, fill: COLOR_NAVY },
                         }} />
                       <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(v) => [formatNumber(Number(v ?? 0)), 'Accounts']}
+                      <Tooltip
+                        formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]}
                         labelFormatter={(v) => `Layer ${v}`}
                         labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
-                      <Bar dataKey="count" fill={COLOR_ORANGE} name="KA accounts" />
-                    </BarChart>
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </ChartCard>
-
-            <ChartCard title={`Layers — Rest of India  (${formatNumber(restTotal)})`}
-              hint={
-                layerDist && layerDist.unknown_layer_rest > 0
-                  ? `Money-trail depth 1..15. ${formatNumber(layerDist.unknown_layer_rest)} non-KA account(s) with unknown layer excluded. NULL branch_state counted as Rest.`
-                  : 'Money-trail depth 1..15 for branch_state != Karnataka (or unknown).'
-              }
-              accent={COLOR_PURPLE}
-            >
-              {restTotal === 0 ? (
-                <div className="py-10 text-center italic opacity-60 text-sm">No non-Karnataka accounts with a layer yet.</div>
-              ) : (
-                <div style={{ width: '100%', height: 280 }}>
-                  <ResponsiveContainer>
-                    <BarChart data={restLayerSeries}
-                              margin={{ top: 8, right: 8, bottom: 30, left: 8 }}>
-                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
-                      <XAxis dataKey="layer" tick={{ fontSize: 11 }}
-                        label={{
-                          value: 'Layer',
-                          position: 'bottom',
-                          offset: 6,
-                          style: { fontSize: 12, fontWeight: 700, fill: COLOR_NAVY },
-                        }} />
-                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
-                      <Tooltip formatter={(v) => [formatNumber(Number(v ?? 0)), 'Accounts']}
-                        labelFormatter={(v) => `Layer ${v}`}
-                        labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
-                      <Bar dataKey="count" fill={COLOR_PURPLE} name="Rest accounts" />
+                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      <Bar dataKey="ka"   name="Karnataka"     fill={COLOR_ORANGE} />
+                      <Bar dataKey="rest" name="Rest of India" fill={COLOR_PURPLE} />
                     </BarChart>
                   </ResponsiveContainer>
                 </div>
