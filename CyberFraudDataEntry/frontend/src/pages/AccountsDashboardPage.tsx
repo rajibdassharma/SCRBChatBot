@@ -347,22 +347,23 @@ export function AccountsDashboardPage() {
                 <div style={{ width: '100%', height: 320 }}>
                   <ResponsiveContainer>
                     <BarChart data={layerSeries}
-                              margin={{ top: 8, right: 8, bottom: 30, left: 8 }}
+                              margin={{ top: 32, right: 8, bottom: 8, left: 8 }}
                               barCategoryGap="4%" barGap={2}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                      {/* X-axis "Layer" label removed -- was overlapping
+                          the legend at the bottom. Card title already
+                          says "Layers"; ticks are the numbers. */}
                       <XAxis dataKey="layer" tick={{ fontSize: 11 }}
-                        label={{
-                          value: 'Layer',
-                          position: 'bottom',
-                          offset: 6,
-                          style: { fontSize: 12, fontWeight: 700, fill: COLOR_NAVY },
-                        }} />
+                        tickFormatter={(v) => `L${v}`} />
                       <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
                       <Tooltip
                         formatter={(v, key) => [formatNumber(Number(v ?? 0)), String(key)]}
                         labelFormatter={(v) => `Layer ${v}`}
                         labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
-                      <Legend wrapperStyle={{ fontSize: 11 }} />
+                      {/* Legend at top so it doesn't fight the X-axis
+                          for bottom real estate. */}
+                      <Legend verticalAlign="top" align="right" height={24}
+                        wrapperStyle={{ fontSize: 11 }} />
                       <Bar dataKey="ka"   name="Karnataka"     fill={COLOR_ORANGE} />
                       <Bar dataKey="rest" name="Rest of India" fill={COLOR_PURPLE} />
                     </BarChart>
