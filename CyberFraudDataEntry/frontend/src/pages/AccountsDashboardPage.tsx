@@ -177,11 +177,12 @@ export function AccountsDashboardPage() {
     }
   };
 
-  // Layer 1..15 zero-filled + merged into a single series so the
-  // BarChart can render one grouped bar (KA next to Rest) per
-  // layer. Fixed axis means every layer is present even when both
-  // sides are zero -- which is the whole point of a money-trail
-  // comparison chart.
+  // Layer 1..15 merged into a single series so the BarChart can
+  // render one grouped bar (KA next to Rest) per layer. Layers with
+  // zero on BOTH sides are dropped -- otherwise they take up X-axis
+  // slots that squeeze the real bars. This means the axis is a
+  // discrete list of active layers, not a fixed 1..15 (a middle
+  // gap, e.g. active 1/2/4/5, shows as 1 2 4 5 with no empty 3).
   const layerSeries = useMemo(() => {
     const kaMap = new Map<number, number>((layerDist?.ka ?? []).map((b) => [b.layer, b.count]));
     const restMap = new Map<number, number>((layerDist?.rest ?? []).map((b) => [b.layer, b.count]));
@@ -192,7 +193,7 @@ export function AccountsDashboardPage() {
         ka: kaMap.get(layer) ?? 0,
         rest: restMap.get(layer) ?? 0,
       };
-    });
+    }).filter((p) => p.ka + p.rest > 0);
   }, [layerDist]);
   const kaTotal = useMemo(() => layerSeries.reduce((s, p) => s + p.ka, 0), [layerSeries]);
   const restTotal = useMemo(() => layerSeries.reduce((s, p) => s + p.rest, 0), [layerSeries]);
@@ -347,7 +348,7 @@ export function AccountsDashboardPage() {
                   <ResponsiveContainer>
                     <BarChart data={layerSeries}
                               margin={{ top: 8, right: 8, bottom: 30, left: 8 }}
-                              barCategoryGap="8%" barGap={3}>
+                              barCategoryGap="4%" barGap={2}>
                       <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
                       <XAxis dataKey="layer" tick={{ fontSize: 11 }}
                         label={{
