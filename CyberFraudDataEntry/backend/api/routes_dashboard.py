@@ -35,7 +35,7 @@ from schemas.dashboard import (
     ArrestSummary, LienSummary, PetitionSummary, RefundSummary,
     DisposalSummary, TrialSummary, PendingByYearRow,
     AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
-    AccountsDailyPoint,
+    AccountsDailyPoint, AccountsLayerDistribution,
     FirPsPerformanceRow,
 )
 from schemas.all_account import AllAccountResponse, MuleHerderOut
@@ -1642,6 +1642,65 @@ async def get_accounts_daily_growth(
         out.append(AccountsDailyPoint(day=cur, count=counts.get(cur, 0)))
         cur = cur + timedelta(days=1)
     return out
+
+
+@router.get("/accounts-layer-distribution", response_model=AccountsLayerDistribution)
+async def get_accounts_layer_distribution(
+    target_date: date = Query(..., alias="date", description="Cumulative cutoff — accounts created on or before this date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Layer 1..15 histogram of all_accounts, split by branch state.
+
+    Karnataka bucket : branch_state = 'Karnataka'
+    Rest bucket      : branch_state != 'Karnataka' OR IS NULL
+                       (legacy pre-migration-012 rows without a
+                        confirmed state count as 'not confirmed KA')
+
+    Accounts with NULL layer are excluded from both arrays but their
+    count is returned separately so the UI can surface them in a hint.
+
+    Scoping: admin -> own PS; super_admin -> cross-PS."""
+
+    # Helper: build a (layer -> count) dict for a given branch_state
+    # predicate, then flesh it out into a full LayerBucket list.
+    ka_pred = AllAccount.branch_state == "Karnataka"
+    rest_pred = (AllAccount.branch_state != "Karnataka") | AllAccount.branch_state.is_(None)
+
+    async def _histogram(where_pred, layer_is_null: bool):
+        q = (
+            select(AllAccount.layer, func.count(AllAccount.id))
+            .where(func.date(AllAccount.created_at) <= target_date)
+            .where(where_pred)
+            .group_by(AllAccount.layer)
+        )
+        if layer_is_null:
+            q = q.where(AllAccount.layer.is_(None))
+        else:
+            q = q.where(AllAccount.layer.is_not(None))
+        if admin.role != "super_admin":
+            if not admin.unit_id or not admin.ps_id:
+                raise HTTPException(status_code=403, detail="Admin account is not assigned to a Police Station.")
+            q = q.where(AllAccount.unit_id == admin.unit_id, AllAccount.ps_id == admin.ps_id)
+        return (await db.execute(q)).all()
+
+    ka_rows = await _histogram(ka_pred, layer_is_null=False)
+    rest_rows = await _histogram(rest_pred, layer_is_null=False)
+    ka_null_rows = await _histogram(ka_pred, layer_is_null=True)
+    rest_null_rows = await _histogram(rest_pred, layer_is_null=True)
+
+    def _rows_to_buckets(rows) -> list[LayerBucket]:
+        counts: dict[int, int] = {int(layer): int(c) for layer, c in rows}
+        # Emit only the layers that appear -- frontend zero-fills the
+        # 1..15 axis so the bar chart stays a fixed width.
+        return [LayerBucket(layer=k, count=v) for k, v in sorted(counts.items())]
+
+    return AccountsLayerDistribution(
+        ka=_rows_to_buckets(ka_rows),
+        rest=_rows_to_buckets(rest_rows),
+        unknown_layer_ka=sum(int(c) for _, c in ka_null_rows),
+        unknown_layer_rest=sum(int(c) for _, c in rest_null_rows),
+    )
 
 
 @router.get("/accounts-top-banks", response_model=List[AccountsBankConcentration])

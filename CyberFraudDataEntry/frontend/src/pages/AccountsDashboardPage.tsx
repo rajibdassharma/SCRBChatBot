@@ -6,11 +6,11 @@ import {
 import { toast } from 'sonner';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-  LineChart, Line, PieChart, Pie, Cell, ResponsiveContainer,
+  LineChart, Line, ResponsiveContainer,
 } from 'recharts';
 import {
   getAccountsSummary, getAccountsComparison,
-  getAccountsDailyGrowth,
+  getAccountsDailyGrowth, getAccountsLayerDistribution,
 } from '../lib/api/dashboard';
 import {
   downloadAccountsPsComparisonExcel, downloadAccountsPsComparisonPdf,
@@ -19,7 +19,7 @@ import { formatNumber, todayISO, localISO } from '../lib/utils/format';
 import { AccountsPsDetailPanel } from '../components/dashboard/AccountsPsDetailPanel';
 import type {
   AccountsKpiSummary, AccountsPsComparison,
-  AccountsDailyPoint,
+  AccountsDailyPoint, AccountsLayerDistribution,
 } from '../types';
 
 /** Account Details Dashboard — mirrors the shell + feel of the DSR
@@ -121,6 +121,7 @@ export function AccountsDashboardPage() {
   const [summary, setSummary] = useState<AccountsKpiSummary | null>(null);
   const [rows, setRows] = useState<AccountsPsComparison[]>([]);
   const [dailyGrowth, setDailyGrowth] = useState<AccountsDailyPoint[]>([]);
+  const [layerDist, setLayerDist] = useState<AccountsLayerDistribution | null>(null);
   const [loading, setLoading] = useState(true);
   const [drilldown, setDrilldown] = useState<AccountsPsComparison | null>(null);
   const [dl, setDl] = useState<'pdf' | 'xlsx' | null>(null);
@@ -136,13 +137,16 @@ export function AccountsDashboardPage() {
       getAccountsSummary(date),
       getAccountsComparison(date),
       getAccountsDailyGrowth(growthCutoff, 30),
-    ]).then(([s, u, g]) => {
+      getAccountsLayerDistribution(date),
+    ]).then(([s, u, g, l]) => {
       if (s.status === 'fulfilled') setSummary(s.value);
       else { setSummary(null); toast.error(`Summary: ${(s as any).reason?.message ?? 'failed'}`); }
       if (u.status === 'fulfilled') setRows(u.value);
       else { setRows([]); toast.error(`Per-PS: ${(u as any).reason?.message ?? 'failed'}`); }
       if (g.status === 'fulfilled') setDailyGrowth(g.value);
       else { setDailyGrowth([]); toast.error(`Growth: ${(g as any).reason?.message ?? 'failed'}`); }
+      if (l.status === 'fulfilled') setLayerDist(l.value);
+      else { setLayerDist(null); toast.error(`Layers: ${(l as any).reason?.message ?? 'failed'}`); }
     }).finally(() => setLoading(false));
   }, [date]);
 
@@ -173,12 +177,22 @@ export function AccountsDashboardPage() {
     }
   };
 
-  // Pie of account types — pulled from summary counters.
-  const typePie = useMemo(() => ([
-    { name: 'Victim',   value: summary?.victim_accounts   ?? 0, fill: COLOR_VICTIM },
-    { name: 'Mule',     value: summary?.mule_accounts     ?? 0, fill: COLOR_MULE },
-    { name: 'Non-Mule', value: summary?.non_mule_accounts ?? 0, fill: COLOR_NONMULE },
-  ].filter(d => d.value > 0)), [summary]);
+  // Layer 1..15 zero-filled series for the two bar charts. Both KA
+  // and Rest use the SAME 1..15 axis so the two charts line up
+  // visually side by side. Layers with zero count on both sides
+  // still render (as an empty gap) -- that's the point of a fixed
+  // axis for money-trail comparison.
+  const layerAxis = useMemo(() => Array.from({ length: 15 }, (_, i) => i + 1), []);
+  const kaLayerSeries = useMemo(() => {
+    const bucketMap = new Map<number, number>((layerDist?.ka ?? []).map((b) => [b.layer, b.count]));
+    return layerAxis.map((layer) => ({ layer, count: bucketMap.get(layer) ?? 0 }));
+  }, [layerDist, layerAxis]);
+  const restLayerSeries = useMemo(() => {
+    const bucketMap = new Map<number, number>((layerDist?.rest ?? []).map((b) => [b.layer, b.count]));
+    return layerAxis.map((layer) => ({ layer, count: bucketMap.get(layer) ?? 0 }));
+  }, [layerDist, layerAxis]);
+  const kaTotal = useMemo(() => kaLayerSeries.reduce((s, p) => s + p.count, 0), [kaLayerSeries]);
+  const restTotal = useMemo(() => restLayerSeries.reduce((s, p) => s + p.count, 0), [restLayerSeries]);
 
   // Drill-down: full account detail grid for a single PS, with Excel + PDF export.
   // Clicking a row in the per-PS comparison table sets this; the Back button on
@@ -246,10 +260,13 @@ export function AccountsDashboardPage() {
             </div>
           </div>
 
-          {/* Row 1 — Daily growth (2/3) + Type distribution pie (1/3).
-               Growth replaces the old Top-10-PS position per the
-               2026-07-24 dashboard reshape. */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+          {/* Row 1 — Daily growth (2/4) + KA Layer bar (1/4) + Rest Layer bar (1/4).
+               Layer distribution replaces the old Type Distribution
+               donut on the 2026-07-29 reshape -- the V/M/NM split is
+               already surfaced by the KPI cards above, whereas
+               layer histograms answer "how deep is the money trail
+               in / outside Karnataka" at a glance. */}
+          <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
             <div className="lg:col-span-2">
               <ChartCard
                 title="Daily Growth — Accounts"
@@ -301,51 +318,69 @@ export function AccountsDashboardPage() {
               </ChartCard>
             </div>
 
-            <ChartCard title="Account Type Distribution"
-              hint="Share of Victim / Mule / Non-Mule across all PSes in scope."
+            <ChartCard title={`Layers — Karnataka  (${formatNumber(kaTotal)})`}
+              hint={
+                layerDist && layerDist.unknown_layer_ka > 0
+                  ? `Money-trail depth 1..15. ${formatNumber(layerDist.unknown_layer_ka)} KA account(s) with unknown layer excluded.`
+                  : 'Money-trail depth 1..15 for branch_state = Karnataka.'
+              }
               accent={COLOR_ORANGE}
             >
-              {typePie.length === 0 ? (
-                <div className="py-10 text-center italic opacity-60 text-sm">No accounts yet.</div>
+              {kaTotal === 0 ? (
+                <div className="py-10 text-center italic opacity-60 text-sm">No Karnataka accounts with a layer yet.</div>
               ) : (
                 <div style={{ width: '100%', height: 280 }}>
                   <ResponsiveContainer>
-                    <PieChart margin={{ top: 8, right: 8, bottom: 24, left: 8 }}>
-                      <Pie data={typePie} dataKey="value" nameKey="name"
-                        cx="50%" cy="45%" innerRadius={48} outerRadius={80}
-                        paddingAngle={2}
-                        // % INSIDE the arc, absolute count in the legend
-                        // below. Custom renderer so the % text fill is
-                        // fixed navy regardless of slice colour
-                        // (Recharts default inherits fill from the
-                        // slice, which vanishes on pale slices).
-                        label={(props: any) => {
-                          const total = typePie.reduce((s, x) => s + x.value, 0);
-                          if (!total || !props.value) return null;
-                          const pct = (props.value / total) * 100;
-                          if (pct < 5) return null;
-                          const RADIAN = Math.PI / 180;
-                          const r = props.innerRadius + (props.outerRadius - props.innerRadius) * 0.5;
-                          const x = props.cx + r * Math.cos(-props.midAngle * RADIAN);
-                          const y = props.cy + r * Math.sin(-props.midAngle * RADIAN);
-                          return (
-                            <text x={x} y={y} fill={COLOR_NAVY}
-                              fontSize={12} fontWeight={700}
-                              textAnchor="middle" dominantBaseline="central">
-                              {pct.toFixed(0)}%
-                            </text>
-                          );
-                        }}
-                        labelLine={false}
-                      >
-                        {typePie.map((d) => <Cell key={d.name} fill={d.fill} />)}
-                      </Pie>
-                      <Tooltip formatter={(v) => formatNumber(Number(v ?? 0))} />
-                      <Legend verticalAlign="bottom" height={24}
-                        formatter={(name, entry: any) =>
-                          `${name}: ${formatNumber(entry?.payload?.value ?? 0)}`}
-                        wrapperStyle={{ fontSize: 11 }} />
-                    </PieChart>
+                    <BarChart data={kaLayerSeries}
+                              margin={{ top: 8, right: 8, bottom: 30, left: 8 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                      <XAxis dataKey="layer" tick={{ fontSize: 11 }}
+                        label={{
+                          value: 'Layer',
+                          position: 'bottom',
+                          offset: 6,
+                          style: { fontSize: 12, fontWeight: 700, fill: COLOR_NAVY },
+                        }} />
+                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(v) => [formatNumber(Number(v ?? 0)), 'Accounts']}
+                        labelFormatter={(v) => `Layer ${v}`}
+                        labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
+                      <Bar dataKey="count" fill={COLOR_ORANGE} name="KA accounts" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </div>
+              )}
+            </ChartCard>
+
+            <ChartCard title={`Layers — Rest of India  (${formatNumber(restTotal)})`}
+              hint={
+                layerDist && layerDist.unknown_layer_rest > 0
+                  ? `Money-trail depth 1..15. ${formatNumber(layerDist.unknown_layer_rest)} non-KA account(s) with unknown layer excluded. NULL branch_state counted as Rest.`
+                  : 'Money-trail depth 1..15 for branch_state != Karnataka (or unknown).'
+              }
+              accent={COLOR_PURPLE}
+            >
+              {restTotal === 0 ? (
+                <div className="py-10 text-center italic opacity-60 text-sm">No non-Karnataka accounts with a layer yet.</div>
+              ) : (
+                <div style={{ width: '100%', height: 280 }}>
+                  <ResponsiveContainer>
+                    <BarChart data={restLayerSeries}
+                              margin={{ top: 8, right: 8, bottom: 30, left: 8 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#eee" />
+                      <XAxis dataKey="layer" tick={{ fontSize: 11 }}
+                        label={{
+                          value: 'Layer',
+                          position: 'bottom',
+                          offset: 6,
+                          style: { fontSize: 12, fontWeight: 700, fill: COLOR_NAVY },
+                        }} />
+                      <YAxis allowDecimals={false} tick={{ fontSize: 11 }} />
+                      <Tooltip formatter={(v) => [formatNumber(Number(v ?? 0)), 'Accounts']}
+                        labelFormatter={(v) => `Layer ${v}`}
+                        labelStyle={{ color: COLOR_NAVY, fontWeight: 700 }} />
+                      <Bar dataKey="count" fill={COLOR_PURPLE} name="Rest accounts" />
+                    </BarChart>
                   </ResponsiveContainer>
                 </div>
               )}

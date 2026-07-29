@@ -181,6 +181,21 @@ class LayerBucket(BaseModel):
     count: int = 0
 
 
+class AccountsLayerDistribution(BaseModel):
+    """Layer 1..15 distribution of all_accounts split by branch state.
+    Karnataka bucket = branch_state = 'Karnataka'. Rest bucket = every
+    other value INCLUDING NULL (legacy pre-migration-012 rows that
+    don't have a confirmed state count as 'not confirmed KA' = Rest).
+
+    Only accounts with a non-NULL layer are in the ka / rest arrays.
+    unknown_layer_ka + unknown_layer_rest count accounts with a NULL
+    layer so the frontend can surface them in the chart subtitle."""
+    ka: list[LayerBucket] = []
+    rest: list[LayerBucket] = []
+    unknown_layer_ka: int = 0
+    unknown_layer_rest: int = 0
+
+
 class LienAccountAtLayer(BaseModel):
     """One frozen account at a specific layer, with the parent case context.
     Used by the layer-distribution drill-down."""

@@ -781,6 +781,23 @@ export interface AccountsDailyPoint {
   count: number;
 }
 
+/** One `{layer, count}` point on the layer-histogram bar chart. */
+export interface LayerCountPoint {
+  layer: number;
+  count: number;
+}
+
+/** Layer 1..15 distribution of all_accounts, split by branch state.
+ *  KA = branch_state = 'Karnataka'. Rest = every other value INCLUDING
+ *  NULL. Accounts with a NULL layer are counted separately so the UI
+ *  can surface them in a chart subtitle. */
+export interface AccountsLayerDistribution {
+  ka: LayerCountPoint[];
+  rest: LayerCountPoint[];
+  unknown_layer_ka: number;
+  unknown_layer_rest: number;
+}
+
 // ── Portals DSR ────────────────────────────────────────────
 
 export type PortalsDsrStatus = 'draft' | 'submitted';

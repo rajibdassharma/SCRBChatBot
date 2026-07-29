@@ -9,7 +9,7 @@ import type {
   AllAccount,
   PortalsDsrKpiSummary, PortalsDsrPsComparison,
   FirPsPerformanceRow,
-  AccountsDailyPoint,
+  AccountsDailyPoint, AccountsLayerDistribution,
 } from '../../types';
 
 /** All Accounts dashboard — KPI cards + per-PS comparison. */
@@ -145,6 +145,18 @@ export async function getFirPsPerformance(
   if (to) qs.set('to', to);
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
   return apiFetch<FirPsPerformanceRow[]>(`/api/v1/dashboard/fir-ps-performance${suffix}`);
+}
+
+/** Layer 1..15 histogram of accounts, split by KA vs Rest of India,
+ *  for the Account Details dashboard's layer-distribution row.
+ *  Accounts with NULL branch_state count as Rest. Accounts with
+ *  NULL layer come back as separate unknown_layer_ka / _rest counts. */
+export async function getAccountsLayerDistribution(
+  date: string,
+): Promise<AccountsLayerDistribution> {
+  return apiFetch<AccountsLayerDistribution>(
+    `/api/v1/dashboard/accounts-layer-distribution?date=${encodeURIComponent(date)}`,
+  );
 }
 
 /** Per-day new-account counts for the Account Details dashboard's
