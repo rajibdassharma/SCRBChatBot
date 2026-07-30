@@ -226,19 +226,26 @@ async def create_account(
 @router.get("", response_model=List[AllAccountListItem])
 async def list_accounts(
     q: str | None = Query(default=None, description="Search account_no / holder / FIR / ack no (partial, case-insensitive)"),
+    fir_no: str | None = Query(default=None, description="Exact FIR No filter -- Update Account page filters by this. Variant-matched (leading-zero tolerant)."),
+    ps_id: int | None = Query(default=None, ge=1, description="Cross-PS scope override -- super_admin only. Ignored for admin/unit_user (they're pinned to their own PS)."),
     account_type: str | None = Query(default=None, description="Filter by 'Victim' or 'Mule'"),
     limit: int = Query(default=50, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
     db: AsyncSession = Depends(get_db),
     current: CurrentUser = Depends(get_current_user),
 ):
-    """PS-scoped inbox. Optional free-text search across the fields
-    the operator is most likely to remember (account, holder, FIR,
-    NCRP ack)."""
+    """PS-scoped inbox. Optional filters: free-text (q), exact FIR
+    No (fir_no, variant-matched for legacy zero-padding), account
+    type, and -- super_admin only -- an explicit ps_id override."""
     # Ascending — operators asked for Serial No to read left-to-right
     # top-to-bottom in the order they were entered (2026-07-21).
     query = select(AllAccount).order_by(AllAccount.serial_no.asc())
     query = _scope_to_ps(query, current)
+    # super_admin can drill into a specific PS via ps_id; for anyone
+    # else the param is silently ignored so a URL-tweaking admin can't
+    # peek at other PSes.
+    if ps_id is not None and current.role == "super_admin":
+        query = query.where(AllAccount.ps_id == ps_id)
     if q:
         needle = f"%{q.strip()}%"
         query = query.where(or_(
@@ -247,6 +254,21 @@ async def list_accounts(
             AllAccount.fir_no.ilike(needle),
             AllAccount.ncrp_ack_no.ilike(needle),
         ))
+    if fir_no:
+        # Legacy rows may store "1/2025" while a new operator types
+        # "0001/2025" (validator was grandfathered to \d{1,4}/\d{4}).
+        # Match any of: as-typed, leading zeros stripped, zero-padded to 4.
+        raw = fir_no.strip()
+        variants = {raw}
+        if "/" in raw:
+            num, year = raw.split("/", 1)
+            stripped = num.lstrip("0") or "0"
+            variants.add(f"{stripped}/{year}")
+            try:
+                variants.add(f"{int(stripped):04d}/{year}")
+            except ValueError:
+                pass
+        query = query.where(AllAccount.fir_no.in_(list(variants)))
     if account_type:
         if account_type not in ACCOUNT_TYPES:
             raise HTTPException(status_code=400, detail=f"account_type must be one of {sorted(ACCOUNT_TYPES)}.")

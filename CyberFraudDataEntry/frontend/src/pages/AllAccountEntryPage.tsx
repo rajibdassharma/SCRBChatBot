@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useNavigate, useParams } from 'react-router';
 import { toast } from 'sonner';
-import { FileText, Plus, Save, Trash2, Upload, X } from 'lucide-react';
+import { ArrowLeft, FileText, Plus, Save, Trash2, Upload, X } from 'lucide-react';
 import {
   createAllAccount, deleteAllAccount, getAllAccount, updateAllAccount,
 } from '../lib/api/all-accounts';
@@ -164,10 +164,14 @@ function RemBtn({ onClick }: { onClick: () => void }) {
 }
 
 /** Victim / Mule / Non-Mule pill radio. Herder rows only apply to
- *  Mule — switching away clears them. */
-function TypeRadio({ value, onChange }: {
+ *  Mule — switching away clears them. When `hideVictim` is set the
+ *  Victim option is dropped from the render (used on Update Account
+ *  for existing Mule / Non-Mule records — a mule can't be re-classed
+ *  as a victim after the fact). */
+function TypeRadio({ value, onChange, hideVictim = false }: {
   value: 'Victim' | 'Mule' | 'Non-Mule';
   onChange: (v: 'Victim' | 'Mule' | 'Non-Mule') => void;
+  hideVictim?: boolean;
 }) {
   const pill = (active: boolean) => ({
     background: active ? 'var(--ksp-navy)' : '#fff',
@@ -175,7 +179,8 @@ function TypeRadio({ value, onChange }: {
     border: active ? '2px solid var(--ksp-navy)' : '2px solid rgba(11,44,74,0.18)',
     cursor: 'pointer' as const,
   });
-  const options: ('Victim' | 'Mule' | 'Non-Mule')[] = ['Victim', 'Mule', 'Non-Mule'];
+  const allOptions: ('Victim' | 'Mule' | 'Non-Mule')[] = ['Victim', 'Mule', 'Non-Mule'];
+  const options = hideVictim ? allOptions.filter((o) => o !== 'Victim') : allOptions;
   return (
     <div className="rounded-2xl p-4 flex items-center gap-4 flex-wrap"
       style={{ background: '#fff', border: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 6px 16px rgba(0,0,0,0.08)' }}>
@@ -406,9 +411,28 @@ export function AllAccountEntryPage() {
         </div>
       </div>
 
-      <h1 className="text-[22px] font-bold mb-1" style={{ color: 'var(--ksp-navy)' }}>
-        {isEdit ? 'Edit Account' : 'New Account'}
-      </h1>
+      <div className="flex items-center justify-between mb-1 gap-3 flex-wrap">
+        <h1 className="text-[22px] font-bold" style={{ color: 'var(--ksp-navy)' }}>
+          {isEdit ? 'Edit Account' : 'New Account'}
+        </h1>
+        {/* Back button -- only meaningful in edit mode, where the user
+             came from the Update Account list. Uses browser history so
+             the previous URL (which the update page mirrors ?ps=&fir=
+             into) is restored -- landing on a fresh, empty list would
+             lose the operator's search. Falls back to the plain list
+             URL when there's no history to pop (deep-link / refresh). */}
+        {isEdit && (
+          <button type="button"
+            onClick={() => {
+              if (window.history.length > 1) navigate(-1);
+              else navigate('/all-accounts/update');
+            }}
+            className="flex items-center gap-1.5 px-4 py-2 text-sm font-bold rounded-xl transition"
+            style={{ background: '#fff', color: 'var(--ksp-navy)', border: '2px solid var(--ksp-navy)' }}>
+            <ArrowLeft className="w-4 h-4" /> Back to list
+          </button>
+        )}
+      </div>
       <p className="text-sm font-medium mb-6" style={{ color: 'var(--ksp-red)' }}>
         {isEdit
           ? `Editing account #${existing?.serial_no ?? '…'}`
@@ -417,12 +441,17 @@ export function AllAccountEntryPage() {
 
       <div className="space-y-5 max-w-5xl">
         <Section title="Case Reference">
+          {/* FIR No + Ack No are immutable after create -- they're
+               the case-identity keys the account was filed under.
+               Change requires deleting the record and re-adding. */}
           <TextField label="FIR No" value={f.fir_no ?? ''}
             onChange={(v) => upd('fir_no', v.replace(/[^\d/]/g, ''))}
-            maxLength={9} placeholder="0001/2026" />
+            maxLength={9} placeholder="0001/2026"
+            readOnly={isEdit} hint={isEdit ? 'locked after create' : undefined} />
           <TextField label="NCRP Ack No" value={f.ncrp_ack_no ?? ''}
             onChange={(v) => upd('ncrp_ack_no', v)}
-            placeholder="e.g. 30811260070042" />
+            placeholder="e.g. 30811260070042"
+            readOnly={isEdit} hint={isEdit ? 'locked after create' : undefined} />
         </Section>
 
         <Section title="Account Details">
@@ -568,6 +597,11 @@ export function AllAccountEntryPage() {
         </div>
 
         <TypeRadio value={f.account_type}
+          // When editing an existing Mule or Non-Mule record, drop
+          // the Victim option -- once flagged non-victim it can only
+          // toggle between Mule and Non-Mule. Fresh entries and edits
+          // of a Victim record keep the full three-way toggle.
+          hideVictim={isEdit && (existing?.account_type === 'Mule' || existing?.account_type === 'Non-Mule')}
           onChange={(v) => {
             upd('account_type', v);
             // Herder rows are Mule-exclusive — clear on any other type.

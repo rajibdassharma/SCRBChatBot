@@ -37,6 +37,17 @@ export async function getPoliceStationsPublic(district: string): Promise<{id: nu
   return res.json();
 }
 
+/** Public -- every active police station across every district.
+ *  Backend returns all rows when no district filter is passed.
+ *  Used by the super_admin Deep Analysis PS picker where scope
+ *  is cross-district. */
+export async function getAllPoliceStationsPublic(): Promise<{id: number, district_name: string, station_name: string, has_super_admin: boolean}[]> {
+  const base = import.meta.env.VITE_API_BASE ?? '';
+  const res = await fetch(`${base}/api/v1/police-stations/public`);
+  if (!res.ok) throw new Error('Failed to load police stations');
+  return res.json();
+}
+
 /** Public — fetch the list of active usernames at a given PS so the
  *  login form can show a dropdown. Returned ordered super_admin →
  *  admin → unit_user. Username is the login identifier; role is shown
