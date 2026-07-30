@@ -10,6 +10,9 @@ import type {
   PortalsDsrKpiSummary, PortalsDsrPsComparison,
   FirPsPerformanceRow,
   AccountsDailyPoint, AccountsLayerDistribution,
+  AccountsFirTrace,
+  NcrpKpiSummary, NcrpPsReportCount, NcrpBankConcentration, NcrpAtmLocation,
+  RepeatAccount, AccountFirOccurrence,
 } from '../../types';
 
 /** All Accounts dashboard — KPI cards + per-PS comparison. */
@@ -147,6 +150,22 @@ export async function getFirPsPerformance(
   return apiFetch<FirPsPerformanceRow[]>(`/api/v1/dashboard/fir-ps-performance${suffix}`);
 }
 
+/** Deep Analysis -- trace every account touching a single FIR
+ *  across all 5 source tables (all_accounts, lien_accounts,
+ *  victim_accounts, accused_accounts, money_transfers). Returns
+ *  case metadata + a flat list of accounts tagged with source.
+ *  Requires ps_id because FIR Nos are only unique per PS -- the
+ *  same '0001/2026' can exist at multiple stations.
+ *  super_admin only -- 403 for anyone else. */
+export async function getAccountsFirTrace(
+  firNo: string, psId: number,
+): Promise<AccountsFirTrace> {
+  const qs = new URLSearchParams({ fir_no: firNo, ps_id: String(psId) });
+  return apiFetch<AccountsFirTrace>(
+    `/api/v1/dashboard/accounts-fir-trace?${qs.toString()}`,
+  );
+}
+
 /** Layer 1..15 histogram of accounts, split by KA vs Rest of India,
  *  for the Account Details dashboard's layer-distribution row.
  *  Accounts with NULL branch_state count as Rest. Accounts with
@@ -169,5 +188,60 @@ export async function getAccountsDailyGrowth(
   const qs = new URLSearchParams({ date, days: String(days) });
   return apiFetch<AccountsDailyPoint[]>(
     `/api/v1/dashboard/accounts-daily-growth?${qs.toString()}`,
+  );
+}
+
+/* ── NCRP Dashboard (super_admin only) ─────────────────────────── */
+
+/** KPI cards -- cumulative to the picked date. */
+export function getNcrpSummary(date: string): Promise<NcrpKpiSummary> {
+  return apiFetch<NcrpKpiSummary>(`/api/v1/dashboard/ncrp-summary?date=${date}`);
+}
+
+/** Per-PS mule-report count in [from, to]. Zero-filled for silent PSes. */
+export function getNcrpPsComparison(from: string, to: string): Promise<NcrpPsReportCount[]> {
+  const qs = new URLSearchParams({ from, to });
+  return apiFetch<NcrpPsReportCount[]>(`/api/v1/dashboard/ncrp-ps-comparison?${qs.toString()}`);
+}
+
+/** Top-N banks by money_transfer count in [from, to]. */
+export function getNcrpTopBanks(from: string, to: string, limit = 10): Promise<NcrpBankConcentration[]> {
+  const qs = new URLSearchParams({ from, to, limit: String(limit) });
+  return apiFetch<NcrpBankConcentration[]>(`/api/v1/dashboard/ncrp-top-banks?${qs.toString()}`);
+}
+
+/** Money-trail layer distribution across money_transfers in [from, to]. */
+export function getNcrpLayerDistribution(from: string, to: string): Promise<LayerBucket[]> {
+  const qs = new URLSearchParams({ from, to });
+  return apiFetch<LayerBucket[]>(`/api/v1/dashboard/ncrp-layer-distribution?${qs.toString()}`);
+}
+
+/** Top-N ATM locations by total disputed cash withdrawn in [from, to]. */
+export function getNcrpTopAtmLocations(from: string, to: string, limit = 10): Promise<NcrpAtmLocation[]> {
+  const qs = new URLSearchParams({ from, to, limit: String(limit) });
+  return apiFetch<NcrpAtmLocation[]>(`/api/v1/dashboard/ncrp-top-atm-locations?${qs.toString()}`);
+}
+
+/** Repeat Accounts -- super_admin cross-PS aggregation of accounts
+ *  registered against >= min_firs distinct FIRs. Call once per
+ *  account_type ('Mule' or 'Non-Mule') to show separate tables. */
+export function getRepeatAccounts(
+  accountType: 'Mule' | 'Non-Mule',
+  minFirs = 2,
+  limit = 100,
+): Promise<RepeatAccount[]> {
+  const qs = new URLSearchParams({
+    account_type: accountType,
+    min_firs: String(minFirs),
+    limit: String(limit),
+  });
+  return apiFetch<RepeatAccount[]>(`/api/v1/dashboard/repeat-accounts?${qs.toString()}`);
+}
+
+/** Drill-down: every FIR + PS + layer the account appeared at. Used
+ *  by the Repeat Accounts modal to show cross-FIR layer variance. */
+export function getAccountFirHistory(accountNo: string): Promise<AccountFirOccurrence[]> {
+  return apiFetch<AccountFirOccurrence[]>(
+    `/api/v1/dashboard/account-fir-history?account_no=${encodeURIComponent(accountNo)}`,
   );
 }

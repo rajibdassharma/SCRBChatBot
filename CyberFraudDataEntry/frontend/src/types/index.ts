@@ -787,6 +787,50 @@ export interface LayerCountPoint {
   count: number;
 }
 
+// ── Accounts Dashboard → Deep Analysis → FIR Trace ─────────────
+
+export interface FirTraceCase {
+  case_id: string | null;
+  fir_no: string;
+  unit_name: string | null;
+  ps_name: string | null;
+  registration_date: string | null;
+  case_type: string | null;
+  crime_type: string | null;
+  victim_name: string | null;
+  amount_lost: number;
+}
+
+/** One account touching an FIR, from any of the 5 source tables.
+ *  `source` tags where it came from so the operator can trace the
+ *  row back to its owning entry point. */
+export type FirTraceSource =
+  | 'all_accounts'
+  | 'lien_accounts'
+  | 'victim_accounts'
+  | 'accused_accounts'
+  | 'money_transfer';
+
+export interface FirTraceAccount {
+  source: FirTraceSource;
+  layer: number | null;
+  account_no: string | null;
+  account_holder_name: string | null;
+  bank_name: string | null;
+  branch_name: string | null;
+  branch_state: string | null;
+  ifsc_code: string | null;
+  amount: number;
+  account_type: string | null;
+}
+
+export interface AccountsFirTrace {
+  fir_no: string;
+  case: FirTraceCase | null;
+  accounts: FirTraceAccount[];
+  warnings: string[];
+}
+
 /** Layer 1..15 distribution of all_accounts, split by branch state.
  *  KA = branch_state = 'Karnataka'. Rest = every other value INCLUDING
  *  NULL. Accounts with a NULL layer are counted separately so the UI
@@ -1043,4 +1087,61 @@ export interface FirPsPerformanceRow {
   /** FIRs registered yesterday (server today - 1), independent of the
    *  from/to window. Added 2026-07-25. */
   yesterday_count: number;
+}
+
+/* ── NCRP Dashboard (2026-07-30, super_admin only) ─────────────── */
+
+export interface NcrpKpiSummary {
+  total_reports: number;
+  unique_banks: number;
+  total_transfer_amount: number;
+  total_atm_aeps_amount: number;
+}
+
+export interface NcrpPsReportCount {
+  unit_id: number;
+  district: string;
+  ps_id: number;
+  ps_name: string;
+  report_count: number;
+}
+
+export interface NcrpBankConcentration {
+  bank: string;
+  transfer_count: number;
+  total_amount: number;
+}
+
+export interface NcrpAtmLocation {
+  atm_location: string;
+  withdrawal_count: number;
+  total_amount: number;
+}
+
+/** One row per All Accounts occurrence of an account_no. Drives
+ *  the Repeat Accounts drill-down modal. */
+export interface AccountFirOccurrence {
+  fir_no: string;
+  ps_name: string;
+  district: string;
+  layer: number | null;
+  account_type: string;
+  account_holder_name: string | null;
+  bank_name: string | null;
+  branch_state: string | null;
+  created_at: string | null;
+}
+
+/** Repeat Accounts (super_admin) -- one row per account_no seen in
+ *  >= min_firs distinct FIRs across all PSes. */
+export interface RepeatAccount {
+  account_no: string;
+  bank_name: string | null;
+  account_holder_name: string | null;
+  account_type: string;    // 'Mule' or 'Non-Mule'
+  branch_state: string | null;
+  fir_count: number;
+  ps_count: number;
+  sample_firs: string[];
+  sample_ps_labels: string[];
 }

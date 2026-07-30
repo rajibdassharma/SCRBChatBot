@@ -11,6 +11,7 @@ import { DashboardPage } from './pages/DashboardPage';
 import { MuleReportEntryPage } from './pages/MuleReportEntryPage';
 import { MuleUpdatePage } from './pages/MuleUpdatePage';
 import { MuleUploadPage } from './pages/MuleUploadPage';
+import { NcrpDashboardPage } from './pages/NcrpDashboardPage';
 import { PetitionEntryPage } from './pages/PetitionEntryPage';
 import { PetitionUpdatePage } from './pages/PetitionUpdatePage';
 import { ChangePasswordPage } from './pages/ChangePasswordPage';
@@ -70,6 +71,14 @@ function App() {
         <Route path="/mule/upload" element={<MuleUploadPage />} />
         <Route path="/mule/new" element={<MuleReportEntryPage />} />
         <Route path="/mule/update" element={<MuleUpdatePage />} />
+        <Route
+          path="/mule/dashboard"
+          element={
+            <ProtectedRoute requireSuperAdmin>
+              <NcrpDashboardPage />
+            </ProtectedRoute>
+          }
+        />
         <Route path="/mule/:id" element={<MuleReportEntryPage />} />
 
         <Route path="/all-accounts/new" element={<AllAccountEntryPage />} />

@@ -19,6 +19,9 @@ export type ModuleLink = {
   icon: LucideIcon;
   /** Show this link only to admin / super_admin. */
   requiresAdmin?: boolean;
+  /** Show this link only to super_admin (SCRB HQ). Cross-PS
+   *  investigation surfaces that admins/unit_users shouldn't see. */
+  requiresSuperAdmin?: boolean;
   /** Show this link only if the server's chat feature flag is on. */
   requiresChat?: boolean;
 };
@@ -81,9 +84,10 @@ export const MODULES: ModuleDef[] = [
     visibleForPsNames: ['CID', 'Test PS'],
     landingUrl: '/mule/new',
     links: [
-      { to: '/mule/new',    label: 'New Report',       icon: FilePlus },
-      { to: '/mule/update', label: 'Update Report',    icon: Search },
-      { to: '/mule/upload', label: 'Upload Bulk Data', icon: Upload },
+      { to: '/mule/new',       label: 'New Report',        icon: FilePlus },
+      { to: '/mule/update',    label: 'Update Report',     icon: Search },
+      { to: '/mule/upload',    label: 'Upload Bulk Data',  icon: Upload },
+      { to: '/mule/dashboard', label: 'NCRP Dashboard',    icon: BarChart3, requiresSuperAdmin: true },
     ],
   },
   {

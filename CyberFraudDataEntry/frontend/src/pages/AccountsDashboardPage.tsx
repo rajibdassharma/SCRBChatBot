@@ -1,7 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   BarChart3, Users, ShieldAlert, HelpCircle, MapPin, Camera,
-  Trophy, FileDown, FileSpreadsheet,
+  Trophy, FileDown, FileSpreadsheet, Search, Network, Waypoints, Repeat,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -11,15 +11,20 @@ import {
 import {
   getAccountsSummary, getAccountsComparison,
   getAccountsDailyGrowth, getAccountsLayerDistribution,
+  getAccountsFirTrace, getRepeatAccounts, getAccountFirHistory,
 } from '../lib/api/dashboard';
 import {
   downloadAccountsPsComparisonExcel, downloadAccountsPsComparisonPdf,
 } from '../lib/api/reports';
+import { getAllPoliceStationsPublic } from '../lib/api/auth';
 import { formatNumber, todayISO, localISO } from '../lib/utils/format';
+import { useAuthStore } from '../lib/stores/auth-store';
 import { AccountsPsDetailPanel } from '../components/dashboard/AccountsPsDetailPanel';
 import type {
   AccountsKpiSummary, AccountsPsComparison,
   AccountsDailyPoint, AccountsLayerDistribution,
+  AccountsFirTrace, FirTraceAccount, FirTraceSource,
+  RepeatAccount, AccountFirOccurrence,
 } from '../types';
 
 /** Account Details Dashboard — mirrors the shell + feel of the DSR
@@ -198,6 +203,14 @@ export function AccountsDashboardPage() {
   const kaTotal = useMemo(() => layerSeries.reduce((s, p) => s + p.ka, 0), [layerSeries]);
   const restTotal = useMemo(() => layerSeries.reduce((s, p) => s + p.rest, 0), [layerSeries]);
 
+  // Tab state — Overview always visible; Deep Analysis appears only
+  // for super_admin (SCRB HQ investigation tool). Non-super_admins
+  // don't even see the second tab, so switching state doesn't need
+  // to be role-gated separately.
+  const { user } = useAuthStore();
+  const isSuperAdmin = user?.role === 'super_admin';
+  const [tab, setTab] = useState<'overview' | 'deep' | 'graph' | 'repeat'>('overview');
+
   // Drill-down: full account detail grid for a single PS, with Excel + PDF export.
   // Clicking a row in the per-PS comparison table sets this; the Back button on
   // the detail panel clears it and we fall back to the summary view.
@@ -223,7 +236,14 @@ export function AccountsDashboardPage() {
             Cumulative account KPIs, top performers and bank concentration as of the selected date.
           </p>
         </div>
-        <label className="text-sm flex items-center gap-2">
+        <label className="text-sm flex items-center gap-2"
+          // Date picker hidden on Deep Analysis tab -- that view is
+          // FIR-scoped and doesn't use a cutoff date.
+          style={{ visibility: tab === 'overview' ? 'visible' : 'hidden' }}
+          aria-hidden={tab !== 'overview'}
+          // Date picker is only meaningful on the cumulative Overview
+          // tab; Deep / Graph / Repeat views ignore date entirely.
+        >
           <span className="font-semibold" style={{ color: 'var(--ksp-navy)' }}>As of:</span>
           <input type="date" value={date}
             onChange={(e) => setDate(e.target.value)}
@@ -232,7 +252,57 @@ export function AccountsDashboardPage() {
         </label>
       </div>
 
-      {loading ? (
+      {/* Tab bar -- Deep Analysis only shown to super_admin. */}
+      {isSuperAdmin && (
+        <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'rgba(11,44,74,0.15)' }}>
+          <button type="button"
+            onClick={() => setTab('overview')}
+            className="px-4 py-2 text-sm font-bold rounded-t-lg transition"
+            style={{
+              background: tab === 'overview' ? 'var(--ksp-navy)' : 'transparent',
+              color: tab === 'overview' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+              borderBottom: tab === 'overview' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
+            }}>
+            Overview
+          </button>
+          <button type="button"
+            onClick={() => setTab('deep')}
+            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
+            style={{
+              background: tab === 'deep' ? 'var(--ksp-navy)' : 'transparent',
+              color: tab === 'deep' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+              borderBottom: tab === 'deep' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
+            }}>
+            <Network className="w-4 h-4" /> Deep Analysis
+          </button>
+          <button type="button"
+            onClick={() => setTab('graph')}
+            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
+            style={{
+              background: tab === 'graph' ? 'var(--ksp-navy)' : 'transparent',
+              color: tab === 'graph' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+              borderBottom: tab === 'graph' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
+            }}>
+            <Waypoints className="w-4 h-4" /> Graphical Analysis
+          </button>
+          <button type="button"
+            onClick={() => setTab('repeat')}
+            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
+            style={{
+              background: tab === 'repeat' ? 'var(--ksp-navy)' : 'transparent',
+              color: tab === 'repeat' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+              borderBottom: tab === 'repeat' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
+            }}>
+            <Repeat className="w-4 h-4" /> Repeat Accounts
+          </button>
+        </div>
+      )}
+
+      {(tab === 'deep' || tab === 'graph') && isSuperAdmin ? (
+        <DeepAnalysisTab mode={tab === 'graph' ? 'graph' : 'table'} />
+      ) : tab === 'repeat' && isSuperAdmin ? (
+        <RepeatAccountsTab />
+      ) : loading ? (
         <div className="text-center py-16 font-semibold" style={{ color: 'var(--ksp-navy)' }}>Loading dashboard...</div>
       ) : (
         <div className="space-y-6">
@@ -529,6 +599,922 @@ export function AccountsDashboardPage() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+
+// ── Deep Analysis Tab (super_admin only) ─────────────────────────
+// Investigator flow: type an FIR No, hit Trace, get everything the
+// DB knows about that FIR pulled from 5 source tables + summed by
+// layer for the money-flow chart. Runs standalone -- no shared
+// state with the Overview tab besides super_admin gating.
+
+const SOURCE_LABELS: Record<FirTraceSource, string> = {
+  all_accounts: 'All Accounts',
+  lien_accounts: 'Lien',
+  victim_accounts: 'Victim Account',
+  accused_accounts: 'Accused Account',
+  money_transfer: 'Mule Transfer',
+};
+
+// Distinct colour per money-trail layer -- reused across the
+// per-layer bar chart and the graphical node view so operators
+// pattern-match "same colour = same layer" across both surfaces.
+// Layer values in the DB range 1..15 (see all_accounts.layer). We
+// keep a rolling palette so anything beyond 15 wraps -- 15 layers
+// deep is already deeper than any real case.
+const LAYER_PALETTE = [
+  '#1f77b4', '#ff7f0e', '#2ca02c', '#d62728', '#9467bd',
+  '#8c564b', '#e377c2', '#17becf', '#bcbd22', '#7f7f7f',
+  '#aec7e8', '#ffbb78', '#98df8a', '#ff9896', '#c5b0d5',
+];
+const LAYER_UNKNOWN_COLOR = '#94a3b8';   // slate-400 -- for NULL-layer accounts
+const NON_MULE_COLOR      = '#374151';   // slate-700 -- Non-Mule stays dark grey regardless of layer
+const layerColor = (layer: number | null | undefined): string =>
+  layer == null ? LAYER_UNKNOWN_COLOR : LAYER_PALETTE[(layer - 1 + LAYER_PALETTE.length) % LAYER_PALETTE.length];
+
+/** Node colour for the Graphical Analysis view. Non-Mule accounts
+ *  always render dark grey so they stay visually distinct from
+ *  layer-coloured Mule / Victim accounts; everyone else follows
+ *  the layer palette. */
+const nodeColorFor = (a: { source: string; account_type: string | null; layer: number | null }): string =>
+  a.source === 'all_accounts' && a.account_type === 'Non-Mule'
+    ? NON_MULE_COLOR
+    : layerColor(a.layer);
+
+function DeepAnalysisTab({ mode }: { mode: 'table' | 'graph' }) {
+  // Same component instance owns both the table and graph views so
+  // switching tabs at the top preserves trace state -- no re-fetch.
+  const [firInput, setFirInput] = useState('');
+  const [firSubmitted, setFirSubmitted] = useState('');
+  const [trace, setTrace] = useState<AccountsFirTrace | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  // PS picker: FIR Nos are only unique per (unit_id, ps_id) so a
+  // super_admin trace MUST specify which PS to look at -- '0001/2026'
+  // can legitimately exist at multiple stations. Load the full list
+  // once on mount; dropdown groups by district for readability.
+  const [psList, setPsList] = useState<{id: number, district_name: string, station_name: string}[]>([]);
+  const [selectedPsId, setSelectedPsId] = useState<number | ''>('');
+
+  useEffect(() => {
+    let alive = true;
+    getAllPoliceStationsPublic()
+      .then((rows) => {
+        if (!alive) return;
+        const sorted = [...rows].sort((a, b) =>
+          a.district_name.localeCompare(b.district_name) ||
+          a.station_name.localeCompare(b.station_name));
+        setPsList(sorted);
+      })
+      .catch((e) => toast.error(e instanceof Error ? e.message : 'Failed to load PS list'));
+    return () => { alive = false; };
+  }, []);
+
+  // Group PSes by district for the <optgroup> nesting so a 45-row
+  // dropdown stays scannable.
+  const psByDistrict = useMemo(() => {
+    const map = new Map<string, {id: number, station_name: string}[]>();
+    for (const p of psList) {
+      const arr = map.get(p.district_name) ?? [];
+      arr.push({ id: p.id, station_name: p.station_name });
+      map.set(p.district_name, arr);
+    }
+    return Array.from(map.entries()).map(([district, stations]) => ({ district, stations }));
+  }, [psList]);
+
+  const handleTrace = async () => {
+    const fir = firInput.trim();
+    if (!fir) {
+      toast.error('Enter an FIR No to trace.');
+      return;
+    }
+    if (selectedPsId === '') {
+      toast.error('Pick a Police Station -- FIR Nos are only unique per PS.');
+      return;
+    }
+    setFirSubmitted(fir);
+    setLoading(true);
+    try {
+      const t = await getAccountsFirTrace(fir, selectedPsId);
+      setTrace(t);
+    } catch (e) {
+      setTrace(null);
+      toast.error(e instanceof Error ? e.message : 'Trace failed');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Account-state split: how many accounts of a given account_type
+  // touching this FIR sit in Karnataka vs elsewhere. `all_accounts`
+  // is the only source with `account_type`. NULL branch_state counts
+  // as "not confirmed KA" -> Rest, matching the convention in the
+  // AccountsLayerDistribution schema docs.
+  const stateSplitFor = (accountType: 'Mule' | 'Non-Mule') => {
+    if (!trace) return { total: 0, ka: 0, rest: 0 };
+    const rows = trace.accounts.filter(
+      (a) => a.source === 'all_accounts' && a.account_type === accountType,
+    );
+    const ka = rows.filter((a) => a.branch_state === 'Karnataka').length;
+    return { total: rows.length, ka, rest: rows.length - ka };
+  };
+  const muleStateStats    = useMemo(() => stateSplitFor('Mule'),     [trace]);      // eslint-disable-line react-hooks/exhaustive-deps
+  const nonMuleStateStats = useMemo(() => stateSplitFor('Non-Mule'), [trace]);      // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Group accounts by layer for the table. Unknown-layer rows come
+  // last under a synthetic "—" bucket so they're visible but not
+  // mixed into the numeric layers.
+  const accountsByLayer = useMemo(() => {
+    if (!trace) return [] as { layer: number | null; rows: FirTraceAccount[] }[];
+    const buckets = new Map<number | null, FirTraceAccount[]>();
+    for (const a of trace.accounts) {
+      const k = a.layer ?? null;
+      const arr = buckets.get(k) ?? [];
+      arr.push(a);
+      buckets.set(k, arr);
+    }
+    const knownLayers = Array.from(buckets.keys()).filter((k): k is number => k !== null).sort((a, b) => a - b);
+    const out: { layer: number | null; rows: FirTraceAccount[] }[] = [];
+    for (const l of knownLayers) out.push({ layer: l, rows: buckets.get(l)! });
+    if (buckets.has(null)) out.push({ layer: null, rows: buckets.get(null)! });
+    return out;
+  }, [trace]);
+
+  return (
+    <div className="space-y-6">
+      {/* FIR input bar -- PS dropdown + FIR text + Trace. Both are
+           required because FIR Nos are only unique per (unit_id, ps_id). */}
+      <div className="rounded-2xl p-4 flex flex-wrap items-center gap-3" style={cardStyle}>
+        <label className="flex items-center gap-2 min-w-[260px]">
+          <span className="text-xs font-semibold" style={{ color: 'var(--ksp-navy)' }}>PS:</span>
+          <select
+            value={selectedPsId === '' ? '' : String(selectedPsId)}
+            onChange={(e) => setSelectedPsId(e.target.value === '' ? '' : Number(e.target.value))}
+            className="flex-1 px-3 py-2 rounded-lg text-sm outline-none bg-white"
+            style={{ border: '2px solid var(--ksp-navy)' }}>
+            <option value="">— pick a Police Station —</option>
+            {psByDistrict.map(({ district, stations }) => (
+              <optgroup key={district} label={district}>
+                {stations.map((s) => (
+                  <option key={s.id} value={String(s.id)}>{s.station_name}</option>
+                ))}
+              </optgroup>
+            ))}
+          </select>
+        </label>
+        <label className="flex items-center gap-2 flex-1 min-w-[240px]">
+          <Search className="w-4 h-4" style={{ color: 'var(--ksp-navy)' }} />
+          <input type="text"
+            value={firInput}
+            onChange={(e) => setFirInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') void handleTrace(); }}
+            placeholder="Enter FIR No (e.g. 0042/2026) and press Enter"
+            className="flex-1 px-3 py-2 rounded-lg text-sm outline-none"
+            style={{ border: '2px solid var(--ksp-navy)', background: '#fff' }} />
+        </label>
+        <button type="button" onClick={handleTrace} disabled={loading}
+          className="px-4 py-2 text-sm font-bold rounded-lg disabled:opacity-50"
+          style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)' }}>
+          {loading ? 'Tracing…' : 'Trace FIR'}
+        </button>
+      </div>
+
+      {/* Empty state before first trace */}
+      {!trace && !loading && (
+        <div className="rounded-2xl p-8 text-center italic opacity-70" style={cardStyle}>
+          Pick a Police Station and enter an FIR No to see every account touching it — pulled from
+          All Accounts, Lien, Victim Accounts, Accused Accounts, and Mule Transfers — grouped by
+          money-trail layer. FIR Nos are only unique per PS, so both fields are required.
+        </div>
+      )}
+
+      {trace && (
+        <>
+          {/* Case metadata header */}
+          <div className="rounded-2xl p-5" style={cardStyle}>
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div>
+                <h3 className="text-lg font-bold" style={{ color: 'var(--ksp-navy)' }}>
+                  FIR {trace.fir_no}
+                </h3>
+                {trace.case && (
+                  <p className="text-xs opacity-70 mt-1">
+                    {trace.case.crime_type ?? '—'} · {trace.case.case_type ?? '—'} ·
+                    Registered {trace.case.registration_date ?? '—'} ·
+                    {' '}{trace.case.ps_name ?? '—'} ({trace.case.unit_name ?? '—'})
+                  </p>
+                )}
+              </div>
+              {trace.case && (
+                <div className="text-right">
+                  <p className="text-[11px] uppercase tracking-wide font-bold" style={{ color: COLOR_VICTIM }}>Victim</p>
+                  <p className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>{trace.case.victim_name ?? '—'}</p>
+                  <p className="text-[11px] uppercase tracking-wide font-bold mt-1" style={{ color: COLOR_MULE }}>Amount Lost</p>
+                  <p className="text-sm font-mono font-bold" style={{ color: 'var(--ksp-navy)' }}>
+                    ₹ {formatNumber(Math.round(trace.case.amount_lost))}
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+
+          {mode === 'graph' && (
+            <GraphicalAnalysisView trace={trace} />
+          )}
+
+          {mode === 'table' && (<>
+          {/* KA vs Rest split panels -- one for Mule accounts, one
+               for Non-Mule. Side-by-side on lg+ screens, stacked
+               below. Both pulled from the All Accounts register
+               filtered by account_type. Unknown branch_state counts
+               as Out-of-State. */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <StateSplitCard
+              title={`Mule Accounts by State — FIR ${firSubmitted}`}
+              typeLabel="mule"
+              totalAccent={COLOR_NAVY}
+              outOfStateAccent={COLOR_MULE}
+              stats={muleStateStats}
+            />
+            <StateSplitCard
+              title={`Non-Mule Accounts by State — FIR ${firSubmitted}`}
+              typeLabel="non-mule"
+              totalAccent={NON_MULE_COLOR}
+              outOfStateAccent={NON_MULE_COLOR}
+              stats={nonMuleStateStats}
+            />
+          </div>
+
+          {/* Layered accounts table */}
+          <div className="rounded-2xl overflow-hidden" style={cardStyle}>
+            <div className="px-5 py-3" style={{ borderTop: '4px solid #0b2c4a' }}>
+              <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>
+                Accounts by Layer — {trace.accounts.length} rows across {accountsByLayer.length} bucket(s)
+              </h3>
+              <p className="text-xs opacity-60 mt-0.5">
+                Type column shows the account tag (Mule / Non-Mule / Victim for register rows; Lien / Victim / Accused for case-child rows). Badge colour = layer.
+              </p>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead style={{ background: '#f5f5f7' }}>
+                  <tr>
+                    <th className="px-3 py-2 text-left">Layer</th>
+                    <th className="px-3 py-2 text-left">Type</th>
+                    <th className="px-3 py-2 text-left">Account No</th>
+                    <th className="px-3 py-2 text-left">Holder</th>
+                    <th className="px-3 py-2 text-left">Bank</th>
+                    <th className="px-3 py-2 text-left">Branch / State</th>
+                    <th className="px-3 py-2 text-left">IFSC</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {accountsByLayer.length === 0 && (
+                    <tr>
+                      <td colSpan={7} className="px-3 py-8 text-center italic opacity-60">
+                        No accounts, liens, or transfers found for this FIR.
+                      </td>
+                    </tr>
+                  )}
+                  {accountsByLayer.map(({ layer, rows }) => rows.map((r, i) => (
+                    <tr key={`${layer}-${r.source}-${i}`}
+                        className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-bold"
+                          style={{ color: 'var(--ksp-navy)', background: 'rgba(11,44,74,0.04)' }}>
+                        {layer == null ? '—' : `L${layer}`}
+                      </td>
+                      <td className="px-3 py-2">
+                        {/* Show account_type (Mule / Non-Mule / Victim) for
+                             all_accounts rows; fall back to a role label
+                             for the case-child sources. Badge colour =
+                             layer colour, EXCEPT Non-Mule which always
+                             renders dark grey (matches the graph). */}
+                        <span className="inline-block px-2 py-0.5 rounded text-xs font-semibold text-white"
+                              style={{ background: nodeColorFor(r) }}>
+                          {r.source === 'all_accounts'
+                            ? (r.account_type === 'Non-Mule' ? 'NM' : (r.account_type ?? 'Account'))
+                            : r.source === 'lien_accounts' ? 'Lien'
+                            : r.source === 'victim_accounts' ? 'Victim'
+                            : r.source === 'accused_accounts' ? 'Accused'
+                            : SOURCE_LABELS[r.source]}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs">{r.account_no ?? '—'}</td>
+                      <td className="px-3 py-2">{r.account_holder_name ?? '—'}</td>
+                      <td className="px-3 py-2">{r.bank_name ?? '—'}</td>
+                      <td className="px-3 py-2 text-xs">
+                        {r.branch_name ?? '—'}{r.branch_state ? ` / ${r.branch_state}` : ''}
+                      </td>
+                      <td className="px-3 py-2 font-mono text-xs">{r.ifsc_code ?? '—'}</td>
+                    </tr>
+                  )))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          </>)}
+        </>
+      )}
+    </div>
+  );
+}
+
+
+// ── Graphical Analysis view (super_admin only) ───────────────────
+// Neo4j-style columnar money-flow layout: victim on the left,
+// then one column per money-trail layer. Each account = coloured
+// circle; hover reveals the full account card (holder, bank,
+// branch, amount). Connections between nodes are not drawn yet --
+// the DB only carries source→dest pairs in `money_transfers`,
+// which we'll wire up as edges in a follow-up once the layout is
+// signed off.
+
+function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
+  // Group accounts into layer columns. Unknown-layer accounts get
+  // their own column at the far right so nothing is silently hidden.
+  const columns = useMemo(() => {
+    const buckets = new Map<number | null, FirTraceAccount[]>();
+    for (const a of trace.accounts) {
+      const k = a.layer ?? null;
+      const arr = buckets.get(k) ?? [];
+      arr.push(a);
+      buckets.set(k, arr);
+    }
+    const numeric = Array.from(buckets.keys())
+      .filter((k): k is number => k !== null)
+      .sort((a, b) => a - b);
+    const maxLayer = numeric.length ? numeric[numeric.length - 1] : 0;
+    const cols: { key: string; label: string; layer: number | null; accounts: FirTraceAccount[] }[] = [];
+    for (let l = 1; l <= maxLayer; l++) {
+      cols.push({ key: `L${l}`, label: `Layer ${l}`, layer: l, accounts: buckets.get(l) ?? [] });
+    }
+    if (buckets.has(null)) {
+      cols.push({ key: 'Lx', label: 'Unlayered', layer: null, accounts: buckets.get(null)! });
+    }
+    return cols;
+  }, [trace]);
+
+  const hasVictim = !!(trace.case && (trace.case.victim_name || trace.case.amount_lost));
+
+  // Hover-state tooltip. Rendered as a position:fixed floating card
+  // that tracks the mouse -- fixed position escapes any overflow-x
+  // ancestor (a plain absolute popup gets clipped when the graph
+  // scrolls horizontally). Coordinates come from onMouseMove on
+  // each node so the card follows the cursor rather than anchoring
+  // on entry.
+  const [hovered, setHovered] = useState<{ content: ReactNode; x: number; y: number } | null>(null);
+
+  const layersPresent = columns.filter((c) => c.layer != null && c.accounts.length > 0)
+                               .map((c) => c.layer as number);
+  const hasUnlayered = columns.some((c) => c.layer == null && c.accounts.length > 0);
+  const hasNonMule = trace.accounts.some(
+    (a) => a.source === 'all_accounts' && a.account_type === 'Non-Mule',
+  );
+
+  return (
+    <div className="rounded-2xl overflow-hidden" style={cardStyle}>
+      <div className="px-5 py-3" style={{ borderTop: '4px solid #0b2c4a' }}>
+        <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>
+          Money Flow Graph — FIR {trace.fir_no}
+        </h3>
+        <p className="text-xs opacity-60 mt-0.5">
+          Victim on the left, then one column per money-trail layer. Hover any node for account details.
+          Node-to-node connections are not drawn yet (DB only stores source→dest for Mule Transfers) — coming next.
+        </p>
+      </div>
+
+      <div className="px-5 pb-5">
+        <div className="overflow-x-auto">
+          <div className="flex gap-6 items-start min-w-fit pt-3 pb-2">
+            {/* Victim column -- rendered even when there's no case row so the layout is anchored. */}
+            <div className="flex flex-col items-center gap-3 min-w-[100px]">
+              <div className="text-[11px] font-bold uppercase tracking-wide"
+                   style={{ color: COLOR_VICTIM }}>Victim</div>
+              {hasVictim ? (
+                <FlowNode
+                  color={COLOR_VICTIM}
+                  content={
+                    <>
+                      <div className="font-bold mb-1" style={{ color: 'var(--ksp-navy)' }}>
+                        {trace.case?.victim_name ?? '—'}
+                      </div>
+                      <div><span className="opacity-60">Amount Lost:</span> ₹ {formatNumber(Math.round(trace.case?.amount_lost ?? 0))}</div>
+                      <div><span className="opacity-60">FIR:</span> {trace.fir_no}</div>
+                      <div><span className="opacity-60">PS:</span> {trace.case?.ps_name ?? '—'}</div>
+                      <div><span className="opacity-60">Registered:</span> {trace.case?.registration_date ?? '—'}</div>
+                    </>
+                  }
+                  onHover={(c, x, y) => setHovered({ content: c, x, y })}
+                  onLeave={() => setHovered(null)}
+                />
+              ) : null}
+            </div>
+
+            {/* Layer columns */}
+            {columns.map((col) => (
+              <div key={col.key} className="flex flex-col items-center gap-3 min-w-[100px]">
+                <div className="text-[11px] font-bold uppercase tracking-wide flex items-center gap-1.5"
+                     style={{ color: 'var(--ksp-navy)' }}>
+                  <span className="inline-block w-2.5 h-2.5 rounded-full"
+                        style={{ background: layerColor(col.layer) }} />
+                  {col.label}
+                  {col.accounts.length > 0 && (
+                    <span className="opacity-60">({col.accounts.length})</span>
+                  )}
+                </div>
+                {col.accounts.length === 0 ? (
+                  <div className="text-xs italic opacity-40">empty</div>
+                ) : col.accounts.map((a, i) => (
+                  <FlowNode
+                    key={`${col.key}-${i}`}
+                    color={nodeColorFor(a)}
+                    content={
+                      <>
+                        <div className="font-bold mb-1" style={{ color: 'var(--ksp-navy)' }}>
+                          {a.account_holder_name ?? '—'}
+                        </div>
+                        <div><span className="opacity-60">Source:</span> {SOURCE_LABELS[a.source]}{a.account_type ? ` · ${a.account_type}` : ''}</div>
+                        <div><span className="opacity-60">Layer:</span> {a.layer == null ? '—' : `L${a.layer}`}</div>
+                        <div><span className="opacity-60">Account:</span> {a.account_no ?? '—'}</div>
+                        <div><span className="opacity-60">Bank:</span> {a.bank_name ?? '—'}</div>
+                        <div><span className="opacity-60">Branch:</span> {a.branch_name ?? '—'}{a.branch_state ? ` / ${a.branch_state}` : ''}</div>
+                        <div><span className="opacity-60">IFSC:</span> {a.ifsc_code ?? '—'}</div>
+                        {a.amount > 0 && (
+                          <div className="mt-1 font-bold" style={{ color: COLOR_MULE }}>
+                            Amount: ₹ {formatNumber(Math.round(a.amount))}
+                          </div>
+                        )}
+                      </>
+                    }
+                    onHover={(c, x, y) => setHovered({ content: c, x, y })}
+                    onLeave={() => setHovered(null)}
+                  />
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Compact layer legend -- only layers actually present. */}
+        <div className="flex flex-wrap gap-3 mt-4 pt-3 border-t text-xs items-center"
+             style={{ borderColor: 'rgba(11,44,74,0.15)' }}>
+          <span className="font-bold" style={{ color: 'var(--ksp-navy)' }}>Node colour:</span>
+          <LegendChip color={COLOR_VICTIM} label="Victim" />
+          {layersPresent.map((l) => (
+            <LegendChip key={l} color={layerColor(l)} label={`Layer ${l}`} />
+          ))}
+          {hasUnlayered && (
+            <LegendChip color={LAYER_UNKNOWN_COLOR} label="Unlayered" />
+          )}
+          {hasNonMule && (
+            <LegendChip color={NON_MULE_COLOR} label="NM (Non-Mule)" />
+          )}
+        </div>
+      </div>
+
+      {/* Cursor-following floating tooltip -- position:fixed escapes
+           any overflow-x-auto ancestor. pointer-events:none so it
+           doesn't intercept mouseleave on the underlying node. */}
+      {hovered && <FloatingTooltip content={hovered.content} x={hovered.x} y={hovered.y} />}
+    </div>
+  );
+}
+
+function FlowNode({ color, content, onHover, onLeave }: {
+  color: string;
+  content: ReactNode;
+  onHover: (content: ReactNode, x: number, y: number) => void;
+  onLeave: () => void;
+}) {
+  // Small solid circle. onMouseEnter + onMouseMove both report the
+  // current cursor position so the floating tooltip tracks the mouse
+  // (not just anchors on entry). Focus events fall back to the node's
+  // bounding rect for keyboard users.
+  const report = (e: React.MouseEvent) => onHover(content, e.clientX, e.clientY);
+  const reportFromFocus = (e: React.FocusEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    onHover(content, r.right, r.top);
+  };
+  return (
+    <div
+      className="w-11 h-11 rounded-full shadow-md cursor-help ring-2 ring-white transition-transform hover:scale-110"
+      style={{ background: color }}
+      tabIndex={0}
+      onMouseEnter={report}
+      onMouseMove={report}
+      onMouseLeave={onLeave}
+      onFocus={reportFromFocus}
+      onBlur={onLeave}
+    />
+  );
+}
+
+/** Fixed-position hover card that follows the mouse cursor. Anchors
+ *  bottom-right by default; flips to the LEFT of the cursor if the
+ *  card would overflow the viewport's right edge, and clamps to the
+ *  visible area vertically. pointer-events:none so the card can't
+ *  swallow the mouseleave that would dismiss it. */
+function FloatingTooltip({ content, x, y }: {
+  content: ReactNode; x: number; y: number;
+}) {
+  const width = 260;
+  const gap = 14;
+  const viewportW = typeof window === 'undefined' ? 1200 : window.innerWidth;
+  const viewportH = typeof window === 'undefined' ? 800 : window.innerHeight;
+  const flipLeft = x + gap + width > viewportW;
+  const left = flipLeft ? Math.max(8, x - gap - width) : x + gap;
+  // Rough tooltip height; keep it from clipping the bottom edge.
+  const top = Math.min(y + gap, viewportH - 220);
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        left,
+        top,
+        width,
+        zIndex: 100,
+        pointerEvents: 'none',
+        background: '#fff',
+        border: '1px solid rgba(11,44,74,0.2)',
+        borderRadius: 10,
+        boxShadow: '0 10px 30px rgba(0,0,0,0.18)',
+        padding: 12,
+        fontSize: 12,
+        color: '#0f172a',
+        lineHeight: 1.35,
+      }}
+    >
+      {content}
+    </div>
+  );
+}
+
+function LegendChip({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="inline-block w-3 h-3 rounded-full" style={{ background: color }} />
+      {label}
+    </span>
+  );
+}
+
+/** KA-vs-Rest state-split panel shared by the Mule and Non-Mule
+ *  breakdowns on the Deep Analysis tab. Three tiles: Total /
+ *  Karnataka / Out of State. `typeLabel` goes into the label text
+ *  and the empty-state copy so both variants read naturally. */
+function StateSplitCard({ title, typeLabel, totalAccent, outOfStateAccent, stats }: {
+  title: string;
+  typeLabel: 'mule' | 'non-mule';
+  totalAccent: string;
+  outOfStateAccent: string;
+  stats: { total: number; ka: number; rest: number };
+}) {
+  const totalLabel = typeLabel === 'mule' ? 'Total Mule Accounts' : 'Total Non-Mule Accounts';
+  const emptyText = typeLabel === 'mule'
+    ? 'No mule accounts recorded against this FIR at the selected PS.'
+    : 'No non-mule accounts recorded against this FIR at the selected PS.';
+  const pctSuffix = typeLabel === 'mule' ? 'of mule accounts' : 'of non-mule accounts';
+  return (
+    <div className="rounded-2xl overflow-hidden" style={cardStyle}>
+      <div className="px-5 py-3" style={{ borderTop: '4px solid #0b2c4a' }}>
+        <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>
+          {title}
+        </h3>
+        <p className="text-xs opacity-60 mt-0.5">
+          Counted from the All Accounts register where account_type = '{typeLabel === 'mule' ? 'Mule' : 'Non-Mule'}'. Unknown branch_state counts as Out-of-State.
+        </p>
+      </div>
+      <div className="px-5 pb-5 pt-2">
+        {stats.total === 0 ? (
+          <div className="py-6 text-center italic opacity-60 text-sm">{emptyText}</div>
+        ) : (
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="rounded-xl p-4 flex flex-col"
+                 style={{ ...cardStyle, borderLeft: `6px solid ${totalAccent}` }}>
+              <p className="text-[11px] uppercase tracking-wide font-bold"
+                 style={{ color: totalAccent }}>{totalLabel}</p>
+              <p className="text-3xl font-bold tabular-nums leading-none mt-1"
+                 style={{ color: 'var(--ksp-navy)' }}>{formatNumber(stats.total)}</p>
+            </div>
+            <div className="rounded-xl p-4 flex flex-col"
+                 style={{ ...cardStyle, borderLeft: `6px solid ${COLOR_TEAL}` }}>
+              <p className="text-[11px] uppercase tracking-wide font-bold"
+                 style={{ color: COLOR_TEAL }}>Karnataka</p>
+              <p className="text-3xl font-bold tabular-nums leading-none mt-1"
+                 style={{ color: 'var(--ksp-navy)' }}>{formatNumber(stats.ka)}</p>
+              <p className="text-xs opacity-60 mt-1">
+                {stats.total > 0 ? `${Math.round((stats.ka / stats.total) * 100)}% ${pctSuffix}` : ' '}
+              </p>
+            </div>
+            <div className="rounded-xl p-4 flex flex-col"
+                 style={{ ...cardStyle, borderLeft: `6px solid ${outOfStateAccent}` }}>
+              <p className="text-[11px] uppercase tracking-wide font-bold"
+                 style={{ color: outOfStateAccent }}>Out of State</p>
+              <p className="text-3xl font-bold tabular-nums leading-none mt-1"
+                 style={{ color: 'var(--ksp-navy)' }}>{formatNumber(stats.rest)}</p>
+              <p className="text-xs opacity-60 mt-1">
+                {stats.total > 0 ? `${Math.round((stats.rest / stats.total) * 100)}% ${pctSuffix}` : ' '}
+              </p>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+
+// ── Repeat Accounts tab (super_admin only) ───────────────────────
+// Cross-PS view of accounts appearing in >= min_firs distinct FIRs.
+// Mule and Non-Mule shown as two separate stacked tables so the
+// operator can compare at a glance. Threshold defaults to 2 but is
+// dial-able via a small stepper in the header. Not FIR-scoped;
+// pulls the top N rows sorted by FIR count desc.
+
+function RepeatAccountsTab() {
+  const [minFirs, setMinFirs] = useState(2);
+  const [muleRows, setMuleRows] = useState<RepeatAccount[] | null>(null);
+  const [nonMuleRows, setNonMuleRows] = useState<RepeatAccount[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  // Drill-down modal: clicking a blue account_no hyperlink sets
+  // this; the modal fetches /account-fir-history and renders the
+  // per-FIR + per-layer breakdown.
+  const [selectedAccount, setSelectedAccount] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    Promise.allSettled([
+      getRepeatAccounts('Mule', minFirs, 100),
+      getRepeatAccounts('Non-Mule', minFirs, 100),
+    ]).then(([m, n]) => {
+      if (!alive) return;
+      if (m.status === 'fulfilled') setMuleRows(m.value);
+      else { setMuleRows([]); toast.error(`Mule: ${(m as any).reason?.message ?? 'failed'}`); }
+      if (n.status === 'fulfilled') setNonMuleRows(n.value);
+      else { setNonMuleRows([]); toast.error(`Non-Mule: ${(n as any).reason?.message ?? 'failed'}`); }
+      setLoading(false);
+    });
+    return () => { alive = false; };
+  }, [minFirs]);
+
+  return (
+    <div className="space-y-6">
+      {/* Threshold picker */}
+      <div className="rounded-2xl p-4 flex flex-wrap items-center gap-4" style={cardStyle}>
+        <div className="text-sm">
+          <p className="font-bold" style={{ color: 'var(--ksp-navy)' }}>
+            Repeat Accounts — cross-PS aggregation
+          </p>
+          <p className="text-xs opacity-70 mt-0.5">
+            Accounts registered against multiple FIRs anywhere in the state.
+            Click an account number to see every FIR + the layer it appeared at.
+          </p>
+        </div>
+        <label className="ml-auto text-sm flex items-center gap-2">
+          <span className="font-semibold" style={{ color: 'var(--ksp-navy)' }}>Min FIRs:</span>
+          <input type="number" min={2} max={50} value={minFirs}
+            onChange={(e) => setMinFirs(Math.max(2, Math.min(50, Number(e.target.value) || 2)))}
+            className="w-20 px-3 py-1.5 rounded-lg text-sm bg-white text-right"
+            style={{ border: '2px solid var(--ksp-navy)' }} />
+        </label>
+      </div>
+
+      {loading && (
+        <div className="text-center py-10 italic opacity-60 text-sm">Loading repeat accounts…</div>
+      )}
+
+      {!loading && muleRows && (
+        <RepeatAccountsTable
+          title="Mule Accounts appearing in multiple FIRs"
+          typeLabel="Mule"
+          accent={COLOR_MULE}
+          rows={muleRows}
+          onAccountClick={setSelectedAccount}
+        />
+      )}
+      {!loading && nonMuleRows && (
+        <RepeatAccountsTable
+          title="Non-Mule Accounts appearing in multiple FIRs"
+          typeLabel="Non-Mule"
+          accent={NON_MULE_COLOR}
+          rows={nonMuleRows}
+          onAccountClick={setSelectedAccount}
+        />
+      )}
+
+      {selectedAccount && (
+        <AccountHistoryModal
+          accountNo={selectedAccount}
+          onClose={() => setSelectedAccount(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+function RepeatAccountsTable({ title, typeLabel, accent, rows, onAccountClick }: {
+  title: string;
+  typeLabel: string;
+  accent: string;
+  rows: RepeatAccount[];
+  onAccountClick: (accountNo: string) => void;
+}) {
+  return (
+    <div className="rounded-2xl overflow-hidden" style={cardStyle}>
+      <div className="px-5 py-3" style={{ borderTop: `4px solid ${accent}` }}>
+        <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>{title}</h3>
+        <p className="text-xs opacity-60 mt-0.5">
+          {rows.length} account{rows.length === 1 ? '' : 's'} · sorted by FIR count. Click an account number to open the FIR + layer history.
+        </p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+          <colgroup>
+            <col style={{ width: '22%' }} />
+            <col style={{ width: '24%' }} />
+            <col style={{ width: '22%' }} />
+            <col style={{ width: '16%' }} />
+            <col style={{ width: '8%' }} />
+            <col style={{ width: '8%' }} />
+          </colgroup>
+          <thead style={{ background: '#f5f5f7' }}>
+            <tr>
+              <th className="px-3 py-2 text-left">Account No</th>
+              <th className="px-3 py-2 text-left">Holder</th>
+              <th className="px-3 py-2 text-left">Bank</th>
+              <th className="px-3 py-2 text-left">State</th>
+              <th className="px-3 py-2 text-right">FIRs</th>
+              <th className="px-3 py-2 text-right">PSes</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.length === 0 && (
+              <tr>
+                <td colSpan={6} className="px-3 py-8 text-center italic opacity-60">
+                  No {typeLabel} accounts meet the threshold.
+                </td>
+              </tr>
+            )}
+            {rows.map((r) => (
+              <tr key={r.account_no} className="border-t border-slate-100 hover:bg-slate-50">
+                <td className="px-3 py-2 font-mono truncate" title={r.account_no}>
+                  <button type="button" onClick={() => onAccountClick(r.account_no)}
+                    className="text-left underline hover:no-underline"
+                    style={{ color: '#1d4ed8' }}
+                    title="Open FIR + layer history">
+                    {r.account_no}
+                  </button>
+                </td>
+                <td className="px-3 py-2 truncate" title={r.account_holder_name ?? ''}>{r.account_holder_name ?? '—'}</td>
+                <td className="px-3 py-2 truncate" title={r.bank_name ?? ''}>{r.bank_name ?? '—'}</td>
+                <td className="px-3 py-2 truncate text-xs" title={r.branch_state ?? ''}>{r.branch_state ?? '—'}</td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums font-bold"
+                    style={{ color: 'var(--ksp-navy)' }}>{r.fir_count}</td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums">{r.ps_count}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/** Modal that fetches /account-fir-history for the clicked account
+ *  and lists every FIR + the layer the account sat at in each. Same
+ *  account often lands at different layers across FIRs -- that's
+ *  the whole reason this drill-down exists. */
+function AccountHistoryModal({ accountNo, onClose }: {
+  accountNo: string; onClose: () => void;
+}) {
+  const [rows, setRows] = useState<AccountFirOccurrence[] | null>(null);
+  const [busy, setBusy] = useState(true);
+
+  useEffect(() => {
+    let alive = true;
+    setBusy(true);
+    getAccountFirHistory(accountNo)
+      .then((r) => { if (alive) setRows(r); })
+      .catch((e) => {
+        if (alive) setRows([]);
+        toast.error(e instanceof Error ? e.message : 'Failed to load account history');
+      })
+      .finally(() => { if (alive) setBusy(false); });
+    return () => { alive = false; };
+  }, [accountNo]);
+
+  // ESC key closes.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onClose]);
+
+  const first = rows && rows.length > 0 ? rows[0] : null;
+  // Distinct layer count -- if the account appears at more than one
+  // layer, that's a headline signal ("mule laundered at layers 2 and 4").
+  const distinctLayers = rows
+    ? Array.from(new Set(rows.map((r) => r.layer).filter((l): l is number => l != null))).sort((a, b) => a - b)
+    : [];
+
+  return (
+    <div
+      onClick={onClose}
+      style={{
+        position: 'fixed', inset: 0, zIndex: 50,
+        background: 'rgba(0,0,0,0.45)',
+        display: 'flex', alignItems: 'flex-start', justifyContent: 'center',
+        padding: '48px 16px', overflowY: 'auto',
+      }}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="rounded-2xl bg-white shadow-2xl w-full max-w-3xl"
+        style={{ border: '1px solid rgba(11,44,74,0.15)' }}
+      >
+        {/* Header */}
+        <div className="px-5 py-4 flex items-start justify-between gap-4"
+             style={{ borderBottom: '1px solid rgba(11,44,74,0.1)' }}>
+          <div>
+            <h3 className="text-base font-bold" style={{ color: 'var(--ksp-navy)' }}>
+              Account {accountNo}
+            </h3>
+            <p className="text-xs opacity-70 mt-0.5">
+              {first?.account_holder_name ?? '—'} · {first?.bank_name ?? '—'}
+              {first?.branch_state ? ` · ${first.branch_state}` : ''}
+            </p>
+            {distinctLayers.length > 1 && (
+              <p className="text-xs mt-1 font-semibold" style={{ color: COLOR_MULE }}>
+                Appears at {distinctLayers.length} different layers: {distinctLayers.map((l) => `L${l}`).join(', ')}
+              </p>
+            )}
+          </div>
+          <button type="button" onClick={onClose}
+            className="text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-slate-100"
+            style={{ color: 'var(--ksp-navy)', border: '1px solid rgba(11,44,74,0.2)' }}>
+            Close (Esc)
+          </button>
+        </div>
+
+        {/* Body */}
+        <div className="px-5 py-4">
+          {busy ? (
+            <div className="py-8 text-center italic opacity-60 text-sm">Loading…</div>
+          ) : rows && rows.length === 0 ? (
+            <div className="py-8 text-center italic opacity-60 text-sm">
+              No All Accounts rows found for this account number.
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>
+                <colgroup>
+                  <col style={{ width: '20%' }} />
+                  <col style={{ width: '30%' }} />
+                  <col style={{ width: '25%' }} />
+                  <col style={{ width: '12%' }} />
+                  <col style={{ width: '13%' }} />
+                </colgroup>
+                <thead style={{ background: '#f5f5f7' }}>
+                  <tr>
+                    <th className="px-3 py-2 text-left">FIR No</th>
+                    <th className="px-3 py-2 text-left">Police Station</th>
+                    <th className="px-3 py-2 text-left">District</th>
+                    <th className="px-3 py-2 text-left">Layer</th>
+                    <th className="px-3 py-2 text-left">Type</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows!.map((r, i) => (
+                    <tr key={`${r.fir_no}-${r.ps_name}-${i}`}
+                        className="border-t border-slate-100">
+                      <td className="px-3 py-2 font-mono truncate" title={r.fir_no}>{r.fir_no}</td>
+                      <td className="px-3 py-2 truncate" title={r.ps_name}>{r.ps_name}</td>
+                      <td className="px-3 py-2 truncate text-xs" title={r.district}>{r.district}</td>
+                      <td className="px-3 py-2">
+                        <span className="inline-block px-2 py-0.5 rounded text-xs font-semibold text-white"
+                              style={{ background: layerColor(r.layer) }}>
+                          {r.layer == null ? '—' : `L${r.layer}`}
+                        </span>
+                      </td>
+                      <td className="px-3 py-2">
+                        <span className="inline-block px-2 py-0.5 rounded text-xs font-semibold text-white"
+                              style={{
+                                background: r.account_type === 'Non-Mule' ? NON_MULE_COLOR : layerColor(r.layer),
+                              }}>
+                          {r.account_type === 'Non-Mule' ? 'NM' : r.account_type}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }

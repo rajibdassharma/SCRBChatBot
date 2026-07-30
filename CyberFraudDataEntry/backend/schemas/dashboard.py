@@ -1,4 +1,5 @@
 from datetime import date
+from typing import List, Optional
 
 from pydantic import BaseModel
 
@@ -181,6 +182,48 @@ class LayerBucket(BaseModel):
     count: int = 0
 
 
+class FirTraceCase(BaseModel):
+    """Case metadata shown in the header of the FIR Trace view.
+    Populated from the `cases` table if a case exists for the FIR;
+    None if only mule-report / all-accounts references exist."""
+    case_id: Optional[str] = None
+    fir_no: str
+    unit_name: Optional[str] = None
+    ps_name: Optional[str] = None
+    registration_date: Optional[date] = None
+    case_type: Optional[str] = None
+    crime_type: Optional[str] = None
+    victim_name: Optional[str] = None
+    amount_lost: float = 0
+
+
+class FirTraceAccount(BaseModel):
+    """One account touching the FIR, from any of the 5 source tables.
+    `source` tags where it came from so the operator can trace back
+    to the entry point that owns the row."""
+    source: str          # all_accounts / lien_accounts / victim_accounts / accused_accounts / money_transfer
+    layer: Optional[int] = None
+    account_no: Optional[str] = None
+    account_holder_name: Optional[str] = None
+    bank_name: Optional[str] = None
+    branch_name: Optional[str] = None
+    branch_state: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    amount: float = 0        # normalised across sources (amount_lien_marked / amount_transferred / transaction_amount)
+    account_type: Optional[str] = None  # Victim / Mule / Non-Mule -- only populated for all_accounts source
+
+
+class AccountsFirTrace(BaseModel):
+    """Deep Analysis: everything the DB knows about one FIR, joined
+    from the 5 account/transfer tables. Foundation for the layered
+    accounts table + money-flow-per-layer chart on the Deep Analysis
+    tab. super_admin only."""
+    fir_no: str
+    case: Optional[FirTraceCase] = None
+    accounts: List[FirTraceAccount] = []
+    warnings: List[str] = []
+
+
 class AccountsLayerDistribution(BaseModel):
     """Layer 1..15 distribution of all_accounts split by branch state.
     Karnataka bucket = branch_state = 'Karnataka'. Rest bucket = every
@@ -323,3 +366,82 @@ class FirPsPerformanceRow(BaseModel):
     # of the from/to window. Surfaces "last 24h" pulse next to the
     # cumulative Total column — added 2026-07-25.
     yesterday_count: int = 0
+
+
+# ── NCRP Dashboard (2026-07-30) ─────────────────────────────────
+# super_admin-only cross-PS view of everything sitting in
+# mule_reports and its six transaction children. mule_reports has
+# no ps_id column (pre-dates migration 008) so every per-PS
+# aggregation joins through users.ps_id via submitted_by.
+
+
+class NcrpKpiSummary(BaseModel):
+    """Cumulative-to-date KPIs for the NCRP dashboard top row.
+    Only submitted reports count; unique_banks is derived from
+    money_transfers.bank (the only txn table with a bank column)."""
+    total_reports: int = 0
+    unique_banks: int = 0
+    total_transfer_amount: float = 0
+    total_atm_aeps_amount: float = 0
+
+
+class NcrpPsReportCount(BaseModel):
+    """One row per active PS on the NCRP per-PS comparison.
+    Zero-filled for silent PSes so the roster stays visible."""
+    unit_id: int
+    district: str
+    ps_id: int
+    ps_name: str
+    report_count: int = 0
+
+
+class NcrpBankConcentration(BaseModel):
+    """Top-banks bar chart -- money_transfers only. `total_amount`
+    is the sum of transaction_amount for rows whose bank matches."""
+    bank: str
+    transfer_count: int = 0
+    total_amount: float = 0
+
+
+class AccountFirOccurrence(BaseModel):
+    """One appearance of an account_no in the All Accounts register.
+    Used by the Repeat Accounts drill-down modal to list every FIR
+    an account is tied to, plus the layer it sat at in each. Same
+    account can appear at different layers across FIRs (Layer 2 in
+    FIR X, Layer 4 in FIR Y) -- that's the whole point."""
+    fir_no: str
+    ps_name: str
+    district: str
+    layer: Optional[int] = None
+    account_type: str
+    account_holder_name: Optional[str] = None
+    bank_name: Optional[str] = None
+    branch_state: Optional[str] = None
+    created_at: Optional[str] = None    # ISO string, may be null on legacy rows
+
+
+class RepeatAccount(BaseModel):
+    """One aggregated row on the Repeat Accounts view. `account_no`
+    identifies the account; `fir_count` is the number of distinct
+    FIRs the account has been registered against in the All Accounts
+    table across ALL PSes. Repeat >= 2 = candidate serial mule /
+    watched account. `sample_firs` gives the operator a quick pivot
+    list (truncated to keep responses small)."""
+    account_no: str
+    bank_name: Optional[str] = None
+    account_holder_name: Optional[str] = None
+    account_type: str    # Mule or Non-Mule
+    branch_state: Optional[str] = None
+    fir_count: int = 0
+    ps_count: int = 0
+    sample_firs: List[str] = []          # up to ~10 distinct FIR Nos
+    sample_ps_labels: List[str] = []     # up to ~10 distinct "district / station" labels
+
+
+class NcrpAtmLocation(BaseModel):
+    """Top-ATM chart row -- ATM hotspots ranked by disputed cash
+    pulled. Location is a free-text field so the same physical ATM
+    may appear under multiple spellings; operators clean by hand."""
+    atm_location: str
+    withdrawal_count: int = 0
+    total_amount: float = 0

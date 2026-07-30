@@ -28,6 +28,7 @@ export function Sidebar() {
   const currentModule = getCurrentModule(location.pathname);
 
   const isAdmin = user?.role === 'admin' || user?.role === 'super_admin';
+  const isSuperAdmin = user?.role === 'super_admin';
 
   // Chat feature flag — some links in modules.ts (e.g. Admin > Ask the
   // Data) hide until the server reports chat_enabled=true.
@@ -76,6 +77,7 @@ export function Sidebar() {
           </p>
           {currentModule.links.map((l) => {
             if (l.requiresAdmin && !isAdmin) return null;
+            if (l.requiresSuperAdmin && !isSuperAdmin) return null;
             if (l.requiresChat && !chatEnabled) return null;
             const Icon = l.icon;
             return (

@@ -21,8 +21,12 @@ from models.mule_entry import MuleEntry
 from models.mule_report import MuleReport
 from models.money_transfer import MoneyTransfer
 from models.atm_withdrawal import AtmWithdrawal
+from models.aeps_transaction import AepsTransaction
 from models.all_account import AllAccount
 from models.all_account_mule_herder import AllAccountMuleHerder
+from models.victim import Victim
+from models.victim_account import VictimAccount
+from models.accused_account import AccusedAccount
 from models.unit import Unit
 from models.user import User
 from models.police_station import PoliceStation
@@ -36,7 +40,10 @@ from schemas.dashboard import (
     DisposalSummary, TrialSummary, PendingByYearRow,
     AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
     AccountsDailyPoint, AccountsLayerDistribution,
+    AccountsFirTrace, FirTraceCase, FirTraceAccount,
     FirPsPerformanceRow,
+    NcrpKpiSummary, NcrpPsReportCount, NcrpBankConcentration, NcrpAtmLocation,
+    RepeatAccount, AccountFirOccurrence,
 )
 from schemas.all_account import AllAccountResponse, MuleHerderOut
 from schemas.portals_dsr import PortalsDsrKpiSummary, PortalsDsrPsComparison
@@ -1703,6 +1710,216 @@ async def get_accounts_layer_distribution(
     )
 
 
+@router.get("/accounts-fir-trace", response_model=AccountsFirTrace)
+async def get_accounts_fir_trace(
+    fir_no: str = Query(..., min_length=1, max_length=50,
+                        description="FIR No to trace across every account/transfer table"),
+    ps_id: int = Query(..., ge=1,
+                        description="Police station scope -- FIR Nos are only unique per PS (schema: UNIQUE(unit_id, ps_id, fir_no) on cases)"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deep Analysis: pull every account touching this FIR from all
+    five relevant tables (all_accounts, lien_accounts, victim_accounts,
+    accused_accounts, money_transfers) and return them tagged with
+    their source. Frontend groups by layer for the layered-accounts
+    table and sums by layer for the money-flow bar chart.
+
+    ps_id is required because FIR No like '0001/2026' can exist in
+    multiple PSes (schema UNIQUE key is (unit_id, ps_id, fir_no) on
+    cases). super_admin picks the PS from a dropdown; admins would
+    default to their own ps_id.
+
+    super_admin only -- this is a cross-PS investigation tool. Non-
+    super_admins get 403 even if the FIR belongs to their PS
+    (Overview tab covers their PS-scoped view). Enforced inline
+    rather than via a shared dep because this is the only route
+    with that gate right now."""
+    if admin.role != "super_admin":
+        raise HTTPException(status_code=403, detail="Deep Analysis is restricted to super_admin.")
+
+    fir = fir_no.strip()
+    if not fir:
+        raise HTTPException(status_code=400, detail="fir_no is required.")
+
+    # FIR variants: legacy rows may store "1/2025" while a new operator
+    # types "0001/2025" (validator was grandfathered to \d{1,4}/\d{4}).
+    # Match any of: as-typed, leading zeros stripped, zero-padded to 4.
+    def _fir_variants(s: str) -> list[str]:
+        s = s.strip()
+        if "/" not in s:
+            return [s]
+        num, year = s.split("/", 1)
+        variants = {s}
+        stripped = num.lstrip("0") or "0"
+        variants.add(f"{stripped}/{year}")
+        try:
+            padded = f"{int(stripped):04d}/{year}"
+            variants.add(padded)
+        except ValueError:
+            pass
+        return list(variants)
+
+    fir_candidates = _fir_variants(fir)
+
+    # Resolve the PS so we can validate it exists + surface district/name
+    # in warnings, and so we know its unit_id for the mule_report cross-check.
+    ps_row = (await db.execute(
+        select(PoliceStation).where(PoliceStation.id == ps_id)
+    )).scalar_one_or_none()
+    if ps_row is None:
+        raise HTTPException(status_code=404, detail=f"Police station {ps_id} not found.")
+    # Derive unit_id from the PS's district (units.name == police_stations.district_name).
+    unit_row = (await db.execute(
+        select(Unit).where(Unit.name == ps_row.district_name)
+    )).scalar_one_or_none()
+    ps_unit_id = unit_row.id if unit_row else None
+
+    accounts: list[FirTraceAccount] = []
+    warnings: list[str] = []
+
+    # ── Case metadata (may be missing if the FIR was only entered
+    #    via NCRP mule-report or an all_accounts row with no matching
+    #    case). Load with victim so the header can show victim_name.
+    #    Scoped to the selected ps_id -- same FIR can exist in another PS.
+    case_row = (await db.execute(
+        select(Case, Unit, PoliceStation)
+        .join(Unit, Unit.id == Case.unit_id)
+        .join(PoliceStation, PoliceStation.id == Case.ps_id)
+        .where(Case.fir_no.in_(fir_candidates), Case.ps_id == ps_id)
+    )).first()
+    case_meta: FirTraceCase | None = None
+    case_id: str | None = None
+    if case_row:
+        c, unit, ps = case_row
+        case_id = c.id
+        victim_row = (await db.execute(
+            select(Victim).where(Victim.case_id == c.id)
+        )).scalar_one_or_none()
+        victim_name = (
+            f"{victim_row.first_name} {victim_row.last_name}".strip()
+            if victim_row else None
+        )
+        case_meta = FirTraceCase(
+            case_id=c.id,
+            fir_no=fir,
+            unit_name=unit.name,
+            ps_name=ps.station_name,
+            registration_date=c.registration_date,
+            case_type=c.case_type,
+            crime_type=c.crime_type,
+            victim_name=victim_name,
+            amount_lost=float(victim_row.amount_lost or 0) if victim_row else 0.0,
+        )
+    else:
+        # Diagnostic: does the FIR exist at some OTHER PS? If yes, hint
+        # at where so the operator can re-pick the dropdown instead of
+        # concluding the FIR doesn't exist at all.
+        other_ps_rows = (await db.execute(
+            select(PoliceStation.station_name, PoliceStation.district_name, Case.fir_no)
+            .join(Case, Case.ps_id == PoliceStation.id)
+            .where(Case.fir_no.in_(fir_candidates), Case.ps_id != ps_id)
+            .limit(5)
+        )).all()
+        if other_ps_rows:
+            other_hint = "; ".join(
+                f"{sn} ({dn}) as '{fn}'" for sn, dn, fn in other_ps_rows
+            )
+            warnings.append(
+                f"No case row for FIR '{fir}' at {ps_row.station_name} ({ps_row.district_name}). "
+                f"Same FIR does exist at: {other_hint}."
+            )
+        else:
+            warnings.append(
+                f"No case row found for FIR '{fir}' at {ps_row.station_name} ({ps_row.district_name}). "
+                f"If accounts appear below, they came from the All Accounts register. "
+                f"Tried FIR variants: {', '.join(fir_candidates)}."
+            )
+
+    # ── all_accounts: direct fir_no match on the accounts register,
+    #    scoped to the selected PS (unit_id, ps_id, serial_no) unique key.
+    all_acc_rows = (await db.execute(
+        select(AllAccount).where(AllAccount.fir_no.in_(fir_candidates), AllAccount.ps_id == ps_id)
+    )).scalars().all()
+    for a in all_acc_rows:
+        accounts.append(FirTraceAccount(
+            source="all_accounts",
+            layer=a.layer,
+            account_no=a.account_no,
+            account_holder_name=a.account_holder_name,
+            bank_name=a.bank_name,
+            branch_name=a.branch_name,
+            branch_state=a.branch_state,
+            ifsc_code=a.ifsc_code,
+            amount=0,  # all_accounts doesn't carry a per-account amount
+            account_type=a.account_type,
+        ))
+
+    # ── Everything hanging off the Case (if we found one)
+    if case_id:
+        # lien_accounts
+        lien_rows = (await db.execute(
+            select(LienAccount).where(LienAccount.case_id == case_id)
+        )).scalars().all()
+        for la in lien_rows:
+            accounts.append(FirTraceAccount(
+                source="lien_accounts",
+                layer=la.layer,
+                account_no=la.account_no,
+                bank_name=la.bank_name,
+                amount=float(la.amount_lien_marked or 0),
+            ))
+
+        # victim_accounts (DSR -> New FIR additions)
+        va_rows = (await db.execute(
+            select(VictimAccount).where(VictimAccount.case_id == case_id)
+        )).scalars().all()
+        for va in va_rows:
+            accounts.append(FirTraceAccount(
+                source="victim_accounts",
+                layer=None,  # victim_accounts has no layer column
+                bank_name=va.bank_name,
+                branch_name=va.branch_name,
+                branch_state=va.state,
+                ifsc_code=va.ifsc_code,
+                amount=float(va.amount_transferred or 0),
+            ))
+
+        # accused_accounts (DSR -> New FIR additions)
+        aa_rows = (await db.execute(
+            select(AccusedAccount).where(AccusedAccount.case_id == case_id)
+        )).scalars().all()
+        for aa in aa_rows:
+            accounts.append(FirTraceAccount(
+                source="accused_accounts",
+                layer=None,  # accused_accounts has no layer column
+                account_holder_name=aa.account_holder_name,
+                bank_name=aa.bank_name,
+                branch_name=aa.branch_name,
+                branch_state=aa.state,
+                ifsc_code=aa.ifsc_code,
+                amount=float(aa.amount_transferred or 0),
+            ))
+
+    # NOTE: Money transfers from NCRP mule reports intentionally omitted
+    # here as of 2026-07-30. PS operators were entering NCRP Data via
+    # the wrong workflow; that data has been purged (purge_ncrp_data.py)
+    # and the module gate now restricts entry to CID + Test PS only.
+    # The Deep Analysis trace should not surface mule-report references
+    # to avoid pulling stale or non-authoritative data. Restore this
+    # block if CID starts posting legitimate mule reports again.
+
+    if not accounts:
+        warnings.append("No accounts, liens, or transfers found for this FIR.")
+
+    return AccountsFirTrace(
+        fir_no=fir,
+        case=case_meta,
+        accounts=accounts,
+        warnings=warnings,
+    )
+
+
 @router.get("/accounts-top-banks", response_model=List[AccountsBankConcentration])
 async def get_accounts_top_banks(
     target_date: date = Query(..., alias="date", description="Cumulative cutoff — include accounts created on or before this date"),
@@ -2117,3 +2334,370 @@ async def get_fir_ps_performance(
         raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
     date_from, date_to = _resolve_fir_perf_window(date_from, date_to)
     return await compute_fir_ps_performance(db, date_from=date_from, date_to=date_to, admin=admin)
+
+
+# ── NCRP Dashboard (2026-07-30) ─────────────────────────────────
+# super_admin-only cross-PS view. mule_reports doesn't carry a
+# ps_id column (pre-dates migration 008 per-PS scoping) so every
+# per-PS aggregation joins through users.ps_id via submitted_by.
+# KPIs are cumulative to a picked date; charts + tables use a
+# from/to range on mule_reports.created_at.
+
+
+def _require_super_admin(admin: CurrentUser) -> None:
+    """Inline gate -- keeps the /ncrp-* routes single-role without
+    introducing a shared dep just for this dashboard."""
+    if admin.role != "super_admin":
+        raise HTTPException(status_code=403, detail="NCRP Dashboard is restricted to super_admin.")
+
+
+@router.get("/ncrp-summary", response_model=NcrpKpiSummary)
+async def get_ncrp_summary(
+    target_date: date = Query(..., alias="date",
+                              description="Cumulative cutoff -- everything created on or before this date"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Four KPI cards for the NCRP dashboard top row, cumulative to
+    the picked date. Only submitted reports count."""
+    _require_super_admin(admin)
+    end = target_date + timedelta(days=1)
+
+    total_reports = (await db.execute(
+        select(func.count(MuleReport.id))
+        .where(MuleReport.status == "submitted", MuleReport.created_at < end)
+    )).scalar() or 0
+
+    # Unique banks: money_transfers is the only child table with a
+    # bank column, so this counts distinct banks across all submitted
+    # money-transfer rows in-window.
+    unique_banks = (await db.execute(
+        select(func.count(func.distinct(MoneyTransfer.bank)))
+        .join(MuleReport, MuleReport.id == MoneyTransfer.report_id)
+        .where(MuleReport.status == "submitted", MuleReport.created_at < end,
+               MoneyTransfer.bank.isnot(None), MoneyTransfer.bank != "")
+    )).scalar() or 0
+
+    total_transfer_amount = (await db.execute(
+        select(func.coalesce(func.sum(MoneyTransfer.transaction_amount), 0))
+        .join(MuleReport, MuleReport.id == MoneyTransfer.report_id)
+        .where(MuleReport.status == "submitted", MuleReport.created_at < end)
+    )).scalar() or 0
+
+    atm_amt = (await db.execute(
+        select(func.coalesce(func.sum(AtmWithdrawal.withdrawal_amount), 0))
+        .join(MuleReport, MuleReport.id == AtmWithdrawal.report_id)
+        .where(MuleReport.status == "submitted", MuleReport.created_at < end)
+    )).scalar() or 0
+
+    aeps_amt = (await db.execute(
+        select(func.coalesce(func.sum(AepsTransaction.withdrawal_amount), 0))
+        .join(MuleReport, MuleReport.id == AepsTransaction.report_id)
+        .where(MuleReport.status == "submitted", MuleReport.created_at < end)
+    )).scalar() or 0
+
+    return NcrpKpiSummary(
+        total_reports=int(total_reports),
+        unique_banks=int(unique_banks),
+        total_transfer_amount=float(total_transfer_amount),
+        total_atm_aeps_amount=float(atm_amt) + float(aeps_amt),
+    )
+
+
+@router.get("/ncrp-ps-comparison", response_model=List[NcrpPsReportCount])
+async def get_ncrp_ps_comparison(
+    date_from: date = Query(..., alias="from"),
+    date_to: date = Query(..., alias="to"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-PS mule-report count within the from/to window. Every
+    active PS appears zero-filled so silent stations stay visible.
+    ps_id is derived from users.ps_id via mule_reports.submitted_by
+    (mule_reports itself has no ps_id column)."""
+    _require_super_admin(admin)
+    end = date_to + timedelta(days=1)
+
+    ps_counts = (
+        select(User.ps_id.label("ps_id"), func.count(MuleReport.id).label("cnt"))
+        .join(User, User.id == MuleReport.submitted_by)
+        .where(MuleReport.status == "submitted",
+               MuleReport.created_at >= date_from,
+               MuleReport.created_at < end,
+               User.ps_id.isnot(None))
+        .group_by(User.ps_id)
+        .subquery()
+    )
+
+    rows = (await db.execute(
+        select(
+            PoliceStation.id, PoliceStation.district_name, PoliceStation.station_name,
+            func.coalesce(ps_counts.c.cnt, 0).label("cnt"),
+        )
+        .outerjoin(ps_counts, ps_counts.c.ps_id == PoliceStation.id)
+        .where(PoliceStation.is_active.is_(True))
+        .order_by(PoliceStation.district_name, PoliceStation.station_name)
+    )).all()
+
+    # Resolve unit_id for each row via district_name -> units.name.
+    unit_lookup = {
+        u.name: u.id for u in (await db.execute(select(Unit))).scalars().all()
+    }
+    return [
+        NcrpPsReportCount(
+            unit_id=unit_lookup.get(district, 0),
+            district=district,
+            ps_id=ps_id,
+            ps_name=station_name,
+            report_count=int(cnt),
+        )
+        for ps_id, district, station_name, cnt in rows
+    ]
+
+
+@router.get("/ncrp-top-banks", response_model=List[NcrpBankConcentration])
+async def get_ncrp_top_banks(
+    date_from: date = Query(..., alias="from"),
+    date_to: date = Query(..., alias="to"),
+    limit: int = Query(default=10, ge=1, le=50),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Top-N banks by money-transfer count in-window. money_transfers
+    is the only child table with a bank column."""
+    _require_super_admin(admin)
+    end = date_to + timedelta(days=1)
+
+    rows = (await db.execute(
+        select(
+            MoneyTransfer.bank,
+            func.count(MoneyTransfer.id).label("cnt"),
+            func.coalesce(func.sum(MoneyTransfer.transaction_amount), 0).label("total"),
+        )
+        .join(MuleReport, MuleReport.id == MoneyTransfer.report_id)
+        .where(MuleReport.status == "submitted",
+               MuleReport.created_at >= date_from,
+               MuleReport.created_at < end,
+               MoneyTransfer.bank.isnot(None),
+               MoneyTransfer.bank != "")
+        .group_by(MoneyTransfer.bank)
+        .order_by(func.count(MoneyTransfer.id).desc())
+        .limit(limit)
+    )).all()
+
+    return [
+        NcrpBankConcentration(bank=bank, transfer_count=int(cnt), total_amount=float(total))
+        for bank, cnt, total in rows
+    ]
+
+
+@router.get("/ncrp-layer-distribution", response_model=List[LayerBucket])
+async def get_ncrp_layer_distribution(
+    date_from: date = Query(..., alias="from"),
+    date_to: date = Query(..., alias="to"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Money-transfer layer histogram in-window. Rows with NULL
+    layer are excluded (they're a data-quality issue, not a real
+    layer-0 concept)."""
+    _require_super_admin(admin)
+    end = date_to + timedelta(days=1)
+
+    rows = (await db.execute(
+        select(
+            MoneyTransfer.layer,
+            func.count(MoneyTransfer.id).label("cnt"),
+        )
+        .join(MuleReport, MuleReport.id == MoneyTransfer.report_id)
+        .where(MuleReport.status == "submitted",
+               MuleReport.created_at >= date_from,
+               MuleReport.created_at < end,
+               MoneyTransfer.layer.isnot(None))
+        .group_by(MoneyTransfer.layer)
+        .order_by(MoneyTransfer.layer)
+    )).all()
+
+    return [LayerBucket(layer=int(layer), count=int(cnt)) for layer, cnt in rows]
+
+
+@router.get("/ncrp-top-atm-locations", response_model=List[NcrpAtmLocation])
+async def get_ncrp_top_atm_locations(
+    date_from: date = Query(..., alias="from"),
+    date_to: date = Query(..., alias="to"),
+    limit: int = Query(default=10, ge=1, le=50),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Top-N ATM locations ranked by total disputed cash withdrawn.
+    Location is free-text -- same physical ATM may appear under
+    multiple spellings; operators disambiguate by eye."""
+    _require_super_admin(admin)
+    end = date_to + timedelta(days=1)
+
+    rows = (await db.execute(
+        select(
+            AtmWithdrawal.atm_location,
+            func.count(AtmWithdrawal.id).label("cnt"),
+            func.coalesce(func.sum(AtmWithdrawal.withdrawal_amount), 0).label("total"),
+        )
+        .join(MuleReport, MuleReport.id == AtmWithdrawal.report_id)
+        .where(MuleReport.status == "submitted",
+               MuleReport.created_at >= date_from,
+               MuleReport.created_at < end,
+               AtmWithdrawal.atm_location.isnot(None),
+               AtmWithdrawal.atm_location != "")
+        .group_by(AtmWithdrawal.atm_location)
+        .order_by(func.coalesce(func.sum(AtmWithdrawal.withdrawal_amount), 0).desc())
+        .limit(limit)
+    )).all()
+
+    return [
+        NcrpAtmLocation(atm_location=loc, withdrawal_count=int(cnt), total_amount=float(total))
+        for loc, cnt, total in rows
+    ]
+
+
+# ── Repeat Accounts (2026-07-30, super_admin only) ─────────────
+# Cross-PS view of accounts appearing in multiple FIRs -- a serial-
+# mule / watched-account tracker. Aggregates all_accounts by
+# account_no (ignoring bank_name variations for the same number),
+# counts distinct fir_no, filters by min_firs. sample_firs +
+# sample_ps_labels give quick pivot lists without paging.
+
+
+@router.get("/repeat-accounts", response_model=List[RepeatAccount])
+async def get_repeat_accounts(
+    account_type: str = Query(..., description="Account type to aggregate -- 'Mule' or 'Non-Mule'"),
+    min_firs: int = Query(default=2, ge=2, le=50,
+                          description="Minimum distinct FIR count to be considered repeat"),
+    limit: int = Query(default=100, ge=1, le=500),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Accounts of a given type registered against >= min_firs
+    distinct FIRs across ALL PSes. Super_admin only -- cross-PS
+    view. Grouped by account_no; other fields (bank/holder/state)
+    take the min value as a stable representative."""
+    if admin.role != "super_admin":
+        raise HTTPException(status_code=403, detail="Repeat Accounts is restricted to super_admin.")
+    if account_type not in {"Mule", "Non-Mule"}:
+        raise HTTPException(
+            status_code=400,
+            detail="account_type must be 'Mule' or 'Non-Mule'.",
+        )
+
+    # Aggregate by account_no. Non-null fir_no only (blank rows can't
+    # anchor a repeat by definition). MySQL GROUP_CONCAT gives us the
+    # sample FIR + PS lists in one round-trip; they're truncated at
+    # group_concat_max_len (default 1024) which is fine for a preview.
+    ps_label = func.concat(PoliceStation.district_name, "/", PoliceStation.station_name)
+    rows = (await db.execute(
+        select(
+            AllAccount.account_no,
+            func.min(AllAccount.bank_name).label("bank_name"),
+            func.min(AllAccount.account_holder_name).label("account_holder_name"),
+            func.min(AllAccount.branch_state).label("branch_state"),
+            func.count(func.distinct(AllAccount.fir_no)).label("fir_count"),
+            func.count(func.distinct(AllAccount.ps_id)).label("ps_count"),
+            func.group_concat(func.distinct(AllAccount.fir_no)).label("firs_csv"),
+            func.group_concat(func.distinct(ps_label)).label("ps_csv"),
+        )
+        .join(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+        .where(
+            AllAccount.account_type == account_type,
+            AllAccount.fir_no.isnot(None),
+            AllAccount.fir_no != "",
+        )
+        .group_by(AllAccount.account_no)
+        .having(func.count(func.distinct(AllAccount.fir_no)) >= min_firs)
+        .order_by(func.count(func.distinct(AllAccount.fir_no)).desc())
+        .limit(limit)
+    )).all()
+
+    def _split(csv: str | None, cap: int = 10) -> list[str]:
+        if not csv:
+            return []
+        parts = [p.strip() for p in csv.split(",") if p.strip()]
+        # Preserve order but dedup -- GROUP_CONCAT DISTINCT already
+        # dedups, so this is belt-and-braces.
+        seen: set[str] = set()
+        out: list[str] = []
+        for p in parts:
+            if p in seen:
+                continue
+            seen.add(p)
+            out.append(p)
+            if len(out) >= cap:
+                break
+        return out
+
+    return [
+        RepeatAccount(
+            account_no=account_no,
+            bank_name=bank_name,
+            account_holder_name=holder,
+            account_type=account_type,
+            branch_state=branch_state,
+            fir_count=int(fir_count),
+            ps_count=int(ps_count),
+            sample_firs=_split(firs_csv),
+            sample_ps_labels=_split(ps_csv),
+        )
+        for account_no, bank_name, holder, branch_state, fir_count, ps_count, firs_csv, ps_csv in rows
+    ]
+
+
+@router.get("/account-fir-history", response_model=List[AccountFirOccurrence])
+async def get_account_fir_history(
+    account_no: str = Query(..., min_length=1, max_length=50,
+                            description="Account number to look up in the All Accounts register"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every FIR that this `account_no` is registered against, one
+    row per (fir, PS) pair, with the layer it was recorded at in
+    each. Drives the Repeat Accounts drill-down modal so an
+    operator can see "Layer 2 in FIR X at Bagalkot, Layer 4 in FIR
+    Y at Hubballi". super_admin only -- cross-PS."""
+    if admin.role != "super_admin":
+        raise HTTPException(status_code=403, detail="Account history is restricted to super_admin.")
+    acct = account_no.strip()
+    if not acct:
+        raise HTTPException(status_code=400, detail="account_no is required.")
+
+    rows = (await db.execute(
+        select(
+            AllAccount.fir_no,
+            PoliceStation.station_name,
+            PoliceStation.district_name,
+            AllAccount.layer,
+            AllAccount.account_type,
+            AllAccount.account_holder_name,
+            AllAccount.bank_name,
+            AllAccount.branch_state,
+            AllAccount.created_at,
+        )
+        .join(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+        .where(
+            AllAccount.account_no == acct,
+            AllAccount.fir_no.isnot(None),
+            AllAccount.fir_no != "",
+        )
+        .order_by(AllAccount.created_at.desc())
+    )).all()
+
+    return [
+        AccountFirOccurrence(
+            fir_no=fir_no,
+            ps_name=ps_name,
+            district=district,
+            layer=int(layer) if layer is not None else None,
+            account_type=account_type,
+            account_holder_name=holder,
+            bank_name=bank_name,
+            branch_state=branch_state,
+            created_at=created_at.isoformat() if created_at is not None else None,
+        )
+        for fir_no, ps_name, district, layer, account_type, holder, bank_name, branch_state, created_at in rows
+    ]
