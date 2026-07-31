@@ -88,6 +88,12 @@ async def declare_nil(
             .where(NilDeclaration.nil_date == target_date)
         )).scalar_one()
         return await _row_to_response(db, existing)
+    # After commit, SQLAlchemy expires the row's attributes; accessing
+    # `row.created_at` (server_default=func.now()) then triggers a lazy
+    # re-fetch on a sync code path -> MissingGreenlet on the async
+    # engine. Refresh explicitly in the async context to populate
+    # server-generated fields (id, created_at) before serialisation.
+    await db.refresh(row)
     return await _row_to_response(db, row)
 
 
