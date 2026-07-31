@@ -588,6 +588,84 @@ else
     exit 1
 fi
 
+# ── NULL fir_no → "" serializer fix (2026-07-31) ─────────────────────
+# Bug: create_case coerces a blank FIR to NULL (so multiple FIR-less
+# petitions can coexist under uq_case_unit_ps_fir), but CaseResponse /
+# CaseListItem declare `fir_no: str`. The NULL reached Pydantic and
+# raised ResponseValidationError -> 500, AFTER db.commit(). The case
+# was saved, the operator saw an error, retried, and each retry wrote
+# another row (the duplicate pre-check is `if fir_no:` — skipped when
+# blank). The same defect existed in the mule-report serializers.
+#
+# There's no unauthenticated endpoint that exercises this, so we assert
+# on the deployed source instead — which doubles as proof that step 5's
+# sync actually landed the new code in $RUNTIME.
+echo
+echo "    -- NULL fir_no serializer fix --"
+# NOTE on the capture idiom: `grep -c` prints "0" AND exits 1 when there
+# are no matches, so a bare `|| echo 0` would append a SECOND zero and
+# yield "0\n0". Use `|| true` (grep already printed the count) and only
+# default to 0 when the output is empty — i.e. the file was unreadable.
+CASE_COALESCE=$(grep -c '"fir_no": c.fir_no or ""' "$RUNTIME/backend/api/routes_case.py" 2>/dev/null || true)
+: "${CASE_COALESCE:=0}"
+if [ "$CASE_COALESCE" = "2" ]; then
+    echo "    ✓ routes_case.py: both serializers coalesce NULL fir_no"
+else
+    echo "    ✗ routes_case.py has $CASE_COALESCE/2 fir_no coalesces — runtime is stale or the fix regressed"
+    exit 1
+fi
+MULE_COALESCE=$(grep -c '"fir_no": r.fir_no or ""' "$RUNTIME/backend/api/routes_mule_report.py" 2>/dev/null || true)
+: "${MULE_COALESCE:=0}"
+if [ "$MULE_COALESCE" = "2" ]; then
+    echo "    ✓ routes_mule_report.py: both serializers coalesce NULL fir_no"
+else
+    echo "    ✗ routes_mule_report.py has $MULE_COALESCE/2 fir_no coalesces — runtime is stale or the fix regressed"
+    exit 1
+fi
+
+# Informational only — NEVER exits non-zero. FIR-less petitions are
+# legal; we just want the operator to see how many exist and whether
+# the 500-retry loop left duplicates behind.
+NULL_FIR=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM cases WHERE fir_no IS NULL OR fir_no = ''" 2>/dev/null || echo "?")
+echo "    i  cases with no FIR number: $NULL_FIR (legal for petitions)"
+
+# Retries from the 500 submit an identical payload seconds apart, so
+# (unit_id, ps_id, petition_no, registration_date, crime_type) is a
+# good-enough duplicate key. Anything listed here needs a human call —
+# this script does NOT delete rows.
+echo "    i  checking for duplicates left by the pre-fix retry loop..."
+# Capture the exit status separately: a failed query (bad password,
+# missing .env) returns empty output, and treating that as "no
+# duplicates" would be a false all-clear. `|| DUP_OK=0` also keeps
+# set -e from aborting the deploy on a query error.
+DUP_OK=1
+DUP_ROWS=$(MYSQL_PWD="$DB_PASS" mysql --table --user="$DB_USER" "$DB_NAME" -e "
+    SELECT unit_id, ps_id,
+           IFNULL(petition_no,'(none)') AS petition_no,
+           IFNULL(registration_date,'(none)') AS reg_date,
+           COUNT(*) AS copies,
+           MIN(created_at) AS first_seen,
+           MAX(created_at) AS last_seen
+      FROM cases
+     WHERE (fir_no IS NULL OR fir_no = '')
+     GROUP BY unit_id, ps_id, petition_no, registration_date, crime_type
+    HAVING COUNT(*) > 1
+     ORDER BY last_seen DESC" 2>/dev/null) || DUP_OK=0
+if [ "$DUP_OK" != "1" ]; then
+    echo "       ⚠  duplicate check could not run (DB credentials from"
+    echo "          $ENV_FILE) — run the query by hand. NOT a deploy failure."
+elif [ -n "$DUP_ROWS" ]; then
+    echo "$DUP_ROWS" | sed 's/^/       /'
+    echo "       ⚠  duplicate FIR-less cases above — review and delete by hand."
+    echo "          List one group's rows with:"
+    echo "            SELECT id, created_at, submitted_by FROM cases"
+    echo "             WHERE (fir_no IS NULL OR fir_no='') AND ps_id=<ps> AND unit_id=<unit>"
+    echo "             ORDER BY created_at;"
+else
+    echo "       ✓ no duplicate FIR-less cases found"
+fi
+
 echo
 echo "================================================================"
 echo "  ✓ Incremental update complete."
@@ -644,4 +722,19 @@ echo "    crime_type_other)."
 echo "  • FIR No format validation — shared XXXX/YYYY validator"
 echo "    wired into every FIR entry point (Cases, New FIR, Daily"
 echo "    Work, All Accounts). Retroactive rows exempt."
+echo
+echo "  HOTFIX (2026-07-31 — this deploy):"
+echo "  • POST /api/v1/cases/ no longer 500s when a petition is filed"
+echo "    without an FIR number. The blank FIR is stored as NULL (so"
+echo "    FIR-less petitions don't collide on uq_case_unit_ps_fir),"
+echo "    but the response serializer passed that NULL into a"
+echo "    non-Optional 'fir_no: str' field -> ResponseValidationError."
+echo "    The failure happened AFTER commit, so the case saved while"
+echo "    the operator saw an error and retried — silently creating"
+echo "    duplicates. Both cases and mule-report serializers now"
+echo "    coalesce NULL -> \"\". No schema or frontend change."
+echo "  • Any FIR-less case already in the DB also 500'd every list"
+echo "    page it appeared on; those reads work again now."
+echo "  • Self-verify prints existing duplicate FIR-less cases above."
+echo "    Review them by hand — this script never deletes rows."
 echo "================================================================"

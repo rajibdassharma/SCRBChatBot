@@ -316,7 +316,12 @@ def _report_to_response(r: MuleReport, unit_name: str | None = None) -> dict:
         "unit_id": r.unit_id,
         "unit_name": unit_name,
         "acknowledgement_no": r.acknowledgement_no,
-        "fir_no": r.fir_no,
+        # NULL → "" : create stores a blank FIR as NULL (`body.fir_no or
+        # None`) so FIR-less drafts don't collide on the uniqueness check,
+        # but MuleReportResponse.fir_no is a non-Optional str — passing the
+        # NULL through raises ResponseValidationError → 500. Same defect
+        # class as the one fixed in routes_case.py.
+        "fir_no": r.fir_no or "",
         "status": r.status,
         "money_transfers": [_child_to_dict(c) for c in r.money_transfers],
         "other_transactions": [_child_to_dict(c) for c in r.other_transactions],
@@ -333,7 +338,8 @@ def _report_to_list_item(r: MuleReport, unit_name: str | None = None) -> dict:
     return {
         "id": r.id,
         "acknowledgement_no": r.acknowledgement_no,
-        "fir_no": r.fir_no,
+        # NULL → "" — same reason as _report_to_response.
+        "fir_no": r.fir_no or "",
         "status": r.status,
         "unit_name": unit_name,
         "created_at": _ts(r.created_at),

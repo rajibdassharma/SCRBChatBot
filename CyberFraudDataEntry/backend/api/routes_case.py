@@ -129,7 +129,15 @@ def _case_to_response(c: Case) -> dict:
     return {
         "id": c.id,
         "unit_id": c.unit_id,
-        "fir_no": c.fir_no,
+        # NULL → "" : create_case stores a blank FIR as NULL so multiple
+        # FIR-less petitions can share the uq_case_unit_ps_fir index (see
+        # the comment there). CaseResponse.fir_no is a non-Optional str,
+        # so passing the NULL straight through raised
+        # ResponseValidationError → 500 AFTER the commit — the case saved,
+        # the operator saw an error, and retries silently duplicated it
+        # (the duplicate pre-check is skipped when fir_no is falsy).
+        # Coalescing here keeps the DB semantics and the API contract.
+        "fir_no": c.fir_no or "",
         "registration_date": c.registration_date,
         "petition_no": c.petition_no,
         "case_type": c.case_type,
@@ -295,7 +303,9 @@ def _case_to_list_item(c: Case) -> dict:
     return {
         "id": c.id,
         "unit_id": c.unit_id,
-        "fir_no": c.fir_no,
+        # NULL → "" — same reason as _case_to_response. Without this a
+        # single FIR-less petition 500s every list page it appears on.
+        "fir_no": c.fir_no or "",
         "registration_date": c.registration_date,
         "petition_no": c.petition_no,
         "case_type": c.case_type,
