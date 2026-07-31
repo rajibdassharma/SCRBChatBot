@@ -588,6 +588,20 @@ else
     exit 1
 fi
 
+# Account Details map view — region rollup endpoint (2026-07-31).
+# 401/403 is the expected unauthenticated answer. The `scope` param is
+# whitelisted server-side, so an unknown value must be rejected rather
+# than reaching the column lookup; we can't prove the 422 without a
+# session (auth runs first), so the mount check is what we assert here.
+if curl -sk --max-time 5 -o /dev/null -w "%{http_code}" \
+        "https://localhost/api/v1/dashboard/accounts-geo?date=2026-01-01&scope=state&account_type=All" \
+        | grep -qE '^(401|403)$'; then
+    echo "    ✓ /api/v1/dashboard/accounts-geo mounted"
+else
+    echo "    ✗ /api/v1/dashboard/accounts-geo not responding correctly"
+    exit 1
+fi
+
 # ── NULL fir_no → "" serializer fix (2026-07-31) ─────────────────────
 # Bug: create_case coerces a blank FIR to NULL (so multiple FIR-less
 # petitions can coexist under uq_case_unit_ps_fir), but CaseResponse /
@@ -737,4 +751,24 @@ echo "  • Any FIR-less case already in the DB also 500'd every list"
 echo "    page it appeared on; those reads work again now."
 echo "  • Self-verify prints existing duplicate FIR-less cases above."
 echo "    Review them by hand — this script never deletes rows."
+echo
+echo "  NEW: Account Details -> Map View (2026-07-31, super_admin)"
+echo "  • Choropleth of account concentration with three scopes:"
+echo "    Branch State (all-India), Branch District (Karnataka), and"
+echo "    Reporting PS District. Shade by Mule / Victim / Non-Mule /"
+echo "    All; click Karnataka on the national view to drill in."
+echo "  • Rendered as a TILE GRID, not an outline of India: shipping a"
+echo "    third-party boundary file would risk a non-compliant"
+echo "    depiction of J&K / Ladakh / Arunachal. Tiles are schematic"
+echo "    and labelled as such. To upgrade to a real outline map, add"
+echo "    SVG paths to the 'd' field in geo-tile-grid.ts from a"
+echo "    Survey of India / KSP GIS approved source — the renderer"
+echo "    already draws path-mode shapes, no other change needed."
+echo "  • The map reports its own blind spot: accounts with no"
+echo "    branch_state/district, and any value outside the picklist,"
+echo "    are counted in an amber 'not on the map' banner rather than"
+echo "    being silently dropped. Expect this to be significant until"
+echo "    branch_* backfill catches up (both columns arrived in"
+echo "    migrations 010/012, after data entry had begun)."
+echo "  • No migration and no new npm dependency (plain SVG)."
 echo "================================================================"

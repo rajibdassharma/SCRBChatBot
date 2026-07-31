@@ -767,6 +767,26 @@ export interface AccountsPsComparison {
   non_mules: number;
 }
 
+/** Geographic scope for the Account Details map view.
+ *  - `state`     : all_accounts.branch_state, all-India
+ *  - `district`  : all_accounts.branch_district, Karnataka only
+ *  - `reporting` : district of the PS that owns the row. Never blank,
+ *                  unlike the branch_* columns, so it stays useful
+ *                  while branch coverage is still filling in. */
+export type AccountsGeoScope = 'state' | 'district' | 'reporting';
+
+/** One region bucket on the map. `region` is a raw DB value, not an
+ *  enum — an empty string means the operator never recorded it, and
+ *  anything not in the canonical list renders as "unmapped" rather
+ *  than being dropped. */
+export interface AccountsGeoRegion {
+  region: string;
+  total: number;
+  victims: number;
+  mules: number;
+  non_mules: number;
+}
+
 export interface AccountsBankConcentration {
   bank_name: string;
   total: number;

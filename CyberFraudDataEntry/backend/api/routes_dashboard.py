@@ -22,7 +22,7 @@ from models.mule_report import MuleReport
 from models.money_transfer import MoneyTransfer
 from models.atm_withdrawal import AtmWithdrawal
 from models.aeps_transaction import AepsTransaction
-from models.all_account import AllAccount
+from models.all_account import AllAccount, ACCOUNT_TYPES
 from models.all_account_mule_herder import AllAccountMuleHerder
 from models.victim import Victim
 from models.victim_account import VictimAccount
@@ -39,6 +39,7 @@ from schemas.dashboard import (
     ArrestSummary, LienSummary, PetitionSummary, RefundSummary,
     DisposalSummary, TrialSummary, PendingByYearRow,
     AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
+    AccountsGeoRegion,
     AccountsDailyPoint, AccountsLayerDistribution,
     AccountsFirTrace, FirTraceCase, FirTraceAccount,
     FirPsPerformanceRow,
@@ -1580,6 +1581,116 @@ async def get_accounts_comparison(
     """One row per PS. admin sees just their own PS; super_admin sees
     every PS that has at least one account."""
     return await compute_accounts_comparison(db, target_date=target_date, admin=admin)
+
+
+# Geographic scopes the map view can group by. Kept as an explicit
+# whitelist rather than accepting a column name from the query string —
+# the value picks a SQLAlchemy column below, so letting the client name
+# it would be a straightforward injection of our own choosing.
+_GEO_SCOPES = {"state", "district", "reporting"}
+
+
+@router.get("/accounts-geo", response_model=List[AccountsGeoRegion])
+async def get_accounts_by_geography(
+    target_date: date = Query(..., alias="date", description="Cumulative cutoff — include accounts created on or before this date"),
+    scope: str = Query("state", description="state = branch_state (all-India) | district = branch_district (Karnataka) | reporting = district of the PS that owns the row"),
+    account_type: str = Query("Mule", description="Victim | Mule | Non-Mule | All"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Region rollup powering the Account Details map view (2026-07-31).
+
+    Cumulative as of `target_date`, matching every other accounts
+    endpoint, so the map and the KPI cards can never disagree.
+
+    Returns ONLY regions that have at least one account — the caller
+    owns the canonical region list (36 states/UTs, 36 KA districts) and
+    fills the zeros. That keeps the payload proportional to real data
+    instead of always shipping ~36 mostly-empty rows, and it means a
+    region we've never heard of still comes back rather than being
+    silently dropped by a server-side whitelist.
+
+    Rows with a NULL/blank grouping value collapse to region="" instead
+    of vanishing — see AccountsGeoRegion for why that bucket matters.
+    """
+    if scope not in _GEO_SCOPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"scope must be one of: {', '.join(sorted(_GEO_SCOPES))}",
+        )
+    if account_type != "All" and account_type not in ACCOUNT_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"account_type must be 'All' or one of: {', '.join(sorted(ACCOUNT_TYPES))}",
+        )
+
+    if scope == "state":
+        region_col = AllAccount.branch_state
+    elif scope == "district":
+        region_col = AllAccount.branch_district
+    else:
+        region_col = PoliceStation.district_name
+
+    # COALESCE folds NULL into '' so NULL and '' share one bucket —
+    # both mean "operator never filled this in", and splitting them
+    # would put two "Not recorded" rows on the map. TRIM matters just
+    # as much: branch_state is free text, and grouping without it would
+    # return "Karnataka" and "Karnataka " as two separate regions that
+    # then collide into duplicate keys on the client.
+    region_expr = func.trim(func.coalesce(region_col, ""))
+
+    q = (
+        select(
+            region_expr.label("region"),
+            func.count(AllAccount.id).label("total"),
+            func.coalesce(func.sum(
+                case((AllAccount.account_type == "Victim", 1), else_=0)
+            ), 0).label("victims"),
+            func.coalesce(func.sum(
+                case((AllAccount.account_type == "Mule", 1), else_=0)
+            ), 0).label("mules"),
+            func.coalesce(func.sum(
+                case((AllAccount.account_type == "Non-Mule", 1), else_=0)
+            ), 0).label("non_mules"),
+        )
+        # Explicit anchor. Under scope='reporting' the first selected
+        # column belongs to police_stations, so the FROM list is worth
+        # pinning rather than leaving to inference. (Verified: SQLAlchemy
+        # 2.0 infers all_accounts correctly here even without this, from
+        # the count() and the WHERE — both forms compile to identical
+        # SQL. Kept because it states the intent at the point of the
+        # join instead of relying on that inference holding.)
+        .select_from(AllAccount)
+        .where(func.date(AllAccount.created_at) <= target_date)
+        .group_by(region_expr)
+        .order_by(func.count(AllAccount.id).desc())
+    )
+
+    # scope='reporting' reads district_name off police_stations, so that
+    # table has to be joined in. Inner join is correct: ps_id is NOT NULL
+    # on all_accounts, so no row can be lost.
+    if scope == "reporting":
+        q = q.join(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+
+    if account_type != "All":
+        q = q.where(AllAccount.account_type == account_type)
+
+    # Same scoping rule as the rest of the dashboard: a PS-level admin
+    # sees only their own station's rows, super_admin sees everything.
+    if admin.role != "super_admin":
+        q = q.where(AllAccount.ps_id == admin.ps_id)
+
+    rows = (await db.execute(q)).all()
+    return [
+        AccountsGeoRegion(
+            region=(r.region or "").strip(),
+            total=int(r.total or 0),
+            victims=int(r.victims or 0),
+            mules=int(r.mules or 0),
+            non_mules=int(r.non_mules or 0),
+        )
+        for r in rows
+    ]
 
 
 # All Accounts data entry began in production on 2026-07-20. Any

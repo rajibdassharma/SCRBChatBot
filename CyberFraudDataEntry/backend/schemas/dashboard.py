@@ -68,6 +68,33 @@ class AccountsPsComparison(BaseModel):
     non_mules: int = 0
 
 
+class AccountsGeoRegion(BaseModel):
+    """One geographic region on the Account Details map view (2026-07-31).
+
+    `region` is the raw grouping value, NOT a validated enum:
+
+      - scope=state      -> all_accounts.branch_state (free-text VARCHAR;
+                            the picklist is enforced only in the frontend,
+                            so legacy rows may hold anything)
+      - scope=district   -> all_accounts.branch_district (Karnataka only)
+      - scope=reporting  -> police_stations.district_name of the PS that
+                            OWNS the row — a different question from where
+                            the branch sits, and unlike branch_* it is
+                            never NULL.
+
+    Rows with a NULL/blank grouping value collapse into a single entry
+    with region="" rather than being dropped. That bucket is the honest
+    measure of how incomplete branch_state / branch_district coverage
+    still is (both columns arrived in migrations 010/012, well after
+    data entry began), and the map surfaces it explicitly instead of
+    quietly under-counting regions."""
+    region: str = ""
+    total: int = 0
+    victims: int = 0
+    mules: int = 0
+    non_mules: int = 0
+
+
 class AccountsBankConcentration(BaseModel):
     """One row on the Top Banks chart — how many All Accounts records
     reference this bank. Powers the Dashboard Overview insight panel."""

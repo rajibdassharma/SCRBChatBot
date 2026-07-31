@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import {
   BarChart3, Users, ShieldAlert, HelpCircle, MapPin, Camera,
   Trophy, FileDown, FileSpreadsheet, Search, Network, Waypoints, Repeat,
+  // Aliased: an unqualified `Map` would shadow the global Map constructor.
+  Map as MapIcon,
 } from 'lucide-react';
 import { toast } from 'sonner';
 import {
@@ -12,7 +14,10 @@ import {
   getAccountsSummary, getAccountsComparison,
   getAccountsDailyGrowth, getAccountsLayerDistribution,
   getAccountsFirTrace, getRepeatAccounts, getAccountFirHistory,
+  getAccountsByGeography,
 } from '../lib/api/dashboard';
+import { AccountsGeoMap } from '../components/dashboard/AccountsGeoMap';
+import { INDIA_LAYOUT, KARNATAKA_LAYOUT } from '../lib/utils/geo-tile-grid';
 import {
   downloadAccountsPsComparisonExcel, downloadAccountsPsComparisonPdf,
 } from '../lib/api/reports';
@@ -25,6 +30,7 @@ import type {
   AccountsDailyPoint, AccountsLayerDistribution,
   AccountsFirTrace, FirTraceAccount, FirTraceSource,
   RepeatAccount, AccountFirOccurrence,
+  AccountsGeoRegion, AccountsGeoScope,
 } from '../types';
 
 /** Account Details Dashboard — mirrors the shell + feel of the DSR
@@ -209,7 +215,7 @@ export function AccountsDashboardPage() {
   // to be role-gated separately.
   const { user } = useAuthStore();
   const isSuperAdmin = user?.role === 'super_admin';
-  const [tab, setTab] = useState<'overview' | 'deep' | 'graph' | 'repeat'>('overview');
+  const [tab, setTab] = useState<'overview' | 'map' | 'deep' | 'graph' | 'repeat'>('overview');
 
   // Drill-down: full account detail grid for a single PS, with Excel + PDF export.
   // Clicking a row in the per-PS comparison table sets this; the Back button on
@@ -239,10 +245,11 @@ export function AccountsDashboardPage() {
         <label className="text-sm flex items-center gap-2"
           // Date picker hidden on Deep Analysis tab -- that view is
           // FIR-scoped and doesn't use a cutoff date.
-          style={{ visibility: tab === 'overview' ? 'visible' : 'hidden' }}
-          aria-hidden={tab !== 'overview'}
-          // Date picker is only meaningful on the cumulative Overview
-          // tab; Deep / Graph / Repeat views ignore date entirely.
+          style={{ visibility: tab === 'overview' || tab === 'map' ? 'visible' : 'hidden' }}
+          aria-hidden={tab !== 'overview' && tab !== 'map'}
+          // Date picker is meaningful on the cumulative Overview and Map
+          // tabs (both are "as of" rollups); Deep / Graph / Repeat views
+          // are FIR- or account-scoped and ignore date entirely.
         >
           <span className="font-semibold" style={{ color: 'var(--ksp-navy)' }}>As of:</span>
           <input type="date" value={date}
@@ -264,6 +271,16 @@ export function AccountsDashboardPage() {
               borderBottom: tab === 'overview' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
             }}>
             Overview
+          </button>
+          <button type="button"
+            onClick={() => setTab('map')}
+            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
+            style={{
+              background: tab === 'map' ? 'var(--ksp-navy)' : 'transparent',
+              color: tab === 'map' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+              borderBottom: tab === 'map' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
+            }}>
+            <MapIcon className="w-4 h-4" /> Map View
           </button>
           <button type="button"
             onClick={() => setTab('deep')}
@@ -300,6 +317,8 @@ export function AccountsDashboardPage() {
 
       {(tab === 'deep' || tab === 'graph') && isSuperAdmin ? (
         <DeepAnalysisTab mode={tab === 'graph' ? 'graph' : 'table'} />
+      ) : tab === 'map' && isSuperAdmin ? (
+        <GeoMapTab date={date} />
       ) : tab === 'repeat' && isSuperAdmin ? (
         <RepeatAccountsTab />
       ) : loading ? (
@@ -1232,6 +1251,205 @@ function StateSplitCard({ title, typeLabel, totalAccent, outOfStateAccent, stats
 // operator can compare at a glance. Threshold defaults to 2 but is
 // dial-able via a small stepper in the header. Not FIR-scoped;
 // pulls the top N rows sorted by FIR count desc.
+
+/** Map View tab — geographic concentration of accounts (2026-07-31).
+ *
+ *  Fetches once per (date, scope) with account_type='All' and shades
+ *  from a client-side metric toggle, so switching Mule / Victim /
+ *  Non-Mule is instant and every tooltip keeps the full breakdown.
+ */
+function GeoMapTab({ date }: { date: string }) {
+  const [scope, setScope] = useState<AccountsGeoScope>('state');
+  const [metric, setMetric] = useState<'total' | 'victims' | 'mules' | 'non_mules'>('mules');
+  const [rows, setRows] = useState<AccountsGeoRegion[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<string | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    getAccountsByGeography(date, scope, 'All')
+      .then((r) => { if (alive) { setRows(r); setLoading(false); } })
+      .catch((e: unknown) => {
+        if (!alive) return;
+        setRows([]);
+        setLoading(false);
+        toast.error(e instanceof Error ? e.message : 'Failed to load map data');
+      });
+    return () => { alive = false; };
+  }, [date, scope]);
+
+  // scope='state' spans the country; the other two are Karnataka-only
+  // and share the same 36-name police geography, so one layout serves
+  // both.
+  const layout = scope === 'state' ? INDIA_LAYOUT : KARNATAKA_LAYOUT;
+
+  const ranked = useMemo(() => {
+    const list = (rows ?? []).filter((r) => r.region.trim() !== '' && r[metric] > 0);
+    return [...list].sort((a, b) => b[metric] - a[metric]);
+  }, [rows, metric]);
+
+  const grandTotal = useMemo(
+    () => (rows ?? []).reduce((s, r) => s + r[metric], 0),
+    [rows, metric],
+  );
+
+  /** Clicking Karnataka on the national map is almost always a request
+   *  to see inside it, so drill straight through to the district view
+   *  instead of just highlighting a tile. */
+  const handleSelect = (regionName: string) => {
+    if (scope === 'state' && regionName === 'Karnataka') {
+      setScope('district');
+      setSelected(null);
+      toast.success('Showing Karnataka districts — switch scope to go back');
+      return;
+    }
+    setSelected((prev) => (prev === regionName ? null : regionName));
+  };
+
+  const METRIC_LABEL: Record<typeof metric, string> = {
+    mules: 'Mule accounts',
+    victims: 'Victim accounts',
+    non_mules: 'Non-Mule accounts',
+    total: 'All accounts',
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Controls */}
+      <div className="rounded-2xl p-4 flex flex-wrap items-center gap-4" style={cardStyle}>
+        <div className="text-sm">
+          <p className="font-bold" style={{ color: 'var(--ksp-navy)' }}>
+            Geographic concentration — {METRIC_LABEL[metric]}
+          </p>
+          <p className="text-xs opacity-70 mt-0.5">
+            Cumulative as of the selected date. Click a region to highlight it in
+            the table below; click Karnataka on the national view to drill into districts.
+          </p>
+        </div>
+
+        <label className="ml-auto text-sm flex items-center gap-2">
+          <span className="font-semibold" style={{ color: 'var(--ksp-navy)' }}>Scope:</span>
+          <select value={scope}
+            onChange={(e) => { setScope(e.target.value as AccountsGeoScope); setSelected(null); }}
+            className="px-3 py-1.5 rounded-lg text-sm bg-white"
+            style={{ border: '2px solid var(--ksp-navy)' }}>
+            <option value="state">Branch State (all India)</option>
+            <option value="district">Branch District (Karnataka)</option>
+            <option value="reporting">Reporting PS District</option>
+          </select>
+        </label>
+
+        <label className="text-sm flex items-center gap-2">
+          <span className="font-semibold" style={{ color: 'var(--ksp-navy)' }}>Show:</span>
+          <select value={metric}
+            onChange={(e) => setMetric(e.target.value as typeof metric)}
+            className="px-3 py-1.5 rounded-lg text-sm bg-white"
+            style={{ border: '2px solid var(--ksp-navy)' }}>
+            <option value="mules">Mule accounts</option>
+            <option value="victims">Victim accounts</option>
+            <option value="non_mules">Non-Mule accounts</option>
+            <option value="total">All accounts</option>
+          </select>
+        </label>
+      </div>
+
+      {/* Scope caveat — the three scopes answer genuinely different
+          questions and conflating them would mislead. */}
+      <div className="rounded-xl px-4 py-2.5 text-xs"
+        style={{ background: 'rgba(11,44,74,0.04)', border: '1px solid rgba(11,44,74,0.12)',
+          color: 'var(--ksp-navy)' }}>
+        {scope === 'state' && (
+          <>Plotted by <b>bank branch state</b> — where the account is held, not where the case is registered.</>
+        )}
+        {scope === 'district' && (
+          <>Plotted by <b>bank branch district</b>. This column only accepts Karnataka
+            districts, so accounts held outside the state never appear here — use the
+            Branch State scope for the national picture.</>
+        )}
+        {scope === 'reporting' && (
+          <>Plotted by the <b>district of the police station that recorded the account</b> —
+            investigation workload, not where the money sits. This field is always
+            populated, unlike the branch columns.</>
+        )}
+      </div>
+
+      {loading ? (
+        <div className="text-center py-16 font-semibold" style={{ color: 'var(--ksp-navy)' }}>
+          Loading map...
+        </div>
+      ) : (
+        <>
+          <div className="rounded-2xl p-4" style={cardStyle}>
+            <AccountsGeoMap
+              layout={layout}
+              data={rows ?? []}
+              metric={metric}
+              selected={selected}
+              onSelect={handleSelect}
+            />
+          </div>
+
+          {/* Ranked table — the map answers "where", this answers "how
+              many", and it stays readable when several regions shade
+              into the same bucket. */}
+          <div className="rounded-2xl overflow-hidden" style={cardStyle}>
+            <div className="px-4 py-3 flex items-center gap-2"
+              style={{ background: 'var(--ksp-navy)' }}>
+              <Trophy className="w-4 h-4" style={{ color: 'var(--ksp-yellow)' }} />
+              <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-yellow)' }}>
+                Ranked by {METRIC_LABEL[metric]}
+              </h3>
+            </div>
+            {ranked.length === 0 ? (
+              <p className="px-4 py-8 text-center text-sm opacity-70">
+                No {METRIC_LABEL[metric].toLowerCase()} recorded with a location for this date.
+              </p>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr style={{ background: 'rgba(11,44,74,0.06)' }}>
+                      <th className="px-4 py-2 text-left font-bold">#</th>
+                      <th className="px-4 py-2 text-left font-bold">Region</th>
+                      <th className="px-4 py-2 text-right font-bold">{METRIC_LABEL[metric]}</th>
+                      <th className="px-4 py-2 text-right font-bold">Share</th>
+                      <th className="px-4 py-2 text-right font-bold">All types</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {ranked.map((r, i) => {
+                      const isSel = selected === r.region;
+                      return (
+                        <tr key={r.region}
+                          onClick={() => setSelected(isSel ? null : r.region)}
+                          className="border-t cursor-pointer transition"
+                          style={{
+                            borderColor: 'rgba(11,44,74,0.08)',
+                            background: isSel ? 'rgba(198,124,29,0.12)' : undefined,
+                          }}>
+                          <td className="px-4 py-2 opacity-60">{i + 1}</td>
+                          <td className="px-4 py-2 font-semibold" style={{ color: 'var(--ksp-navy)' }}>
+                            {r.region}
+                          </td>
+                          <td className="px-4 py-2 text-right font-bold">{formatNumber(r[metric])}</td>
+                          <td className="px-4 py-2 text-right opacity-70">
+                            {grandTotal > 0 ? `${Math.round((r[metric] / grandTotal) * 100)}%` : '—'}
+                          </td>
+                          <td className="px-4 py-2 text-right opacity-70">{formatNumber(r.total)}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
 
 function RepeatAccountsTab() {
   const [minFirs, setMinFirs] = useState(2);

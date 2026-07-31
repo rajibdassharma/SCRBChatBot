@@ -6,6 +6,7 @@ import type {
   AccountCaseDetail, CaseDetailFull,
   DisposalSummary, TrialSummary, PendingByYearRow,
   AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
+  AccountsGeoRegion, AccountsGeoScope,
   AllAccount,
   PortalsDsrKpiSummary, PortalsDsrPsComparison,
   FirPsPerformanceRow,
@@ -22,6 +23,21 @@ export async function getAccountsSummary(date: string): Promise<AccountsKpiSumma
 
 export async function getAccountsComparison(date: string): Promise<AccountsPsComparison[]> {
   return apiFetch<AccountsPsComparison[]>(`/api/v1/dashboard/accounts-comparison?date=${date}`);
+}
+
+/** Region rollup for the Account Details map view. Returns only regions
+ *  with at least one account — the caller fills the zeros from the
+ *  canonical state / district lists. */
+export async function getAccountsByGeography(
+  date: string,
+  scope: AccountsGeoScope = 'state',
+  // Defaults to 'All' because the map shades from a client-side metric
+  // toggle — one fetch serves the Mule / Victim / Non-Mule / All views
+  // and keeps the full breakdown available in every tooltip.
+  accountType: 'Victim' | 'Mule' | 'Non-Mule' | 'All' = 'All',
+): Promise<AccountsGeoRegion[]> {
+  const qs = new URLSearchParams({ date, scope, account_type: accountType });
+  return apiFetch<AccountsGeoRegion[]>(`/api/v1/dashboard/accounts-geo?${qs.toString()}`);
 }
 
 /** Top N banks by account-count for the Dashboard Overview insight panel. */
