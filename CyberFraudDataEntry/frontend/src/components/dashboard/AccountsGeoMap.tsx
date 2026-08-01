@@ -15,7 +15,7 @@
  *  bundle already carries recharts + xlsx + jspdf. A choropleth is a
  *  fill colour and a tooltip — it doesn't justify another dependency.
  */
-import { useMemo, useState } from 'react';
+import { useMemo, useRef, useState } from 'react';
 import { MapPin, AlertTriangle } from 'lucide-react';
 import type { MapLayout, MapShape } from '../../lib/utils/geo-tile-grid';
 import type { AccountsGeoRegion } from '../../types';
@@ -215,6 +215,17 @@ export function AccountsGeoMap({
   layout, data, metric, onSelect, selected,
 }: AccountsGeoMapProps) {
   const [hover, setHover] = useState<{ shape: MapShape; row: AccountsGeoRegion } | null>(null);
+  /** Pointer position in container-relative px, for the follow-cursor
+   *  tooltip. Kept separate from `hover` so moving within one region
+   *  still repositions the card. */
+  const [ptr, setPtr] = useState<{ x: number; y: number } | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+
+  const trackPointer = (e: { clientX: number; clientY: number }) => {
+    const box = wrapRef.current?.getBoundingClientRect();
+    if (!box) return;
+    setPtr({ x: e.clientX - box.left, y: e.clientY - box.top });
+  };
 
   /** Case-insensitive lookup keyed on the trimmed region name. The API
    *  already TRIMs, but branch_state is free text and casing drift
@@ -324,7 +335,7 @@ export function AccountsGeoMap({
         </div>
       </div>
 
-      <div className="relative">
+      <div className="relative" ref={wrapRef}>
         <svg
           viewBox={pathMode && layout.viewBox
             ? `0 0 ${layout.viewBox} ${layout.viewBox}`
@@ -350,7 +361,8 @@ export function AccountsGeoMap({
             const common = {
               style: { cursor: onSelect ? 'pointer' : 'default' },
               onMouseEnter: () => setHover({ shape: s, row: row ?? { region: s.name, total: 0, victims: 0, mules: 0, non_mules: 0 } }),
-              onMouseLeave: () => setHover(null),
+              onMouseMove: trackPointer,
+              onMouseLeave: () => { setHover(null); setPtr(null); },
               onClick: () => onSelect?.(s.name),
             };
 
@@ -438,10 +450,20 @@ export function AccountsGeoMap({
           })}
         </svg>
 
-        {hover && (
-          <div className="absolute top-2 right-2 px-3 py-2 rounded-lg pointer-events-none"
-            style={{ background: 'rgba(255,255,255,0.97)', border: `2px solid ${COLOR_NAVY}`,
-              boxShadow: '0 6px 16px rgba(0,0,0,0.15)', minWidth: 190, zIndex: 5 }}>
+        {hover && ptr && (() => {
+          // Follow the cursor, but flip to the other side when close to
+          // an edge so the card is never clipped by the container. The
+          // offset keeps it clear of the pointer itself.
+          const W = 200, H = 118, PAD = 14;
+          const boxW = wrapRef.current?.clientWidth ?? 0;
+          const boxH = wrapRef.current?.clientHeight ?? 0;
+          const left = ptr.x + PAD + W > boxW ? Math.max(0, ptr.x - PAD - W) : ptr.x + PAD;
+          const top = ptr.y + PAD + H > boxH ? Math.max(0, ptr.y - PAD - H) : ptr.y + PAD;
+          return (
+          <div className="absolute px-3 py-2 rounded-lg pointer-events-none"
+            style={{ left, top, width: W,
+              background: 'rgba(255,255,255,0.97)', border: `2px solid ${COLOR_NAVY}`,
+              boxShadow: '0 6px 16px rgba(0,0,0,0.15)', zIndex: 5 }}>
             <div className="text-xs font-bold" style={{ color: COLOR_NAVY }}>{hover.shape.name}</div>
             {hover.shape.note && (
               <div className="text-[10px] italic" style={{ color: 'rgba(11,44,74,0.6)' }}>{hover.shape.note}</div>
@@ -453,7 +475,8 @@ export function AccountsGeoMap({
               <div className="flex justify-between gap-4"><span>Non-Mule</span><b>{formatNumber(hover.row.non_mules)}</b></div>
             </div>
           </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* Coverage honesty panel. branch_state / branch_district arrived

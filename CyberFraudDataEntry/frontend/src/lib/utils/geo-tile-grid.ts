@@ -27,6 +27,10 @@
  */
 
 import { BOUNDARY_SHAPES, BOUNDARY_VIEWBOX } from './geo-boundaries.generated';
+import {
+  BOUNDARY_SHAPES as KA_BOUNDARY_SHAPES,
+  BOUNDARY_VIEWBOX as KA_BOUNDARY_VIEWBOX,
+} from './geo-boundaries-ka.generated';
 
 export interface MapShape {
   /** MUST match the value stored in the DB exactly — this is the join
@@ -198,10 +202,36 @@ const KARNATAKA_TILES: MapShape[] = [
   { name: 'Chamarajanagar',   label: 'CMR', row: 8, col: 4 },
 ];
 
-export const KARNATAKA_LAYOUT: MapLayout = {
-  id: 'karnataka-districts',
-  label: 'Karnataka — Districts & City Commissionerates',
-  rows: 9,
-  cols: 7,
-  shapes: KARNATAKA_TILES,
-};
+/** Outline mode once Karnataka boundaries have been generated, tiles
+ *  until then — same data-driven switch as INDIA_LAYOUT.
+ *
+ *  NOTE ON COVERAGE. The boundary source carries the 30 revenue
+ *  districts it knows about; the picklist carries 36, the extra six
+ *  being the five city commissionerates (police units, not revenue
+ *  districts, so no boundary exists) and Vijayanagara (created 2021,
+ *  after this source was compiled). Those six are NOT silently
+ *  dropped — AccountsGeoMap counts any region it has no shape for into
+ *  the amber "not on the map" banner and names it there, so the gap is
+ *  visible on screen rather than hidden. Deciding how to place them is
+ *  a separate call; the map is honest in the meantime. */
+const KA_TILE_LABELS = new Map(KARNATAKA_TILES.map((t) => [t.name, t.label]));
+
+export const KARNATAKA_LAYOUT: MapLayout = KA_BOUNDARY_SHAPES.length > 0
+  ? {
+      id: 'karnataka-districts',
+      label: 'Karnataka — Districts',
+      rows: 1,
+      cols: 1,
+      viewBox: KA_BOUNDARY_VIEWBOX,
+      shapes: KA_BOUNDARY_SHAPES.map((s) => ({
+        ...s,
+        label: KA_TILE_LABELS.get(s.name) ?? s.label,
+      })),
+    }
+  : {
+      id: 'karnataka-districts',
+      label: 'Karnataka — Districts & City Commissionerates',
+      rows: 9,
+      cols: 7,
+      shapes: KARNATAKA_TILES,
+    };

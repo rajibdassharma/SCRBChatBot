@@ -40,7 +40,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const OUT = resolve(HERE, '../src/lib/utils/geo-boundaries.generated.ts');
+const DEFAULT_OUT = resolve(HERE, '../src/lib/utils/geo-boundaries.generated.ts');
 
 /* ── args ─────────────────────────────────────────────────────────── */
 const argv = process.argv.slice(2);
@@ -78,6 +78,31 @@ const snapDecimals = Number(opt('--snap', '5'));
 /** Provenance recorded in the generated header. On a government
  *  project the audit trail matters as much as the geometry. */
 const sourceUrl = opt('--source-url', '(local file — provenance not recorded)');
+
+/** Output path. Lets one source file produce several layouts — the
+ *  India state map and the Karnataka district map come from the same
+ *  GeoJSON, cut differently. */
+const OUT = opt('--out', null)
+  ? resolve(process.cwd(), opt('--out', ''))
+  : DEFAULT_OUT;
+
+/** Restrict to a subset of features before anything else, e.g.
+ *  --filter-prop st_nm --filter-value Karnataka to cut a single state's
+ *  districts out of an all-India file. */
+const filterProp = opt('--filter-prop', null);
+const filterValue = opt('--filter-value', null);
+
+/** Name fixups applied at the chosen level, as "src=dst,src=dst".
+ *  Kept on the command line rather than baked in, so the tool stays
+ *  region-agnostic and every substitution is visible in the regenerate
+ *  command recorded in the generated header. */
+const cliAliases = new Map(
+  (opt('--alias', '') || '')
+    .split(',')
+    .map((pair) => pair.split('='))
+    .filter((kv) => kv.length === 2 && kv[0].trim() && kv[1].trim())
+    .map(([a, b]) => [a.trim().toLowerCase(), b.trim()]),
+);
 
 /* ── canonical names (must match the DB / picklists exactly) ──────── */
 const STATES = [
@@ -282,8 +307,18 @@ function dissolve(rings) {
 
 /* ── read + collect ───────────────────────────────────────────────── */
 const gj = JSON.parse(readFileSync(input, 'utf8'));
-const features = gj.type === 'FeatureCollection' ? gj.features : [gj];
+let features = gj.type === 'FeatureCollection' ? gj.features : [gj];
 if (!features?.length) { console.error('no features found'); process.exit(1); }
+
+if (filterProp && filterValue) {
+  const before = features.length;
+  const want = filterValue.trim().toLowerCase();
+  features = features.filter(
+    (f) => String(f.properties?.[filterProp] ?? '').trim().toLowerCase() === want,
+  );
+  console.log(`filtered ${filterProp}="${filterValue}": ${features.length} of ${before} features`);
+  if (!features.length) { console.error('filter matched nothing — check --filter-prop/--filter-value'); process.exit(1); }
+}
 
 // Auto-detect the name property if not given: the one whose values best
 // match the canonical list.
@@ -343,7 +378,11 @@ const raw = new Map();         // canonical name -> UNSIMPLIFIED rings
 const unmatched = new Set();
 for (const f of workingFeatures) {
   const val = f.properties?.[prop];
-  const name = level === 'state' ? canonical(val) : String(val ?? '').trim();
+  const rawName = level === 'state' ? canonical(val) : String(val ?? '').trim();
+  // CLI aliases apply at either level and win over the raw value —
+  // this is how "Bagalkote" in a boundary file becomes "Bagalkot" in
+  // the app's picklist without editing either.
+  const name = cliAliases.get(String(rawName ?? '').toLowerCase()) ?? rawName;
   if (!name) { unmatched.add(String(val)); continue; }
   const prev = raw.get(name) ?? [];
   raw.set(name, prev.concat(ringsOf(f.geometry)));
@@ -427,6 +466,125 @@ function ringArea2(pts) {
   return a;
 }
 
+/** Is pt inside this set of rings? Even-odd ray cast. */
+function pointInRings(pt, rings) {
+  let inside = false;
+  for (const r of rings) {
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const [xi, yi] = r[i], [xj, yj] = r[j];
+      if (((yi > pt[1]) !== (yj > pt[1]))
+        && (pt[0] < ((xj - xi) * (pt[1] - yi)) / (yj - yi) + xi)) inside = !inside;
+    }
+  }
+  return inside;
+}
+
+/** Shortest distance from pt to any edge in rings. */
+function distToEdge(pt, rings) {
+  let m = Infinity;
+  for (const r of rings) {
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const d = perpDist(pt, r[j], r[i]);
+      if (d < m) m = d;
+    }
+  }
+  return m;
+}
+
+/** Pole of inaccessibility: the interior point farthest from any edge —
+ *  the "fattest" part of the shape.
+ *
+ *  The centroid is the obvious choice and the wrong one. For a concave
+ *  region it can land outside the polygon entirely (Arunachal Pradesh's
+ *  arc, Andaman's water gap), which both misplaces the label and makes
+ *  the usable-width scan measure nothing. This finds a point that is
+ *  guaranteed inside AND has the most room around it, so labels get
+ *  the widest span the shape can offer.
+ *
+ *  Coarse grid then a local refine — good enough at these sizes, and it
+ *  runs at build time so cost is irrelevant. */
+function poleOfInaccessibility(ring) {
+  const xs = ring.map((p) => p[0]), ys = ring.map((p) => p[1]);
+  let x0 = Math.min(...xs), x1 = Math.max(...xs);
+  let y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const rings = [ring];
+  let best = null, bestD = -Infinity;
+  for (let pass = 0; pass < 3; pass++) {
+    const N = pass === 0 ? 40 : 12;
+    for (let i = 0; i <= N; i++) {
+      for (let j = 0; j <= N; j++) {
+        const p = [x0 + ((x1 - x0) * i) / N, y0 + ((y1 - y0) * j) / N];
+        if (!pointInRings(p, rings)) continue;
+        const d = distToEdge(p, rings);
+        if (d > bestD) { bestD = d; best = p; }
+      }
+    }
+    if (!best) return null;
+    // Refine in a shrinking window around the current best.
+    const wx = (x1 - x0) / (pass === 0 ? 8 : 4), wy = (y1 - y0) / (pass === 0 ? 8 : 4);
+    x0 = best[0] - wx; x1 = best[0] + wx;
+    y0 = best[1] - wy; y1 = best[1] + wy;
+  }
+  return best;
+}
+
+/** Width of the polygon along the horizontal line y, through x.
+ *
+ *  Ray-cast every ring at height y, sort the crossings into inside /
+ *  outside pairs, and return the width of the pair that contains x.
+ *  This is the space a line of text ACTUALLY has — unlike the bounding
+ *  box, which lies for any region that isn't a rectangle. */
+function spanAtY(ringsPx, y, x) {
+  const xs = [];
+  for (const r of ringsPx) {
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const [x1, y1] = r[j], [x2, y2] = r[i];
+      if ((y1 > y) !== (y2 > y)) xs.push(x1 + ((y - y1) / (y2 - y1)) * (x2 - x1));
+    }
+  }
+  xs.sort((a, b) => a - b);
+  for (let i = 0; i + 1 < xs.length; i += 2) {
+    if (x >= xs[i] && x <= xs[i + 1]) return xs[i + 1] - xs[i];
+  }
+  return 0;
+}
+
+/** Same idea rotated: height of the polygon along the vertical x. */
+function spanAtX(ringsPx, x, y) {
+  const ys = [];
+  for (const r of ringsPx) {
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+      const [x1, y1] = r[j], [x2, y2] = r[i];
+      if ((x1 > x) !== (x2 > x)) ys.push(y1 + ((x - x1) / (x2 - x1)) * (y2 - y1));
+    }
+  }
+  ys.sort((a, b) => a - b);
+  for (let i = 0; i + 1 < ys.length; i += 2) {
+    if (y >= ys[i] && y <= ys[i + 1]) return ys[i + 1] - ys[i];
+  }
+  return 0;
+}
+
+/** Usable label box at the anchor: the NARROWEST horizontal span across
+ *  the rows the two-line label will occupy, and the vertical span at
+ *  the anchor. Sampling several rows matters because a label sits on
+ *  two lines — fitting only the centroid row lets the wider line spill
+ *  out through a tapering edge (Maharashtra, Uttarakhand, Assam). */
+function labelBox(ringsPx, cx, cy) {
+  const h = spanAtX(ringsPx, cx, cy);
+  // Sample rows PROPORTIONAL to the region's own height. A fixed +/-14
+  // reach walks straight out of anything short (Meghalaya is wide but
+  // thin), the span there reads 0, and the min collapses the whole
+  // region to "no room" when it actually had plenty.
+  const reach = Math.min(14, Math.max(0, h * 0.25));
+  let w = Infinity;
+  for (const dy of [-reach, -reach / 2, 0, reach / 2, reach]) {
+    w = Math.min(w, spanAtY(ringsPx, cy + dy, cx));
+  }
+  if (!Number.isFinite(w)) w = 0;
+  return [Math.max(0, Math.round(w)), Math.max(0, Math.round(h))];
+}
+
 /** Label anchor for outline mode.
  *
  *  Centroid of the LARGEST ring, not of all rings combined: an
@@ -453,6 +611,12 @@ function labelAnchor(rings) {
              +(((Math.min(...ys) + Math.max(...ys)) / 2).toFixed(1)) ];
   }
   const { pts, a2 } = best;
+  // Prefer the pole of inaccessibility — guaranteed inside, and in the
+  // roomiest part of the shape. Fall back to the area centroid only if
+  // the search finds nothing (degenerate ring).
+  const pole = poleOfInaccessibility(pts);
+  if (pole) return [+pole[0].toFixed(1), +pole[1].toFixed(1)];
+
   let cx = 0, cy = 0;
   for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
     const f = pts[j][0] * pts[i][1] - pts[i][0] * pts[j][1];
@@ -470,20 +634,25 @@ const shapes = [...collected.entries()]
     label: shortLabel(name),
     d: toPath(rings),
     anchor: labelAnchor(rings),
-    // Projected bbox of the LARGEST ring — the space actually available
-    // for a label, which is what decides full name vs short code. The
-    // whole-region bbox would lie for anything with distant islands.
+    // Space the label ACTUALLY has, measured inside the polygon at the
+    // anchor — not the bounding box. A bbox is only honest for a
+    // rectangle; for a diagonal or L-shaped region it reports width the
+    // label cannot use, and the text overflows the border.
     box: (() => {
+      const a = labelAnchor(rings);
+      if (!a) return null;
+      // Measure against the LARGEST ring only, matching where the anchor
+      // was placed. Scanning every ring interleaves crossings from
+      // disjoint islands, and the inside/outside pairing then matches a
+      // crossing on one landmass with one on another — reporting span
+      // across open water as usable label width.
       let best = null, bestA = -1;
       for (const r of rings) {
         const pts = r.map(([lon, lat]) => [px(lon), py(lat)]);
-        const a = Math.abs(ringArea2(pts));
-        if (a > bestA) { bestA = a; best = pts; }
+        const ar = Math.abs(ringArea2(pts));
+        if (ar > bestA) { bestA = ar; best = pts; }
       }
-      if (!best) return null;
-      const xs = best.map((p) => p[0]), ys = best.map((p) => p[1]);
-      return [+(Math.max(...xs) - Math.min(...xs)).toFixed(0),
-              +(Math.max(...ys) - Math.min(...ys)).toFixed(0)];
+      return best ? labelBox([best], a[0], a[1]) : null;
     })(),
   }));
 
@@ -504,8 +673,8 @@ writeFileSync(OUT, `/* GENERATED by tools/geojson-to-paths.mjs — do not edit b
  * projection : equirectangular, lon scaled by cos(${midLat.toFixed(2)}deg), ${VB}x${VB} viewBox
  * regions    : ${shapes.length}
  *
- * Re-generate with:
- *   node tools/geojson-to-paths.mjs <input.geojson> --level ${level}
+ * Re-generate with the EXACT invocation that produced this file:
+ *   node tools/geojson-to-paths.mjs ${argv.map((a) => (/[\s"]/.test(a) ? JSON.stringify(a) : a)).join(' ')}
  */
 import type { MapShape } from './geo-tile-grid';
 
@@ -519,7 +688,7 @@ ${body}
 const bytes = readFileSync(OUT).length;
 console.log(`wrote ${OUT}`);
 console.log(`  regions: ${shapes.length}   size: ${(bytes / 1024).toFixed(0)} KB`);
-if (level === 'state') {
+if (level === 'state' && !filterProp) {
   const missing = STATES.filter((s) => !collected.has(s));
   if (missing.length) console.warn(`  WARNING missing ${missing.length}: ${missing.join(', ')}`);
 }
