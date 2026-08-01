@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
+import { BarChart3, Trophy } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   Bar, BarChart, CartesianGrid, Cell, Legend, PieChart, Pie,
@@ -48,6 +49,10 @@ export function DailyWorkDashboardPage() {
   const [to, setTo] = useState(todayISO());
   const [data, setData] = useState<DailyWorkDashboard | null>(null);
   const [busy, setBusy] = useState(false);
+  // Overview / PS Ranking, matching the FIR Dashboard. Both tabs read
+  // the same fetched response and the same date window, so switching
+  // never re-requests and the two can never disagree.
+  const [tab, setTab] = useState<'overview' | 'ranking'>('overview');
 
   useEffect(() => {
     let cancelled = false;
@@ -77,7 +82,9 @@ export function DailyWorkDashboardPage() {
         Daily Work Done — Dashboard
       </h1>
       <p className="text-sm font-medium mb-6" style={{ color: 'var(--ksp-red)' }}>
-        Aggregated activity for this PS across the selected date range.
+        {data?.cross_ps
+          ? 'Aggregated investigation activity across all police stations for the selected date range.'
+          : 'Aggregated activity for this PS across the selected date range.'}
       </p>
 
       {/* Date window controls */}
@@ -111,10 +118,39 @@ export function DailyWorkDashboardPage() {
         </div>
       </div>
 
+      {/* Tab bar. PS Ranking is super_admin-only: a PS-level admin gets
+           exactly one row, so the comparison would be noise. The bar
+           itself is gated the same way. */}
+      {!busy && data?.cross_ps && (
+        <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'rgba(11,44,74,0.15)' }}>
+          <button type="button"
+            onClick={() => setTab('overview')}
+            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
+            style={{
+              background: tab === 'overview' ? 'var(--ksp-navy)' : 'transparent',
+              color: tab === 'overview' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+              borderBottom: tab === 'overview' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
+            }}>
+            <BarChart3 className="w-4 h-4" /> Overview
+          </button>
+          <button type="button"
+            onClick={() => setTab('ranking')}
+            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
+            style={{
+              background: tab === 'ranking' ? 'var(--ksp-navy)' : 'transparent',
+              color: tab === 'ranking' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+              borderBottom: tab === 'ranking' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
+            }}>
+            <Trophy className="w-4 h-4" /> PS Ranking
+          </button>
+        </div>
+      )}
+
       {busy && <div className="text-center py-10 italic">Loading…</div>}
 
       {!busy && data && (
         <>
+          {(!data.cross_ps || tab === 'overview') && (<>
           {/* KPI tile row — the numbers that matter at a glance. */}
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 mb-5">
             <Kpi label="Entries logged" value={fmtInt(data.totals.entries)}
@@ -195,6 +231,66 @@ export function DailyWorkDashboardPage() {
               )}
             </div>
           </div>
+
+          </>)}
+
+          {/* PS Ranking tab. Stations that logged nothing are INCLUDED
+               with zeros: silence is the finding here, and hiding a
+               silent station would hide exactly the row worth asking
+               about. */}
+          {data.cross_ps && tab === 'ranking' && (data.per_ps?.length ?? 0) > 0 && (
+            <div className="rounded-2xl overflow-x-auto mt-5"
+              style={{ background: '#fff', border: '1px solid rgba(0,0,0,0.06)', boxShadow: '0 6px 16px rgba(0,0,0,0.08)' }}>
+              <div className="px-5 py-4"
+                style={{ borderBottom: '3px solid var(--ksp-yellow)' }}>
+                <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>
+                  Investigation activity by Police Station
+                </h3>
+                <p className="text-xs mt-1 opacity-60">
+                  {data.date_from} → {data.date_to}. Busiest first. Stations with no
+                  entries in this window are shown with zeros rather than omitted —
+                  {' '}<b>{(data.per_ps ?? []).filter((r) => r.entries === 0).length}</b> of
+                  {' '}{(data.per_ps ?? []).length} logged nothing.
+                </p>
+              </div>
+              <table className="w-full text-sm text-left">
+                <thead style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)' }}>
+                  <tr>
+                    <th className="px-4 py-3 text-xs uppercase font-bold">#</th>
+                    <th className="px-4 py-3 text-xs uppercase font-bold">District</th>
+                    <th className="px-4 py-3 text-xs uppercase font-bold">Police Station</th>
+                    <th className="px-4 py-3 text-xs uppercase font-bold text-right">Entries</th>
+                    <th className="px-4 py-3 text-xs uppercase font-bold text-right">FIRs</th>
+                    <th className="px-4 py-3 text-xs uppercase font-bold text-right">Notices</th>
+                    <th className="px-4 py-3 text-xs uppercase font-bold text-right">Lien req.</th>
+                    <th className="px-4 py-3 text-xs uppercase font-bold text-right">Arrests</th>
+                    <th className="px-4 py-3 text-xs uppercase font-bold text-right">Statements</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(data.per_ps ?? []).map((r, i) => (
+                    <tr key={`${r.unit_id}-${r.ps_id}`} className="border-t"
+                      style={{ borderColor: 'rgba(11,44,74,0.08)' }}>
+                      <td className="px-4 py-2 opacity-60">{i + 1}</td>
+                      <td className="px-4 py-2">{r.district}</td>
+                      <td className="px-4 py-2 font-semibold" style={{ color: 'var(--ksp-navy)' }}>
+                        {r.ps_name}
+                      </td>
+                      <td className="px-4 py-2 text-right font-bold"
+                        style={{ color: r.entries === 0 ? 'var(--ksp-red)' : 'var(--ksp-navy)' }}>
+                        {r.entries.toLocaleString('en-IN')}
+                      </td>
+                      <td className="px-4 py-2 text-right">{r.unique_firs.toLocaleString('en-IN')}</td>
+                      <td className="px-4 py-2 text-right">{r.notices.toLocaleString('en-IN')}</td>
+                      <td className="px-4 py-2 text-right">{r.lien_requests.toLocaleString('en-IN')}</td>
+                      <td className="px-4 py-2 text-right">{r.arrests.toLocaleString('en-IN')}</td>
+                      <td className="px-4 py-2 text-right">{r.statements.toLocaleString('en-IN')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
         </>
       )}
     </div>

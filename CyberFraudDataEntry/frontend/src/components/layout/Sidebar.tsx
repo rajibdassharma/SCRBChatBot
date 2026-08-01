@@ -5,7 +5,7 @@ import { CalendarOff, Home, LogOut } from 'lucide-react';
 import { toast } from 'sonner';
 import { declareNil, getNilToday } from '../../lib/api/nil';
 import { getFeatures } from '../../lib/api/features';
-import { getCurrentModule } from '../../lib/utils/modules';
+import { getCurrentModule, LINK_GROUPS } from '../../lib/utils/modules';
 import type { NilDeclaration } from '../../types';
 import kspLogo from '../../assets/ksp_logo.png';
 
@@ -17,6 +17,21 @@ import kspLogo from '../../assets/ksp_logo.png';
 
 const linkClass = ({ isActive }: { isActive: boolean }) =>
   `flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-semibold transition ${
+    isActive
+      ? 'bg-[#0b2c4a] text-[#ffd400]'
+      : 'text-[#0b2c4a] hover:bg-[rgba(11,44,74,0.1)]'
+  }`;
+
+/** The Sign Out button's red. Section headings borrow it, so pulling it
+ *  into one constant keeps "same colour as Sign Out" true if either is
+ *  ever restyled, instead of leaving two hex literals to drift apart. */
+const SIGNOUT_RED = '#c62828';
+
+/** Same row, indented under a section heading. Extra left padding only
+ *  — the pill keeps its full width so the active highlight still reads
+ *  as one block rather than a ragged edge. */
+const indentedLinkClass = ({ isActive }: { isActive: boolean }) =>
+  `flex items-center gap-3 pl-7 pr-4 py-2 rounded-xl text-sm font-semibold transition ${
     isActive
       ? 'bg-[#0b2c4a] text-[#ffd400]'
       : 'text-[#0b2c4a] hover:bg-[rgba(11,44,74,0.1)]'
@@ -75,17 +90,51 @@ export function Sidebar() {
             <currentModule.icon className="w-4 h-4" />
             {currentModule.label}
           </p>
-          {currentModule.links.map((l) => {
-            if (l.requiresAdmin && !isAdmin) return null;
-            if (l.requiresSuperAdmin && !isSuperAdmin) return null;
-            if (l.requiresChat && !chatEnabled) return null;
-            const Icon = l.icon;
+          {(() => {
+            // Filter by role FIRST, then group. Doing it the other way
+            // renders a "Dashboards" heading with nothing under it for
+            // every non-admin, since all dashboard links are gated.
+            const visible = currentModule.links.filter((l) => {
+              if (l.requiresAdmin && !isAdmin) return false;
+              if (l.requiresSuperAdmin && !isSuperAdmin) return false;
+              if (l.requiresChat && !chatEnabled) return false;
+              return true;
+            });
+
+            const row = (l: typeof visible[number], indent: boolean) => {
+              const Icon = l.icon;
+              return (
+                <NavLink key={l.to} to={l.to} className={indent ? indentedLinkClass : linkClass}>
+                  <Icon className="w-4 h-4" /> {l.label}
+                </NavLink>
+              );
+            };
+
+            // Modules that don't use groups keep the flat list they had.
+            const ungrouped = visible.filter((l) => !l.group);
+            if (ungrouped.length === visible.length) {
+              return visible.map((l) => row(l, false));
+            }
+
             return (
-              <NavLink key={l.to} to={l.to} className={linkClass}>
-                <Icon className="w-4 h-4" /> {l.label}
-              </NavLink>
+              <>
+                {ungrouped.map((l) => row(l, false))}
+                {LINK_GROUPS.map(({ key, label }) => {
+                  const inGroup = visible.filter((l) => l.group === key);
+                  if (!inGroup.length) return null;
+                  return (
+                    <div key={key} className="pt-2">
+                      <p className="px-4 pb-1 text-sm font-bold uppercase tracking-wider"
+                         style={{ color: SIGNOUT_RED }}>
+                        {label}
+                      </p>
+                      <div className="space-y-1">{inGroup.map((l) => row(l, true))}</div>
+                    </div>
+                  );
+                })}
+              </>
             );
-          })}
+          })()}
           {/* NIL button — only in the Cases & Petitions module. */}
           {currentModule.hasNilButton && <NilDayButton />}
         </nav>
@@ -114,7 +163,7 @@ export function Sidebar() {
       <button
         onClick={async () => { await logout(); window.location.href = '/login'; }}
         className="flex items-center justify-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-xl transition"
-        style={{ background: '#c62828', color: '#fff', border: '2px solid rgba(0,0,0,0.25)' }}
+        style={{ background: SIGNOUT_RED, color: '#fff', border: '2px solid rgba(0,0,0,0.25)' }}
       >
         <LogOut className="w-4 h-4" /> Sign Out
       </button>

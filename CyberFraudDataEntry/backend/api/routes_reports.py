@@ -39,6 +39,7 @@ from models.unit import Unit
 from api.routes_dashboard import (
     compute_submission_status,
     compute_fir_ps_performance,
+    _FIR_FINANCIAL_FILTERS,
     _resolve_fir_perf_window,
     compute_accounts_comparison,
 )
@@ -365,6 +366,9 @@ def _fir_perf_filename(ext: str, date_from: date, date_to: date) -> str:
 async def get_fir_ps_performance_pdf(
     date_from: date | None = Query(None, alias="from"),
     date_to: date | None = Query(None, alias="to"),
+    # Mirrors the dashboard's Financial filter so a filtered table and
+    # its download can never show different numbers.
+    financial: str = Query("all", description="all | yes (financial) | no (non-financial)"),
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -372,7 +376,11 @@ async def get_fir_ps_performance_pdf(
     if admin.role == "admin" and not admin.unit_id:
         raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
     date_from, date_to = _resolve_fir_perf_window(date_from, date_to)
-    rows = await compute_fir_ps_performance(db, date_from=date_from, date_to=date_to, admin=admin)
+    if financial not in _FIR_FINANCIAL_FILTERS:
+        raise HTTPException(status_code=422, detail="financial must be one of: all, no, yes")
+    rows = await compute_fir_ps_performance(
+        db, date_from=date_from, date_to=date_to, admin=admin, financial=financial,
+    )
     pdf_bytes = render_fir_ps_performance_pdf(rows, date_from=date_from, date_to=date_to)
     return _pdf_response(pdf_bytes, _fir_perf_filename("pdf", date_from, date_to))
 
@@ -381,6 +389,9 @@ async def get_fir_ps_performance_pdf(
 async def get_fir_ps_performance_xlsx(
     date_from: date | None = Query(None, alias="from"),
     date_to: date | None = Query(None, alias="to"),
+    # Mirrors the dashboard's Financial filter so a filtered table and
+    # its download can never show different numbers.
+    financial: str = Query("all", description="all | yes (financial) | no (non-financial)"),
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -388,7 +399,11 @@ async def get_fir_ps_performance_xlsx(
     if admin.role == "admin" and not admin.unit_id:
         raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
     date_from, date_to = _resolve_fir_perf_window(date_from, date_to)
-    rows = await compute_fir_ps_performance(db, date_from=date_from, date_to=date_to, admin=admin)
+    if financial not in _FIR_FINANCIAL_FILTERS:
+        raise HTTPException(status_code=422, detail="financial must be one of: all, no, yes")
+    rows = await compute_fir_ps_performance(
+        db, date_from=date_from, date_to=date_to, admin=admin, financial=financial,
+    )
     xlsx_bytes = render_fir_ps_performance_xlsx(rows, date_from=date_from, date_to=date_to)
     return _xlsx_response(xlsx_bytes, _fir_perf_filename("xlsx", date_from, date_to))
 

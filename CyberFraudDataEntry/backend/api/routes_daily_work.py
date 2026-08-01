@@ -24,6 +24,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from database import get_db
 from models.daily_work_entry import DailyWorkEntry
+from models.unit import Unit
+from models.police_station import PoliceStation
 from schemas.daily_work import DailyWorkCreate, DailyWorkResponse
 from api.deps import get_current_user, require_admin, CurrentUser
 
@@ -217,12 +219,38 @@ class DailyWorkDailyPoint(BaseModel):
     statements: int
 
 
+class DailyWorkPsRow(BaseModel):
+    """One police station's investigation activity in the window.
+
+    Only populated for super_admin — a PS-level admin sees a single
+    row (its own), so the comparison would be meaningless noise."""
+    unit_id: int
+    district: str
+    ps_id: int
+    ps_name: str
+    entries: int = 0
+    unique_firs: int = 0
+    notices: int = 0
+    lien_requests: int = 0
+    arrests: int = 0
+    statements: int = 0
+    total_lien_amount: float = 0
+
+
 class DailyWorkDashboardResponse(BaseModel):
     date_from: date
     date_to: date
     totals: DailyWorkDashboardTotals
     final_report_split: DailyWorkFinalReportSplit
     daily: List[DailyWorkDailyPoint]
+    # Cross-PS comparison. Empty for a PS-level admin (see above);
+    # populated for super_admin so HQ can see who is actually working
+    # their FIRs and who is silent.
+    per_ps: List[DailyWorkPsRow] = []
+    # True when the response spans every PS rather than just the
+    # caller's. Lets the UI label itself honestly instead of guessing
+    # from the row count.
+    cross_ps: bool = False
 
 
 @router.get("/dashboard", response_model=DailyWorkDashboardResponse)
@@ -241,7 +269,15 @@ async def daily_work_dashboard(
     Date window defaults to the trailing 30 days when `from` / `to`
     are omitted. Inclusive on both ends.
     """
-    unit_id, ps_id = _require_scope(admin)
+    # super_admin sees every station; a PS-level admin stays pinned to
+    # its own (unit, ps) per VAPT 7.7/7.8. This mirrors the bypass every
+    # other admin dashboard already has — daily-work was the only module
+    # with no cross-PS branch at all, which is why HQ saw zeros.
+    is_super = admin.role == "super_admin"
+    if is_super:
+        unit_id, ps_id = admin.unit_id, admin.ps_id
+    else:
+        unit_id, ps_id = _require_scope(admin)
 
     if date_to is None:
         date_to = date.today()
@@ -250,12 +286,16 @@ async def daily_work_dashboard(
     if date_from > date_to:
         raise HTTPException(status_code=400, detail="`from` must be on or before `to`.")
 
-    scope_filter = (
-        DailyWorkEntry.unit_id == unit_id,
-        DailyWorkEntry.ps_id == ps_id,
+    # Window always applies; the (unit, ps) pin only for non-super.
+    scope_filter: tuple = (
         DailyWorkEntry.report_date >= date_from,
         DailyWorkEntry.report_date <= date_to,
     )
+    if not is_super:
+        scope_filter = (
+            DailyWorkEntry.unit_id == unit_id,
+            DailyWorkEntry.ps_id == ps_id,
+        ) + scope_filter
 
     # One aggregation pass for all headline numbers. func.coalesce
     # protects against empty windows (sum → NULL, we want 0).
@@ -354,12 +394,80 @@ async def daily_work_dashboard(
         for r in daily_rows
     ]
 
+    # Per-PS comparison — the point of the cross-PS view. Skipped
+    # entirely for a PS-level admin, who would get exactly one row.
+    #
+    # Driven by a LEFT JOIN from police_stations so a station that
+    # logged NOTHING still appears with zeros. That is the row HQ
+    # actually needs: silence is the finding, and an INNER JOIN would
+    # hide precisely the stations worth asking about.
+    per_ps: List[DailyWorkPsRow] = []
+    if is_super:
+        from sqlalchemy import and_
+        notices_expr = (
+            DailyWorkEntry.notices_35_41a_count
+            + DailyWorkEntry.notices_91_92_94_banks
+            + DailyWorkEntry.notices_91_92_94_intermediary
+            + DailyWorkEntry.notices_91_92_94_account_holder
+            + DailyWorkEntry.notices_91_92_94_cdr_ipdr
+        )
+        ps_q = (
+            select(
+                Unit.id.label("unit_id"),
+                Unit.name.label("district"),
+                PoliceStation.id.label("ps_id"),
+                PoliceStation.station_name.label("ps_name"),
+                func.count(DailyWorkEntry.id).label("entries"),
+                func.count(func.distinct(DailyWorkEntry.fir_no)).label("unique_firs"),
+                func.coalesce(func.sum(notices_expr), 0).label("notices"),
+                func.coalesce(func.sum(DailyWorkEntry.lien_requests_count), 0).label("lien_requests"),
+                func.coalesce(func.sum(DailyWorkEntry.arrests_count), 0).label("arrests"),
+                func.coalesce(func.sum(DailyWorkEntry.statements_count), 0).label("statements"),
+                func.coalesce(func.sum(DailyWorkEntry.total_lien_amount), 0).label("lien_amount"),
+            )
+            .select_from(PoliceStation)
+            .join(Unit, Unit.name == PoliceStation.district_name)
+            .outerjoin(
+                DailyWorkEntry,
+                and_(
+                    DailyWorkEntry.ps_id == PoliceStation.id,
+                    # The date filter MUST live on the join, not in a
+                    # WHERE. In a WHERE it would turn the outer join
+                    # back into an inner one and drop every silent
+                    # station — the exact rows this table exists for.
+                    DailyWorkEntry.report_date >= date_from,
+                    DailyWorkEntry.report_date <= date_to,
+                ),
+            )
+            .where(PoliceStation.is_active == True)  # noqa: E712
+            .group_by(Unit.id, Unit.name, PoliceStation.id, PoliceStation.station_name)
+        )
+        per_ps = [
+            DailyWorkPsRow(
+                unit_id=int(r.unit_id),
+                district=r.district or "",
+                ps_id=int(r.ps_id),
+                ps_name=r.ps_name or "",
+                entries=int(r.entries or 0),
+                unique_firs=int(r.unique_firs or 0),
+                notices=int(r.notices or 0),
+                lien_requests=int(r.lien_requests or 0),
+                arrests=int(r.arrests or 0),
+                statements=int(r.statements or 0),
+                total_lien_amount=float(r.lien_amount or 0),
+            )
+            for r in (await db.execute(ps_q)).all()
+        ]
+        per_ps.sort(key=lambda r: (-r.entries, r.district, r.ps_name))
+
     return DailyWorkDashboardResponse(
         date_from=date_from,
         date_to=date_to,
         totals=totals,
         final_report_split=split,
         daily=daily,
+        per_ps=per_ps,
+        cross_ps=is_super,
     )
 
 

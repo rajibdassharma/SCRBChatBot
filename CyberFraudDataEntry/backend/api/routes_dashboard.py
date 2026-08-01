@@ -42,7 +42,9 @@ from schemas.dashboard import (
     AccountsGeoRegion,
     AccountsDailyPoint, AccountsLayerDistribution,
     AccountsFirTrace, FirTraceCase, FirTraceAccount,
-    FirPsPerformanceRow,
+    FirPsPerformanceRow, FirDailyPoint,
+    FirCrimeTypeReport, FirCrimeTypeRow, FirCrimeOther, FirCrimeDistrictCell,
+    FirPsCrimeCount,
     NcrpKpiSummary, NcrpPsReportCount, NcrpBankConcentration, NcrpAtmLocation,
     RepeatAccount, AccountFirOccurrence,
 )
@@ -2347,12 +2349,30 @@ def _resolve_fir_perf_window(
     return date_from, date_to
 
 
+# Financial filter values accepted across the FIR Dashboard + its two
+# report routes. Kept as a whitelist because the value picks a WHERE
+# clause; `cases.is_financial` is NOT NULL DEFAULT 1, so there is no
+# third "unknown" bucket to account for.
+_FIR_FINANCIAL_FILTERS = {"all", "yes", "no"}
+
+
+def _apply_financial_filter(q, financial: str):
+    """Narrow a cases query to financial / non-financial / everything."""
+    if financial == "yes":
+        return q.where(Case.is_financial == 1)
+    if financial == "no":
+        return q.where(Case.is_financial != 1)
+    return q
+
+
 async def compute_fir_ps_performance(
     db: AsyncSession,
     *,
     date_from: date,
     date_to: date,
     admin: CurrentUser,
+    financial: str = "all",
+    with_crime_types: bool = False,
 ) -> List[FirPsPerformanceRow]:
     """Per-PS FIR count in [date_from, date_to] inclusive. Ordered by
     fir_count DESC then district ASC, PS name ASC for stable tiebreaks.
@@ -2393,6 +2413,9 @@ async def compute_fir_ps_performance(
     )
     if admin.role != "super_admin":
         count_q = count_q.where(Case.unit_id == admin.unit_id).where(Case.ps_id == admin.ps_id)
+    # Applied to BOTH counts below — a filtered table with an unfiltered
+    # "yesterday" column would silently compare different populations.
+    count_q = _apply_financial_filter(count_q, financial)
     count_rows = (await db.execute(count_q)).all()
     counts: dict[tuple[int, int], int] = {
         (int(uid), int(pid)): int(n or 0)
@@ -2411,7 +2434,32 @@ async def compute_fir_ps_performance(
     )
     if admin.role != "super_admin":
         yday_q = yday_q.where(Case.unit_id == admin.unit_id).where(Case.ps_id == admin.ps_id)
+    yday_q = _apply_financial_filter(yday_q, financial)
     yday_rows = (await db.execute(yday_q)).all()
+
+    # Crime-type split per PS, for the dashboard tooltip. Gated because
+    # the PDF and Excel exports share this helper and render no such
+    # breakdown — no reason to make them pay for a query they discard.
+    ps_crime: dict[tuple[int, int], list] = {}
+    if with_crime_types:
+        ct = func.coalesce(func.nullif(func.trim(Case.crime_type), ""), "(unclassified)")
+        ct_q = (
+            select(Case.unit_id, Case.ps_id, ct.label("ct"), func.count(Case.id).label("n"))
+            .where(Case.registration_date.is_not(None))
+            .where(Case.registration_date >= date_from)
+            .where(Case.registration_date <= date_to)
+            .group_by(Case.unit_id, Case.ps_id, ct)
+            .order_by(func.count(Case.id).desc())
+        )
+        if admin.role != "super_admin":
+            ct_q = ct_q.where(Case.unit_id == admin.unit_id).where(Case.ps_id == admin.ps_id)
+        ct_q = _apply_financial_filter(ct_q, financial)
+        for uid, pid, name, n in (await db.execute(ct_q)).all():
+            if pid is None:
+                continue
+            ps_crime.setdefault((int(uid), int(pid)), []).append(
+                FirPsCrimeCount(crime_type=str(name), count=int(n or 0))
+            )
     yday_counts: dict[tuple[int, int], int] = {
         (int(uid), int(pid)): int(n or 0)
         for uid, pid, n in yday_rows
@@ -2426,6 +2474,7 @@ async def compute_fir_ps_performance(
             ps_name=pname or "",
             fir_count=counts.get((int(uid), int(pid)), 0),
             yesterday_count=yday_counts.get((int(uid), int(pid)), 0),
+            crime_types=ps_crime.get((int(uid), int(pid)), []),
         )
         for uid, uname, pid, pname in ps_rows
     ]
@@ -2437,14 +2486,251 @@ async def compute_fir_ps_performance(
 async def get_fir_ps_performance(
     date_from: date = Query(None, alias="from"),
     date_to: date = Query(None, alias="to"),
+    financial: str = Query("all", description="all | yes (financial) | no (non-financial)"),
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
     """JSON route for the FIR Dashboard PS-performance table."""
     if admin.role == "admin" and not admin.unit_id:
         raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+    if financial not in _FIR_FINANCIAL_FILTERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"financial must be one of: {', '.join(sorted(_FIR_FINANCIAL_FILTERS))}",
+        )
     date_from, date_to = _resolve_fir_perf_window(date_from, date_to)
-    return await compute_fir_ps_performance(db, date_from=date_from, date_to=date_to, admin=admin)
+    return await compute_fir_ps_performance(
+        db, date_from=date_from, date_to=date_to, admin=admin, financial=financial,
+        with_crime_types=True,
+    )
+
+
+@router.get("/fir-crime-types", response_model=FirCrimeTypeReport)
+async def get_fir_crime_types(
+    date_from: date = Query(None, alias="from"),
+    date_to: date = Query(None, alias="to"),
+    financial: str = Query("all", description="all | yes (financial) | no (non-financial)"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Everything the FIR Dashboard's Crime Type tab needs, in one call.
+
+    Deliberately SEVEN small queries rather than one wide join. victims
+    is 1:1 with cases but lien_accounts and arrests are 1:N — joining
+    them together would multiply the case rows and silently inflate
+    every count. Aggregating each signal separately and merging in
+    Python keeps each number meaning what it says.
+
+    Window semantics match the rest of this dashboard: registration_date
+    drives it, and the same financial filter applies, so the Crime Type
+    tab and the Overview tab always describe the same population.
+    """
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+    if financial not in _FIR_FINANCIAL_FILTERS:
+        raise HTTPException(
+            status_code=422,
+            detail=f"financial must be one of: {', '.join(sorted(_FIR_FINANCIAL_FILTERS))}",
+        )
+    date_from, date_to = _resolve_fir_perf_window(date_from, date_to)
+
+    # Preceding window of EQUAL length, ending the day before this one
+    # starts. Equal length matters: comparing 30 days against 7 would
+    # make everything look like it is collapsing.
+    span_days = (date_to - date_from).days
+    prev_to = date_from - timedelta(days=1)
+    prev_from = prev_to - timedelta(days=span_days)
+
+    def scoped(q):
+        """Apply the window-independent filters every query here shares."""
+        q = q.where(Case.registration_date.is_not(None))
+        if admin.role != "super_admin":
+            q = q.where(Case.unit_id == admin.unit_id).where(Case.ps_id == admin.ps_id)
+        return _apply_financial_filter(q, financial)
+
+    def in_window(q, lo: date, hi: date):
+        return q.where(Case.registration_date >= lo).where(Case.registration_date <= hi)
+
+    ctype = func.coalesce(func.nullif(func.trim(Case.crime_type), ""), "(unclassified)")
+
+    # 1. Case count per crime type, current window.
+    counts = {
+        str(r[0]): int(r[1] or 0)
+        for r in (await db.execute(
+            in_window(scoped(select(ctype.label("t"), func.count(Case.id))), date_from, date_to)
+            .group_by(ctype)
+        )).all()
+    }
+
+    # 2. Same, previous window — the comparison baseline.
+    prev_counts = {
+        str(r[0]): int(r[1] or 0)
+        for r in (await db.execute(
+            in_window(scoped(select(ctype.label("t"), func.count(Case.id))), prev_from, prev_to)
+            .group_by(ctype)
+        )).all()
+    }
+
+    # 3. Harm: amount lost, plus how many cases actually carry a victim
+    #    row so the client can report the coverage rather than imply
+    #    a low number means low harm.
+    harm = {
+        str(r[0]): (float(r[1] or 0), int(r[2] or 0))
+        for r in (await db.execute(
+            in_window(
+                scoped(
+                    select(
+                        ctype.label("t"),
+                        func.coalesce(func.sum(Victim.amount_lost), 0),
+                        func.count(Victim.id),
+                    ).select_from(Case).join(Victim, Victim.case_id == Case.id)
+                ),
+                date_from, date_to,
+            ).group_by(ctype)
+        )).all()
+    }
+
+    # 4. Recovery: money frozen. lien_accounts is 1:N per case, which is
+    #    correct to SUM but would have inflated the case counts above.
+    frozen = {
+        str(r[0]): float(r[1] or 0)
+        for r in (await db.execute(
+            in_window(
+                scoped(
+                    select(ctype.label("t"), func.coalesce(func.sum(LienAccount.amount_lien_marked), 0))
+                    .select_from(Case).join(LienAccount, LienAccount.case_id == Case.id)
+                ),
+                date_from, date_to,
+            ).group_by(ctype)
+        )).all()
+    }
+
+    # 5. Outcome: DISTINCT cases with at least one arrest. Without the
+    #    distinct, a case with three arrests would count three times and
+    #    push the arrest rate above 100%.
+    arrested = {
+        str(r[0]): int(r[1] or 0)
+        for r in (await db.execute(
+            in_window(
+                scoped(
+                    select(ctype.label("t"), func.count(func.distinct(Case.id)))
+                    .select_from(Case).join(Arrest, Arrest.case_id == Case.id)
+                ),
+                date_from, date_to,
+            ).group_by(ctype)
+        )).all()
+    }
+
+    # 6. What operators typed when the taxonomy did not fit.
+    other_txt = func.trim(Case.crime_type_other)
+    others = [
+        FirCrimeOther(text=str(r[0]), count=int(r[1] or 0))
+        for r in (await db.execute(
+            in_window(
+                scoped(select(other_txt.label("t"), func.count(Case.id)))
+                .where(Case.crime_type_other.is_not(None))
+                .where(func.trim(Case.crime_type_other) != ""),
+                date_from, date_to,
+            ).group_by(other_txt).order_by(func.count(Case.id).desc()).limit(100)
+        )).all()
+    ]
+
+    # 7. Crime type x district. Only non-zero cells travel.
+    grid = [
+        FirCrimeDistrictCell(crime_type=str(r[0]), district=str(r[1] or ""), count=int(r[2] or 0))
+        for r in (await db.execute(
+            in_window(
+                scoped(
+                    select(ctype.label("t"), Unit.name.label("d"), func.count(Case.id))
+                    .select_from(Case).join(Unit, Unit.id == Case.unit_id)
+                ),
+                date_from, date_to,
+            ).group_by(ctype, Unit.name)
+        )).all()
+    ]
+
+    types = [
+        FirCrimeTypeRow(
+            crime_type=t,
+            count=counts.get(t, 0),
+            prev_count=prev_counts.get(t, 0),
+            amount_lost=harm.get(t, (0.0, 0))[0],
+            cases_with_victim=harm.get(t, (0.0, 0))[1],
+            amount_frozen=frozen.get(t, 0.0),
+            cases_with_arrest=arrested.get(t, 0),
+        )
+        # Union of both windows: a type that vanished this window is
+        # every bit as interesting as one that appeared.
+        for t in sorted(set(counts) | set(prev_counts))
+    ]
+    types.sort(key=lambda r: (-r.count, r.crime_type))
+
+    return FirCrimeTypeReport(
+        types=types, others=others, grid=grid,
+        prev_from=prev_from, prev_to=prev_to,
+    )
+
+
+@router.get("/fir-daily-growth", response_model=List[FirDailyPoint])
+async def get_fir_daily_growth(
+    date_from: date = Query(None, alias="from"),
+    date_to: date = Query(None, alias="to"),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Per-day FIR count across the same window the FIR Dashboard table
+    uses, for the growth line on that page.
+
+    Filters and scoping are deliberately identical to
+    compute_fir_ps_performance: registration_date (not created_at),
+    NULL registration dates excluded, admin limited to its own
+    (unit, PS). Summing this series therefore reproduces the table's
+    grand total exactly — if the two ever disagree, one of them has a
+    bug rather than a different definition."""
+    if admin.role == "admin" and not admin.unit_id:
+        raise HTTPException(status_code=403, detail="Admin account is not assigned to any PS.")
+    date_from, date_to = _resolve_fir_perf_window(date_from, date_to)
+
+    # A wide-open window would zero-fill into thousands of points and
+    # render as a solid smear. Cap it rather than let the browser wear
+    # the cost of a request nobody can read.
+    span = (date_to - date_from).days
+    if span > 366:
+        raise HTTPException(
+            status_code=400,
+            detail="Window too wide for the daily series — 366 days maximum.",
+        )
+
+    q = (
+        select(
+            Case.registration_date.label("day"),
+            func.count(Case.id).label("count"),
+            func.coalesce(func.sum(case((Case.is_financial == 1, 1), else_=0)), 0).label("fin"),
+            func.coalesce(func.sum(case((Case.is_financial == 1, 0), else_=1)), 0).label("nonfin"),
+        )
+        .where(Case.registration_date.is_not(None))
+        .where(Case.registration_date >= date_from)
+        .where(Case.registration_date <= date_to)
+        .group_by(Case.registration_date)
+    )
+    if admin.role != "super_admin":
+        q = q.where(Case.unit_id == admin.unit_id).where(Case.ps_id == admin.ps_id)
+
+    counts: dict[date, tuple[int, int, int]] = {}
+    for r in (await db.execute(q)).all():
+        d = r.day
+        if not isinstance(d, date):
+            from datetime import datetime as _dt
+            d = _dt.strptime(str(d), "%Y-%m-%d").date()
+        counts[d] = (int(r.count or 0), int(r.fin or 0), int(r.nonfin or 0))
+
+    out: List[FirDailyPoint] = []
+    cur = date_from
+    while cur <= date_to:
+        total, fin, nonfin = counts.get(cur, (0, 0, 0))
+        out.append(FirDailyPoint(day=cur, count=total, financial=fin, non_financial=nonfin))
+        cur = cur + timedelta(days=1)
+    return out
 
 
 # ── NCRP Dashboard (2026-07-30) ─────────────────────────────────

@@ -139,8 +139,12 @@ export function downloadSubmissionStatusPdf(date: string): Promise<void> {
 export function downloadFirPsPerformancePdf(
   from: string,
   to: string,
+  // Same filter the on-screen table is using, so the download always
+  // matches what the operator is looking at.
+  financial: 'all' | 'yes' | 'no' = 'all',
 ): Promise<void> {
   const qs = new URLSearchParams({ from, to });
+  if (financial !== 'all') qs.set('financial', financial);
   return downloadPdf(
     `/api/v1/reports/fir-ps-performance.pdf?${qs.toString()}`,
     `FIR_PS_Performance_${from}_to_${to}.pdf`,
@@ -150,8 +154,12 @@ export function downloadFirPsPerformancePdf(
 export function downloadFirPsPerformanceExcel(
   from: string,
   to: string,
+  // Same filter the on-screen table is using, so the download always
+  // matches what the operator is looking at.
+  financial: 'all' | 'yes' | 'no' = 'all',
 ): Promise<void> {
   const qs = new URLSearchParams({ from, to });
+  if (financial !== 'all') qs.set('financial', financial);
   return downloadPdf(
     `/api/v1/reports/fir-ps-performance.xlsx?${qs.toString()}`,
     `FIR_PS_Performance_${from}_to_${to}.xlsx`,

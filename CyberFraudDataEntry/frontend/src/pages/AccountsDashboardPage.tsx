@@ -17,7 +17,7 @@ import {
   getAccountsByGeography,
 } from '../lib/api/dashboard';
 import { AccountsGeoMap } from '../components/dashboard/AccountsGeoMap';
-import { INDIA_LAYOUT, KARNATAKA_LAYOUT } from '../lib/utils/geo-tile-grid';
+import { INDIA_LAYOUT, KARNATAKA_LAYOUT, KARNATAKA_REGION_ALIASES } from '../lib/utils/geo-tile-grid';
 import {
   downloadAccountsPsComparisonExcel, downloadAccountsPsComparisonPdf,
 } from '../lib/api/reports';
@@ -1383,6 +1383,9 @@ function GeoMapTab({ date }: { date: string }) {
           <div className="rounded-2xl p-4" style={cardStyle}>
             <AccountsGeoMap
               layout={layout}
+              // Only meaningful for the Karnataka layouts; the India
+              // layout has no merged shapes, so an empty map is right.
+              aliases={scope === 'state' ? undefined : KARNATAKA_REGION_ALIASES}
               data={rows ?? []}
               metric={metric}
               selected={selected}

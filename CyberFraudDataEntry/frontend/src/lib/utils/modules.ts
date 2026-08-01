@@ -13,10 +13,25 @@ import type { LucideIcon } from 'lucide-react';
 
 export type ModuleKey = 'cases' | 'ncrp' | 'accounts' | 'dsr' | 'admin';
 
+/** Sidebar sections a link can be filed under. A module whose links
+ *  carry no group renders flat, exactly as before — grouping is opt-in
+ *  per module, so adding it to one doesn't disturb the others. */
+export type LinkGroup = 'entry' | 'dashboards' | 'reports';
+
+/** Heading text, and the order sections appear in the sidebar. */
+export const LINK_GROUPS: { key: LinkGroup; label: string }[] = [
+  { key: 'entry',      label: 'Data Entry' },
+  { key: 'dashboards', label: 'Dashboards' },
+  { key: 'reports',    label: 'Reports' },
+];
+
 export type ModuleLink = {
   to: string;
   label: string;
   icon: LucideIcon;
+  /** Section heading to file this link under. Omit to render it
+   *  ungrouped, above any sections. */
+  group?: LinkGroup;
   /** Show this link only to admin / super_admin. */
   requiresAdmin?: boolean;
   /** Show this link only to super_admin (SCRB HQ). Cross-PS
@@ -116,18 +131,28 @@ export const MODULES: ModuleDef[] = [
     // them all as part of this single module.
     urlPrefixes: ['/dsr', '/daily-work', '/portals-dsr'],
     landingUrl: '/dsr/new-fir',
+    // Grouped into Data Entry / Dashboards / Reports (2026-08-01). The
+    // 3 primary entry points (New FIR, Investigation, Portals) are as
+    // spec'd 2026-07-22; Update / History links stay out of the sidebar
+    // per that spec, and remain reachable at their old URLs.
+    //
+    // NAMING: /daily-work is one feature that used to carry two names —
+    // "Investigation" on its entry link but "Daily Work Done" on its
+    // report and dashboard. Unified on Investigation. "Portals DSR
+    // Report/Dashboard" lost the "DSR" too: the module heading above
+    // these links already says DSR, so it only added length.
+    // URLs are untouched — this is a labelling change, nothing moves.
     links: [
-      // 3 primary entry points (New FIR, Investigation, Portals) as spec'd
-      // 2026-07-22. Update / History links were dropped from the sidebar
-      // per the same spec — pages remain reachable at their old URLs.
-      { to: '/dsr/new-fir',           label: 'New FIR',                    icon: FilePlus },
-      { to: '/daily-work/new',        label: 'Investigation',              icon: ClipboardList },
-      { to: '/daily-work/report',     label: 'Daily Work Done Report',     icon: FileDown, requiresAdmin: true },
-      { to: '/portals-dsr/new',       label: 'Portals',                    icon: Globe },
-      { to: '/portals-dsr/report',    label: 'Portals DSR Report',         icon: FileDown, requiresAdmin: true },
-      { to: '/dsr/fir-dashboard',     label: 'FIR Dashboard',              icon: BarChart3, requiresAdmin: true },
-      { to: '/portals-dsr/dashboard', label: 'Portals DSR Dashboard',      icon: BarChart3, requiresAdmin: true },
-      { to: '/daily-work/dashboard',  label: 'Daily Work Done Dashboard',  icon: BarChart3, requiresAdmin: true },
+      { to: '/dsr/new-fir',           label: 'New FIR',                 icon: FilePlus,   group: 'entry' },
+      { to: '/daily-work/new',        label: 'Investigation',           icon: ClipboardList, group: 'entry' },
+      { to: '/portals-dsr/new',       label: 'Portals',                 icon: Globe,      group: 'entry' },
+
+      { to: '/dsr/fir-dashboard',     label: 'FIR Dashboard',           icon: BarChart3,  group: 'dashboards', requiresAdmin: true },
+      { to: '/daily-work/dashboard',  label: 'Investigation Dashboard', icon: BarChart3,  group: 'dashboards', requiresAdmin: true },
+      { to: '/portals-dsr/dashboard', label: 'Portals Dashboard',       icon: BarChart3,  group: 'dashboards', requiresAdmin: true },
+
+      { to: '/daily-work/report',     label: 'Investigation Report',    icon: FileDown,   group: 'reports',    requiresAdmin: true },
+      { to: '/portals-dsr/report',    label: 'Portals Report',          icon: FileDown,   group: 'reports',    requiresAdmin: true },
     ],
   },
   {

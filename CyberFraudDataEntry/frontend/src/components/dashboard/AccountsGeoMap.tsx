@@ -18,7 +18,6 @@
 import { useMemo, useRef, useState } from 'react';
 import { MapPin, AlertTriangle } from 'lucide-react';
 import type { MapLayout, MapShape } from '../../lib/utils/geo-tile-grid';
-import type { AccountsGeoRegion } from '../../types';
 import { formatNumber } from '../../lib/utils/format';
 
 const COLOR_NAVY = '#0b2c4a';
@@ -73,13 +72,47 @@ const COLOR_EMPTY = '#d4d4ce';
  *  keeps the heat ramp the only thing carrying colour meaning. */
 const COLOR_BORDER = '#ffffff';
 
+/** Any per-region row: a `region` name plus one or more numeric
+ *  measures. Deliberately structural rather than tied to All Accounts —
+ *  the FIR Dashboard feeds this same map FIR counts per district. */
+export interface GeoRegionDatum {
+  region: string;
+  [measure: string]: string | number;
+}
+
+/** One line in the hover card. */
+export interface GeoDetailRow {
+  label: string;
+  key: string;
+}
+
+/** Default breakdown — the All Accounts shape. */
+const DEFAULT_DETAIL_ROWS: GeoDetailRow[] = [
+  { label: 'Total', key: 'total' },
+  { label: 'Mule', key: 'mules' },
+  { label: 'Victim', key: 'victims' },
+  { label: 'Non-Mule', key: 'non_mules' },
+];
+
 export interface AccountsGeoMapProps {
   layout: MapLayout;
   /** Raw API rows. Regions absent from this list render as zero. */
-  data: AccountsGeoRegion[];
-  /** Which count drives the shading. */
-  metric: 'total' | 'victims' | 'mules' | 'non_mules';
-  /** Called when a region tile is clicked. */
+  data: GeoRegionDatum[];
+  /** Which measure drives the shading. */
+  metric: string;
+  /** Lines shown in the hover card. Defaults to the account-type
+   *  breakdown; pass something else when the measures differ. */
+  detailRows?: GeoDetailRow[];
+  /** Wording for the "not on the map" banner. */
+  noun?: string;
+  /** Fold incoming region values onto a different shape — used where
+   *  several DB values share one merged outline (Bengaluru Urban /
+   *  Rural / City all land on "Bengaluru City"). Keys are matched
+   *  lower-case and trimmed. Applied BEFORE the shape lookup and
+   *  before the unmapped check, so an aliased value counts toward its
+   *  target rather than being reported as unrecognised. */
+  aliases?: Record<string, string>;
+  /** Called when a region is clicked. */
   onSelect?: (regionName: string) => void;
   selected?: string | null;
 }
@@ -212,9 +245,9 @@ function bucketOf(value: number, sortedNonZero: number[]): number {
 }
 
 export function AccountsGeoMap({
-  layout, data, metric, onSelect, selected,
+  layout, data, metric, detailRows, noun = 'accounts', aliases, onSelect, selected,
 }: AccountsGeoMapProps) {
-  const [hover, setHover] = useState<{ shape: MapShape; row: AccountsGeoRegion } | null>(null);
+  const [hover, setHover] = useState<{ shape: MapShape; row: GeoRegionDatum } | null>(null);
   /** Pointer position in container-relative px, for the follow-cursor
    *  tooltip. Kept separate from `hover` so moving within one region
    *  still repositions the card. */
@@ -231,26 +264,48 @@ export function AccountsGeoMap({
    *  already TRIMs, but branch_state is free text and casing drift
    *  ("KARNATAKA") would otherwise read as a separate, unmapped
    *  region. */
+  /** Normalise a raw region value: trim, lower-case, then apply any
+   *  merge alias. One helper so the lookup map and the unmapped check
+   *  can never disagree about what a value means. */
+  const canon = useMemo(() => (raw: string): string => {
+    const k = String(raw ?? '').trim().toLowerCase();
+    const target = aliases?.[k];
+    return target ? target.trim().toLowerCase() : k;
+  }, [aliases]);
+
+  // Measures arrive as unknown keys, so coerce rather than index a
+  // fixed shape. A missing or non-numeric measure reads as 0.
+  //
+  // MUST be declared before byRegion: that useMemo calls num() while
+  // merging rows that alias onto the same region, and a useMemo body
+  // runs during render. Declared after, it is in the temporal dead
+  // zone and throws — which blanked the whole page the moment the
+  // Bengaluru aliases made two rows collide for the first time.
+  const num = (r: GeoRegionDatum | undefined, key: string): number => {
+    const v = r?.[key];
+    return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+  };
+
   const byRegion = useMemo(() => {
-    const m = new Map<string, AccountsGeoRegion>();
+    const m = new Map<string, GeoRegionDatum>();
     for (const r of data) {
-      const key = r.region.trim().toLowerCase();
+      const key = canon(r.region);
       if (!key) continue;
       const prev = m.get(key);
       // Fold any casing variants together rather than letting the last
       // one win and under-report the region.
-      m.set(key, prev ? {
-        region: prev.region,
-        total: prev.total + r.total,
-        victims: prev.victims + r.victims,
-        mules: prev.mules + r.mules,
-        non_mules: prev.non_mules + r.non_mules,
-      } : r);
+      if (!prev) { m.set(key, r); continue; }
+      const merged: GeoRegionDatum = { region: prev.region };
+      for (const k of new Set([...Object.keys(prev), ...Object.keys(r)])) {
+        if (k === 'region') continue;
+        merged[k] = num(prev, k) + num(r, k);
+      }
+      m.set(key, merged);
     }
     return m;
-  }, [data]);
+  }, [data, canon]);
 
-  const valueOf = (r: AccountsGeoRegion | undefined): number => (r ? r[metric] : 0);
+  const valueOf = (r: GeoRegionDatum | undefined): number => num(r, metric);
 
   /** Ascending non-zero values across the plotted regions — the basis
    *  for the quantile bands. Zeroes are excluded so a mostly-empty map
@@ -274,22 +329,24 @@ export function AccountsGeoMap({
     const known = new Set(layout.shapes.map((s) => s.name.trim().toLowerCase()));
     const blankRows = data.filter((r) => r.region.trim() === '');
     const strays = data.filter((r) => {
-      const key = r.region.trim().toLowerCase();
+      const key = canon(r.region);
       return key !== '' && !known.has(key);
     });
     // reduce without a seed: safe because the length check guarantees
     // at least one element, and it avoids inventing a zero row.
-    const blankRow: AccountsGeoRegion | null = blankRows.length > 0
-      ? blankRows.reduce((a, b) => ({
-          region: '',
-          total: a.total + b.total,
-          victims: a.victims + b.victims,
-          mules: a.mules + b.mules,
-          non_mules: a.non_mules + b.non_mules,
-        }))
+    const blankRow: GeoRegionDatum | null = blankRows.length > 0
+      ? blankRows.reduce((a, b) => {
+          // Sum every numeric measure present, whatever they're called.
+          const out: GeoRegionDatum = { region: '' };
+          for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+            if (k === 'region') continue;
+            out[k] = num(a, k) + num(b, k);
+          }
+          return out;
+        })
       : null;
     return { blank: blankRow, unmapped: strays };
-  }, [data, layout]);
+  }, [data, layout, canon]);
 
   const plotted = useMemo(
     () => layout.shapes.reduce(
@@ -298,8 +355,8 @@ export function AccountsGeoMap({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [layout, byRegion, metric],
   );
-  const offMap = (blank ? blank[metric] : 0)
-    + unmapped.reduce((s, r) => s + r[metric], 0);
+  const offMap = num(blank ?? undefined, metric)
+    + unmapped.reduce((s, r) => s + num(r, metric), 0);
 
   const pathMode = layout.shapes.some((s) => s.d);
 
@@ -316,31 +373,45 @@ export function AccountsGeoMap({
             {!pathMode && ' Tiles are positioned by approximate direction, not by border or area.'}
           </p>
         </div>
-        {/* Legend */}
-        <div className="flex items-center gap-2">
-          <span className="text-[11px] font-semibold" style={{ color: 'rgba(11,44,74,0.7)' }}>Low</span>
-          <div className="flex">
-            {RAMP.map((c, i) => (
-              <div key={c} title={`Step ${i + 1}`}
-                style={{ background: c, width: 22, height: 12,
-                  border: '1px solid rgba(11,44,74,0.15)',
-                  borderLeftWidth: i === 0 ? 1 : 0 }} />
-            ))}
-          </div>
-          <span className="text-[11px] font-semibold" style={{ color: 'rgba(11,44,74,0.7)' }}>High</span>
-          <div className="flex items-center gap-1 ml-2">
-            <div style={{ background: COLOR_EMPTY, width: 22, height: 12, border: '1px solid rgba(11,44,74,0.15)' }} />
-            <span className="text-[11px] font-semibold" style={{ color: 'rgba(11,44,74,0.7)' }}>None</span>
-          </div>
-        </div>
       </div>
 
       <div className="relative" ref={wrapRef}>
+        <div className="flex items-start gap-3">
+        {/* Vertical scale, left of the map. Darkest at the TOP: on a
+             vertical axis "more" reads upward, so reversing the ramp
+             here is what makes it legible without a second thought.
+             Sized to be read at a glance rather than squinted at — the
+             previous 12px-tall strip was decorative more than useful. */}
+        <div className="flex flex-col items-center shrink-0 select-none pt-1" style={{ width: 52 }}>
+          <span className="text-[11px] font-bold mb-1" style={{ color: COLOR_NAVY }}>High</span>
+          <div style={{
+            border: '1px solid rgba(11,44,74,0.25)', borderRadius: 5, overflow: 'hidden',
+            boxShadow: '0 1px 3px rgba(0,0,0,0.10)',
+          }}>
+            {[...RAMP].reverse().map((c, i) => (
+              <div key={c} title={`Band ${RAMP.length - i} of ${RAMP.length}`}
+                style={{ background: c, width: 30, height: 44, display: 'block' }} />
+            ))}
+          </div>
+          <span className="text-[11px] font-bold mt-1" style={{ color: COLOR_NAVY }}>Low</span>
+
+          <div className="flex flex-col items-center mt-4">
+            <div title="No cases recorded"
+              style={{
+                background: COLOR_EMPTY, width: 30, height: 26, borderRadius: 5,
+                border: '1px solid rgba(11,44,74,0.25)',
+              }} />
+            <span className="text-[11px] font-bold mt-1" style={{ color: 'rgba(11,44,74,0.65)' }}>
+              None
+            </span>
+          </div>
+        </div>
+
         <svg
           viewBox={pathMode && layout.viewBox
             ? `0 0 ${layout.viewBox} ${layout.viewBox}`
             : `0 0 ${layout.cols * (CELL + GAP)} ${layout.rows * (CELL + GAP)}`}
-          className="w-full"
+          className="flex-1 min-w-0"
           // The grid is taller than it is wide (9 rows), so height is
           // the binding constraint — this cap sets the tile size, and
           // the count is the primary read, so give it room.
@@ -360,7 +431,7 @@ export function AccountsGeoMap({
 
             const common = {
               style: { cursor: onSelect ? 'pointer' : 'default' },
-              onMouseEnter: () => setHover({ shape: s, row: row ?? { region: s.name, total: 0, victims: 0, mules: 0, non_mules: 0 } }),
+              onMouseEnter: () => setHover({ shape: s, row: row ?? { region: s.name } }),
               onMouseMove: trackPointer,
               onMouseLeave: () => { setHover(null); setPtr(null); },
               onClick: () => onSelect?.(s.name),
@@ -449,6 +520,7 @@ export function AccountsGeoMap({
             );
           })}
         </svg>
+        </div>
 
         {hover && ptr && (() => {
           // Follow the cursor, but flip to the other side when close to
@@ -469,10 +541,11 @@ export function AccountsGeoMap({
               <div className="text-[10px] italic" style={{ color: 'rgba(11,44,74,0.6)' }}>{hover.shape.note}</div>
             )}
             <div className="mt-1 space-y-0.5 text-[11px]" style={{ color: COLOR_NAVY }}>
-              <div className="flex justify-between gap-4"><span>Total</span><b>{formatNumber(hover.row.total)}</b></div>
-              <div className="flex justify-between gap-4"><span>Mule</span><b>{formatNumber(hover.row.mules)}</b></div>
-              <div className="flex justify-between gap-4"><span>Victim</span><b>{formatNumber(hover.row.victims)}</b></div>
-              <div className="flex justify-between gap-4"><span>Non-Mule</span><b>{formatNumber(hover.row.non_mules)}</b></div>
+              {(detailRows ?? DEFAULT_DETAIL_ROWS).map((d) => (
+                <div key={d.key} className="flex justify-between gap-4">
+                  <span>{d.label}</span><b>{formatNumber(num(hover.row, d.key))}</b>
+                </div>
+              ))}
             </div>
           </div>
           );
@@ -490,12 +563,12 @@ export function AccountsGeoMap({
           <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" style={{ color: '#c67c1d' }} />
           <div className="text-xs" style={{ color: COLOR_NAVY }}>
             <b>{formatNumber(offMap)}</b> of{' '}
-            <b>{formatNumber(plotted + offMap)}</b> accounts are not on the map
+            <b>{formatNumber(plotted + offMap)}</b> {noun} are not on the map
             {plotted + offMap > 0 && (
               <> ({Math.round((offMap / (plotted + offMap)) * 100)}%)</>
             )}.
-            {blank && blank[metric] > 0 && (
-              <> <b>{formatNumber(blank[metric])}</b> have no location recorded.</>
+            {blank && num(blank, metric) > 0 && (
+              <> <b>{formatNumber(num(blank, metric))}</b> have no location recorded.</>
             )}
             {unmapped.length > 0 && (
               <> {unmapped.length} unrecognised value

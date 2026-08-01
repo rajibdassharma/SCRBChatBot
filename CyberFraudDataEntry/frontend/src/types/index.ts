@@ -779,12 +779,61 @@ export type AccountsGeoScope = 'state' | 'district' | 'reporting';
  *  enum — an empty string means the operator never recorded it, and
  *  anything not in the canonical list renders as "unmapped" rather
  *  than being dropped. */
-export interface AccountsGeoRegion {
+/** A `type` rather than an `interface` on purpose: TypeScript gives
+ *  type aliases an implicit index signature, so this stays assignable
+ *  to the map component's generic `GeoRegionDatum`. As an interface it
+ *  would not be, and the FIR dashboard could not reuse the same map. */
+export type AccountsGeoRegion = {
   region: string;
   total: number;
   victims: number;
   mules: number;
   non_mules: number;
+};
+
+/** One point on the FIR Dashboard growth line. `day` is the FIR's
+ *  REGISTRATION date, matching the per-PS table on the same page. */
+export interface FirDailyPoint {
+  day: string;
+  /** Total for the day — financial + non_financial. */
+  count: number;
+  /** Split by cases.is_financial, so the growth chart can draw one line
+   *  or two without a second request. */
+  financial: number;
+  non_financial: number;
+}
+
+/** One crime type on the FIR Dashboard's Crime Type tab. */
+export interface FirCrimeTypeRow {
+  crime_type: string;
+  count: number;
+  /** Same type over the immediately preceding window of equal length. */
+  prev_count: number;
+  amount_lost: number;
+  amount_frozen: number;
+  cases_with_arrest: number;
+  /** Denominator for amount_lost — the victim row is 1:1 and optional,
+   *  so a low amount can mean low harm OR poor capture. */
+  cases_with_victim: number;
+}
+
+/** A free-text value typed when "Others" was picked — potentially an
+ *  emerging modus operandi the taxonomy hasn't caught up with. */
+export interface FirCrimeOther { text: string; count: number }
+
+export interface FirCrimeDistrictCell {
+  crime_type: string;
+  district: string;
+  count: number;
+}
+
+/** Whole Crime Type tab in one response. */
+export interface FirCrimeTypeReport {
+  types: FirCrimeTypeRow[];
+  others: FirCrimeOther[];
+  grid: FirCrimeDistrictCell[];
+  prev_from: string;
+  prev_to: string;
 }
 
 export interface AccountsBankConcentration {
@@ -1025,12 +1074,33 @@ export interface DailyWorkDailyPoint {
   statements: number;
 }
 
+/** One police station's investigation activity. super_admin only —
+ *  a PS-level admin gets a single row, so the list stays empty. */
+export interface DailyWorkPsRow {
+  unit_id: number;
+  district: string;
+  ps_id: number;
+  ps_name: string;
+  entries: number;
+  unique_firs: number;
+  notices: number;
+  lien_requests: number;
+  arrests: number;
+  statements: number;
+  total_lien_amount: number;
+}
+
 export interface DailyWorkDashboard {
   date_from: string;
   date_to: string;
   totals: DailyWorkDashboardTotals;
   final_report_split: DailyWorkFinalReportSplit;
   daily: DailyWorkDailyPoint[];
+  /** Cross-PS comparison; empty for a PS-level admin. */
+  per_ps?: DailyWorkPsRow[];
+  /** True when the response spans every station rather than just the
+   *  caller's — lets the page label itself instead of guessing. */
+  cross_ps?: boolean;
 }
 
 // -- FIR Dashboard (DSR module) — per-PS performance table --
@@ -1098,6 +1168,10 @@ export interface DailyWorkDailyPreviewRow {
   final_report_abc: string | null;
 }
 
+/** One crime type registered by a PS in the window. Only non-zero
+ *  entries are sent — a GROUP BY cannot emit a zero row. */
+export interface FirPsCrimeCount { crime_type: string; count: number }
+
 export interface FirPsPerformanceRow {
   unit_id: number;
   district: string;
@@ -1107,6 +1181,9 @@ export interface FirPsPerformanceRow {
   /** FIRs registered yesterday (server today - 1), independent of the
    *  from/to window. Added 2026-07-25. */
   yesterday_count: number;
+  /** Crime-type split for this PS, biggest first. Non-zero only.
+   *  Populated by the dashboard route; absent from the exports. */
+  crime_types?: FirPsCrimeCount[];
 }
 
 /* ── NCRP Dashboard (2026-07-30, super_admin only) ─────────────── */

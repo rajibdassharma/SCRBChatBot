@@ -190,15 +190,12 @@ const KARNATAKA_TILES: MapShape[] = [
   // South
   { name: 'Mangaluru City',   label: 'MNC', row: 6, col: 1, note: 'City commissionerate' },
   { name: 'Hassan',           label: 'HSN', row: 6, col: 2 },
-  { name: 'Bengaluru Rural',  label: 'BNR', row: 6, col: 3 },
-  { name: 'Bengaluru Urban',  label: 'BNU', row: 6, col: 4 },
+  { name: 'Bengaluru City',   label: 'BNC', row: 6, col: 4, note: 'Urban + Rural + City commissionerate' },
   { name: 'Kolar',            label: 'KLR', row: 6, col: 5 },
   { name: 'Kodagu',           label: 'KDG', row: 7, col: 1 },
   { name: 'Mandya',           label: 'MDY', row: 7, col: 2 },
   { name: 'Ramanagara',       label: 'RMN', row: 7, col: 3 },
-  { name: 'Bengaluru City',   label: 'BNC', row: 7, col: 4, note: 'City commissionerate' },
-  { name: 'Mysuru',           label: 'MYS', row: 8, col: 2 },
-  { name: 'Mysuru City',      label: 'MYC', row: 8, col: 3, note: 'City commissionerate' },
+  { name: 'Mysuru',           label: 'MYS', row: 8, col: 2, note: 'District + City commissionerate' },
   { name: 'Chamarajanagar',   label: 'CMR', row: 8, col: 4 },
 ];
 
@@ -215,6 +212,70 @@ const KARNATAKA_TILES: MapShape[] = [
  *  visible on screen rather than hidden. Deciding how to place them is
  *  a separate call; the map is honest in the meantime. */
 const KA_TILE_LABELS = new Map(KARNATAKA_TILES.map((t) => [t.name, t.label]));
+
+/** Incoming region values that should land on a MERGED shape.
+ *
+ *  Bengaluru Urban and Bengaluru Rural are dissolved into one outline
+ *  called "Bengaluru City", and Mysuru City folds into the Mysuru
+ *  district (KSP request, 2026-08-01). The DB still stores all five
+ *  original values — the picklist is unchanged and no data was
+ *  rewritten — so the map has to fold them at read time. Without this
+ *  an account recorded against "Bengaluru Urban" would count as an
+ *  unmapped region rather than appearing in Bengaluru City.
+ *
+ *  Keys are compared lower-case and trimmed. */
+export const KARNATAKA_REGION_ALIASES: Record<string, string> = {
+  // ── City police commissionerates -> their revenue district ────────
+  // These are POLICE units, not revenue districts, so no boundary
+  // exists or ever will. Folding them onto the parent is the only way
+  // their cases appear on a map at all.
+  'bengaluru city': 'Bengaluru City',
+  'bengaluru urban': 'Bengaluru City',
+  'bengaluru rural': 'Bengaluru City',
+  'mysuru city': 'Mysuru',
+  'hubli-dharwad': 'Dharwad',
+  'hubballi dharwad city': 'Dharwad',
+  'hubballi-dharwad city': 'Dharwad',
+  'hubli dharwad': 'Dharwad',
+  'mangaluru city': 'Dakshina Kannada',
+  'belagavi city': 'Belagavi',
+  'kalaburagi city': 'Kalaburagi',
+
+  // ── Pre-2014 English spellings ────────────────────────────────────
+  // Karnataka renamed a dozen districts in 2014. Legacy rows and the
+  // police-unit list do not agree on which spelling they use, so both
+  // resolve here rather than landing in the unmapped bucket.
+  'bangalore city': 'Bengaluru City',
+  'bangalore urban': 'Bengaluru City',
+  'bangalore rural': 'Bengaluru City',
+  'mysore': 'Mysuru',
+  'mysore city': 'Mysuru',
+  'belgaum': 'Belagavi',
+  'belgaum city': 'Belagavi',
+  'gulbarga': 'Kalaburagi',
+  'gulbarga city': 'Kalaburagi',
+  'bellary': 'Ballari',
+  'bijapur': 'Vijayapura',
+  'shimoga': 'Shivamogga',
+  'chikmagalur': 'Chikkamagaluru',
+  'tumkur': 'Tumakuru',
+  'davangere': 'Davanagere',
+  'bagalkote': 'Bagalkot',
+  'chamarajanagara': 'Chamarajanagar',
+  'chamrajnagar': 'Chamarajanagar',
+  'chikkaballapura': 'Chikkaballapur',
+  'uttar kannada': 'Uttara Kannada',
+  'north kanara': 'Uttara Kannada',
+  'south kanara': 'Dakshina Kannada',
+
+  // ── DELIBERATELY NOT ALIASED ──────────────────────────────────────
+  // Vijayanagara. It is a genuine district (carved out of Ballari in
+  // 2021), not a police commissionerate — the boundary file simply
+  // predates it. Folding it into Ballari would misstate real
+  // geography to hide a stale data file. It stays in the "not on the
+  // map" banner until the boundary source is refreshed, which is the
+  // honest signal that the source needs replacing.
+};
 
 export const KARNATAKA_LAYOUT: MapLayout = KA_BOUNDARY_SHAPES.length > 0
   ? {

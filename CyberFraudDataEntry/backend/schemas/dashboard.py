@@ -383,6 +383,82 @@ class PendingByYearRow(BaseModel):
 # the fields that are there in the Case Detail entry").
 
 
+class FirDailyPoint(BaseModel):
+    """One point on the FIR Dashboard growth line.
+
+    `day` is the REGISTRATION date, not created_at — matching the
+    per-PS table on the same page, so a back-dated entry lands on the
+    day the FIR was actually registered and the line total always
+    equals the table's grand total. Days with no FIRs come back with
+    count = 0 so the axis stays continuous.
+
+    Split by cases.is_financial so the chart can draw one line or two
+    without a second request: picking Financial / Non-Financial in the
+    UI is then a render choice, not a refetch."""
+    day: date
+    count: int = 0
+    financial: int = 0
+    non_financial: int = 0
+
+
+class FirCrimeTypeRow(BaseModel):
+    """One crime type on the FIR Dashboard's Crime Type tab.
+
+    `prev_count` is the same crime type's count over the immediately
+    preceding window of EQUAL length — that comparison is what turns a
+    leaderboard into an early-warning panel.
+
+    `cases_with_victim` is the denominator for `amount_lost`, carried
+    explicitly because the victim row is 1:1 and optional: legacy cases
+    pre-migration-003 have none. Without it a crime type with poor
+    victim capture looks low-harm rather than under-recorded."""
+    crime_type: str
+    count: int = 0
+    prev_count: int = 0
+    amount_lost: float = 0
+    amount_frozen: float = 0
+    cases_with_arrest: int = 0
+    cases_with_victim: int = 0
+
+
+class FirCrimeOther(BaseModel):
+    """One free-text value operators typed when picking 'Others'.
+
+    Worth surfacing rather than bucketing: a recurring phrase here is
+    an emerging modus operandi that the 31-entry classification has not
+    caught up with yet."""
+    text: str
+    count: int = 0
+
+
+class FirCrimeDistrictCell(BaseModel):
+    """One cell of the crime-type x district grid. Only non-zero cells
+    are returned; the client fills the rest."""
+    crime_type: str
+    district: str
+    count: int = 0
+
+
+class FirCrimeTypeReport(BaseModel):
+    """Everything the Crime Type tab renders, in one response — six
+    panels off one request."""
+    types: List[FirCrimeTypeRow] = []
+    others: List[FirCrimeOther] = []
+    grid: List[FirCrimeDistrictCell] = []
+    # Echoed back so the UI can label the comparison window instead of
+    # re-deriving it and risking an off-by-one against the server.
+    prev_from: date
+    prev_to: date
+
+
+class FirPsCrimeCount(BaseModel):
+    """One crime type registered by a given PS in the window. Only
+    non-zero entries exist — a GROUP BY cannot produce a zero row, so
+    the list is naturally already filtered."""
+    crime_type: str
+    count: int = 0
+
+
 class FirPsPerformanceRow(BaseModel):
     unit_id: int
     district: str
@@ -393,6 +469,10 @@ class FirPsPerformanceRow(BaseModel):
     # of the from/to window. Surfaces "last 24h" pulse next to the
     # cumulative Total column — added 2026-07-25.
     yesterday_count: int = 0
+    # Crime-type split for this PS, biggest first. Populated only for
+    # the JSON dashboard route — the PDF/XLSX exports don't render it,
+    # so they skip the extra query entirely (2026-08-01).
+    crime_types: List[FirPsCrimeCount] = []
 
 
 # ── NCRP Dashboard (2026-07-30) ─────────────────────────────────

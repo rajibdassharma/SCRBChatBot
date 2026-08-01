@@ -1,4 +1,6 @@
 import { apiFetch } from './client';
+
+export type FirFinancialFilter = 'all' | 'yes' | 'no';
 import type {
   KpiSummary, UnitComparison, PsComparison, SubmissionStatus, TrendPoint,
   QuietUnit, TimeToArrestRow, BankSlaRow,
@@ -9,7 +11,7 @@ import type {
   AccountsGeoRegion, AccountsGeoScope,
   AllAccount,
   PortalsDsrKpiSummary, PortalsDsrPsComparison,
-  FirPsPerformanceRow,
+  FirPsPerformanceRow, FirDailyPoint, FirCrimeTypeReport,
   AccountsDailyPoint, AccountsLayerDistribution,
   AccountsFirTrace,
   NcrpKpiSummary, NcrpPsReportCount, NcrpBankConcentration, NcrpAtmLocation,
@@ -23,6 +25,25 @@ export async function getAccountsSummary(date: string): Promise<AccountsKpiSumma
 
 export async function getAccountsComparison(date: string): Promise<AccountsPsComparison[]> {
   return apiFetch<AccountsPsComparison[]>(`/api/v1/dashboard/accounts-comparison?date=${date}`);
+}
+
+/** Per-day FIR counts for the FIR Dashboard growth line. Same window
+ *  and same filters as the per-PS table, so the series sums to the
+ *  table's grand total. */
+export async function getFirDailyGrowth(
+  from: string, to: string,
+): Promise<FirDailyPoint[]> {
+  const qs = new URLSearchParams({ from, to });
+  return apiFetch<FirDailyPoint[]>(`/api/v1/dashboard/fir-daily-growth?${qs.toString()}`);
+}
+
+/** Crime Type tab — six panels off one request. */
+export async function getFirCrimeTypes(
+  from: string, to: string, financial: FirFinancialFilter = 'all',
+): Promise<FirCrimeTypeReport> {
+  const qs = new URLSearchParams({ from, to });
+  if (financial !== 'all') qs.set('financial', financial);
+  return apiFetch<FirCrimeTypeReport>(`/api/v1/dashboard/fir-crime-types?${qs.toString()}`);
 }
 
 /** Region rollup for the Account Details map view. Returns only regions
@@ -158,10 +179,12 @@ export async function getPendingByYear(date: string): Promise<PendingByYearRow[]
 export async function getFirPsPerformance(
   from?: string,
   to?: string,
+  financial: FirFinancialFilter = 'all',
 ): Promise<FirPsPerformanceRow[]> {
   const qs = new URLSearchParams();
   if (from) qs.set('from', from);
   if (to) qs.set('to', to);
+  if (financial !== 'all') qs.set('financial', financial);
   const suffix = qs.toString() ? `?${qs.toString()}` : '';
   return apiFetch<FirPsPerformanceRow[]>(`/api/v1/dashboard/fir-ps-performance${suffix}`);
 }
