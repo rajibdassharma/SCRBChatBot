@@ -298,7 +298,28 @@ blank a page that already has data.
 
 ---
 
-## 9. Numbers must reconcile
+## 9. Test fixtures never appear in a dashboard
+
+`TestDistrict` / `Test PS` exist so an administrator can verify the app
+end to end without touching a real station's data. They are real rows
+— login, data entry and their own reports keep working — but they are
+excluded from **every** dashboard figure: KPI cards, tables, charts,
+maps, rankings and the Excel/PDF exports alike.
+
+Applied in the backend (`api/test_scope.py`), never in the frontend.
+Filtering on the client would leave a KPI card counting rows the table
+beneath it had dropped — see §10.
+
+Configurable per environment via `CFDSR_TEST_UNITS` /
+`CFDSR_TEST_STATIONS`. Set either to empty to disable the exclusion,
+which is what a dev box wants when the fixture is the only data there.
+
+> **Known consequence.** Signed in AS Test PS, dashboards will be
+> empty — the fixture is filtered even from its own view. Data entry
+> still works. If verifying dashboards as Test PS matters, the
+> exclusion needs to skip when the viewer IS the test station.
+
+## 10. Numbers must reconcile
 
 The rule behind several of the above:
 

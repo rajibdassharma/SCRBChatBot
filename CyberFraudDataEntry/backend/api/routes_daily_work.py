@@ -26,6 +26,11 @@ from database import get_db
 from models.daily_work_entry import DailyWorkEntry
 from models.unit import Unit
 from models.police_station import PoliceStation
+from api.test_scope import (
+    where_not_test, exclude_test_ps, exclude_test_unit,
+    exclude_test_station_row, exclude_test_unit_row,
+    TEST_STATION_NAMES,
+)
 from schemas.daily_work import DailyWorkCreate, DailyWorkResponse
 from api.deps import get_current_user, require_admin, CurrentUser
 
@@ -296,6 +301,13 @@ async def daily_work_dashboard(
             DailyWorkEntry.unit_id == unit_id,
             DailyWorkEntry.ps_id == ps_id,
         ) + scope_filter
+    # Applies to BOTH roles. A PS admin is already pinned to its own
+    # station so this is a no-op for them; for super_admin it is the
+    # only thing keeping the test fixture out of the headline totals,
+    # the trend and the final-report split.
+    _excl = exclude_test_ps(DailyWorkEntry.ps_id)
+    if _excl is not None:
+        scope_filter = scope_filter + (_excl,)
 
     # One aggregation pass for all headline numbers. func.coalesce
     # protects against empty windows (sum → NULL, we want 0).
@@ -440,6 +452,9 @@ async def daily_work_dashboard(
                 ),
             )
             .where(PoliceStation.is_active == True)  # noqa: E712
+        # Test fixture is a real, active station — drop it from the
+        # station LIST too, or it appears as a permanent zero row.
+        .where(PoliceStation.station_name.notin_(TEST_STATION_NAMES))
             .group_by(Unit.id, Unit.name, PoliceStation.id, PoliceStation.station_name)
         )
         per_ps = [
