@@ -27,7 +27,7 @@ from __future__ import annotations
 
 import os
 
-from sqlalchemy import select
+from sqlalchemy import select, true as sa_true
 
 from models.police_station import PoliceStation
 from models.unit import Unit
@@ -56,6 +56,37 @@ def test_ps_ids_subq():
 def test_unit_ids_subq():
     """SELECT of unit ids belonging to the test fixture."""
     return select(Unit.id).where(Unit.name.in_(TEST_UNIT_NAMES))
+
+
+def viewer_is_test(viewer) -> bool:
+    """Is the signed-in user part of the test fixture?
+
+    All three fixture logins (test_ps_admin, test_ps_user,
+    test_ps_super) sit under TestDistrict / Test PS, so the district
+    name alone settles it — no id lookup, no await.
+
+    When true, NO exclusion is applied anywhere. The whole point of the
+    fixture is to check what each role can see; hiding its data from
+    its own logins would leave every dashboard blank and make the
+    fixture useless for exactly the thing it exists for.
+    """
+    if viewer is None:
+        return False
+    unit = (getattr(viewer, "unit_name", None) or "").strip()
+    return unit in TEST_UNIT_NAMES
+
+
+def station_row_filter(viewer):
+    """Inline predicate for queries that enumerate police_stations.
+
+    Returns an always-true predicate for a fixture login, so it can sit
+    unconditionally in a query chain:
+
+        .where(station_row_filter(admin))
+    """
+    if viewer_is_test(viewer) or not TEST_STATION_NAMES:
+        return sa_true()
+    return PoliceStation.station_name.notin_(TEST_STATION_NAMES)
 
 
 def exclude_test_ps(ps_id_col):
@@ -102,14 +133,16 @@ def exclude_test_unit_row():
     return Unit.name.notin_(TEST_UNIT_NAMES)
 
 
-def where_not_test(q, *predicates):
-    """Apply each predicate that is not None.
+def where_not_test(q, viewer, *predicates):
+    """Apply each predicate, unless the viewer IS the test fixture.
 
-    Lets a call site stay a one-liner regardless of whether the
-    exclusion is configured on or off:
+        q = where_not_test(q, admin, exclude_test_ps(Case.ps_id))
 
-        q = where_not_test(q, exclude_test_ps(Case.ps_id))
+    A fixture login sees everything, so it can verify what each role
+    is shown. Everyone else never sees the fixture at all.
     """
+    if viewer_is_test(viewer):
+        return q
     for pred in predicates:
         if pred is not None:
             q = q.where(pred)

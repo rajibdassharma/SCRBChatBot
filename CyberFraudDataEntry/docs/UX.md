@@ -314,10 +314,14 @@ Configurable per environment via `CFDSR_TEST_UNITS` /
 `CFDSR_TEST_STATIONS`. Set either to empty to disable the exclusion,
 which is what a dev box wants when the fixture is the only data there.
 
-> **Known consequence.** Signed in AS Test PS, dashboards will be
-> empty — the fixture is filtered even from its own view. Data entry
-> still works. If verifying dashboards as Test PS matters, the
-> exclusion needs to skip when the viewer IS the test station.
+**Fixture logins are exempt.** Signed in as any of `test_ps_super`,
+`test_ps_admin` or `test_ps_user`, no exclusion is applied anywhere —
+so each role's dashboards can be verified exactly as that role would
+see them. All three sit under TestDistrict, so the check is a
+synchronous compare on the caller's `unit_name`; no id lookup, no
+await, and it works identically on every one of the ~26 call sites.
+
+Everyone else never sees the fixture at all.
 
 ## 10. Numbers must reconcile
 

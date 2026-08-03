@@ -55,7 +55,7 @@ from api.deps import require_admin, CurrentUser
 from api.test_scope import (
     where_not_test, exclude_test_ps, exclude_test_unit,
     exclude_test_station_row, exclude_test_unit_row,
-    TEST_STATION_NAMES,
+    station_row_filter, viewer_is_test,
 )
 from models.portals_dsr_entry import PortalsDsrEntry
 
@@ -713,7 +713,7 @@ async def get_bank_action_sla(
     if admin.role != "super_admin":
         q = q.where(MuleReport.unit_id == admin.unit_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(MuleReport.unit_id))
+    q = where_not_test(q, admin, exclude_test_unit(MuleReport.unit_id))
     rows = (await db.execute(q)).all()
 
     window_start = target_date - timedelta(days=lookback_days)
@@ -786,7 +786,7 @@ async def get_recurring_mule_accounts(
     if admin.role != "super_admin":
         q = q.where(Case.unit_id == admin.unit_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(Case.unit_id))
+    q = where_not_test(q, admin, exclude_test_unit(Case.unit_id))
 
     rows = (await db.execute(q)).all()
     return [
@@ -847,7 +847,7 @@ async def get_account_cases(
     if admin.role != "super_admin":
         q = q.where(Case.unit_id == admin.unit_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(Case.unit_id))
+    q = where_not_test(q, admin, exclude_test_unit(Case.unit_id))
 
     rows = (await db.execute(q)).all()
     return [
@@ -1057,7 +1057,7 @@ async def get_bank_concentration(
     if admin.role != "super_admin":
         q = q.where(Case.unit_id == admin.unit_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(Case.unit_id))
+    q = where_not_test(q, admin, exclude_test_unit(Case.unit_id))
     rows = (await db.execute(q)).all()
     return [
         BankConcentration(bank=(b or "").strip() or "(unknown)",
@@ -1108,7 +1108,7 @@ async def get_destination_bank_concentration(
     if admin.role != "super_admin":
         q = q.where(Case.unit_id == admin.unit_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(Case.unit_id))
+    q = where_not_test(q, admin, exclude_test_unit(Case.unit_id))
     rows = (await db.execute(q)).all()
 
     return [
@@ -1149,7 +1149,7 @@ async def get_atm_hotspots(
     if admin.role != "super_admin":
         q = q.where(MuleReport.unit_id == admin.unit_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(MuleReport.unit_id))
+    q = where_not_test(q, admin, exclude_test_unit(MuleReport.unit_id))
     rows = (await db.execute(q)).all()
     return [
         AtmHotspot(location=(loc or "").strip() or "(unknown)",
@@ -1181,7 +1181,7 @@ async def get_layer_distribution(
     if admin.role != "super_admin":
         q = q.where(Case.unit_id == admin.unit_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(Case.unit_id))
+    q = where_not_test(q, admin, exclude_test_unit(Case.unit_id))
     rows = (await db.execute(q)).all()
     return [LayerBucket(layer=int(layer or 0), count=int(c)) for layer, c in rows]
 
@@ -1227,7 +1227,7 @@ async def get_accounts_at_layer(
     if admin.role != "super_admin":
         q = q.where(Case.unit_id == admin.unit_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(Case.unit_id))
+    q = where_not_test(q, admin, exclude_test_unit(Case.unit_id))
     rows = (await db.execute(q)).all()
     return [
         LienAccountAtLayer(
@@ -1295,7 +1295,7 @@ async def get_disposal_summary(
     if admin.role != "super_admin":
         q = q.where(DsrEntry.unit_id == admin.unit_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(DsrEntry.unit_id))
+    q = where_not_test(q, admin, exclude_test_unit(DsrEntry.unit_id))
     row = (await db.execute(q)).one_or_none()
     if not row:
         return DisposalSummary()
@@ -1337,7 +1337,7 @@ async def get_trial_summary(
     if admin.role != "super_admin":
         q = q.where(DsrEntry.unit_id == admin.unit_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(DsrEntry.unit_id))
+    q = where_not_test(q, admin, exclude_test_unit(DsrEntry.unit_id))
     row = (await db.execute(q)).one_or_none()
     if not row:
         return TrialSummary()
@@ -1387,7 +1387,7 @@ async def get_pending_by_year(
     if admin.role != "super_admin":
         q = q.where(DsrEntry.unit_id == admin.unit_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(DsrEntry.unit_id))
+    q = where_not_test(q, admin, exclude_test_unit(DsrEntry.unit_id))
     rows = (await db.execute(q)).all()
 
     out = [
@@ -1482,7 +1482,7 @@ async def get_accounts_summary(
             AllAccount.ps_id == admin.ps_id,
         )
     # Test fixture never appears in a dashboard figure.
-    herder_q = where_not_test(herder_q, exclude_test_unit(AllAccount.unit_id), exclude_test_ps(AllAccount.ps_id))
+    herder_q = where_not_test(herder_q, admin, exclude_test_unit(AllAccount.unit_id), exclude_test_ps(AllAccount.ps_id))
     unique_mule_herders = (await db.execute(herder_q)).scalar() or 0
 
     accounts_with_photo = (await db.execute(
@@ -1579,7 +1579,7 @@ async def compute_accounts_comparison(
         .where(PoliceStation.is_active == True)  # noqa: E712
         # Test fixture is a real, active station — drop it from the
         # station LIST too, or it appears as a permanent zero row.
-        .where(PoliceStation.station_name.notin_(TEST_STATION_NAMES))
+        .where(station_row_filter(admin))
         .group_by(
             PoliceStation.id, PoliceStation.station_name,
             Unit.id, Unit.name,
@@ -1714,7 +1714,7 @@ async def get_accounts_by_geography(
     if admin.role != "super_admin":
         q = q.where(AllAccount.ps_id == admin.ps_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_ps(AllAccount.ps_id))
+    q = where_not_test(q, admin, exclude_test_ps(AllAccount.ps_id))
 
     rows = (await db.execute(q)).all()
     return [
@@ -1777,7 +1777,7 @@ async def get_accounts_daily_growth(
             raise HTTPException(status_code=403, detail="Admin account is not assigned to a Police Station.")
         q = q.where(AllAccount.unit_id == admin.unit_id, AllAccount.ps_id == admin.ps_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(AllAccount.unit_id), exclude_test_ps(AllAccount.ps_id))
+    q = where_not_test(q, admin, exclude_test_unit(AllAccount.unit_id), exclude_test_ps(AllAccount.ps_id))
 
     rows = (await db.execute(q)).all()
     # MySQL returns func.date(...) as a Python `date` when the driver
@@ -1839,7 +1839,7 @@ async def get_accounts_layer_distribution(
                 raise HTTPException(status_code=403, detail="Admin account is not assigned to a Police Station.")
             q = q.where(AllAccount.unit_id == admin.unit_id, AllAccount.ps_id == admin.ps_id)
         # Test fixture never appears in a dashboard figure.
-        q = where_not_test(q, exclude_test_unit(AllAccount.unit_id), exclude_test_ps(AllAccount.ps_id))
+        q = where_not_test(q, admin, exclude_test_unit(AllAccount.unit_id), exclude_test_ps(AllAccount.ps_id))
         return (await db.execute(q)).all()
 
     ka_rows = await _histogram(ka_pred, layer_is_null=False)
@@ -2099,7 +2099,7 @@ async def get_accounts_top_banks(
             raise HTTPException(status_code=403, detail="Admin account is not assigned to a Police Station.")
         q = q.where(AllAccount.unit_id == admin.unit_id, AllAccount.ps_id == admin.ps_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(AllAccount.unit_id), exclude_test_ps(AllAccount.ps_id))
+    q = where_not_test(q, admin, exclude_test_unit(AllAccount.unit_id), exclude_test_ps(AllAccount.ps_id))
 
     rows = (await db.execute(q)).all()
     return [
@@ -2267,7 +2267,7 @@ async def _compute_portals_per_ps_on_date(
         .where(PoliceStation.is_active == True)  # noqa: E712
         # Test fixture is a real, active station — drop it from the
         # station LIST too, or it appears as a permanent zero row.
-        .where(PoliceStation.station_name.notin_(TEST_STATION_NAMES))
+        .where(station_row_filter(admin))
         .order_by(PoliceStation.district_name, PoliceStation.station_name)
     )
     if admin.role != "super_admin":
@@ -2288,7 +2288,7 @@ async def _compute_portals_per_ps_on_date(
     if admin.role != "super_admin":
         entry_q = entry_q.where(PortalsDsrEntry.ps_id == admin.ps_id)
     # Test fixture never appears in a dashboard figure.
-    entry_q = where_not_test(entry_q, exclude_test_ps(PortalsDsrEntry.ps_id))
+    entry_q = where_not_test(entry_q, admin, exclude_test_ps(PortalsDsrEntry.ps_id))
     entries = (await db.execute(entry_q)).scalars().all()
 
     # 3) Group entries by ps_id, apply pending=LATEST / other=SUM per
@@ -2444,7 +2444,7 @@ async def compute_fir_ps_performance(
         # This one enumerates stations via User, so it never passes the
         # is_active filter the other station lists use — it needs its
         # own exclusion or the test station keeps a ranking row.
-        .where(PoliceStation.station_name.notin_(TEST_STATION_NAMES))
+        .where(station_row_filter(admin))
         .distinct()
     )
     if admin.role != "super_admin":
@@ -2463,7 +2463,7 @@ async def compute_fir_ps_performance(
     if admin.role != "super_admin":
         count_q = count_q.where(Case.unit_id == admin.unit_id).where(Case.ps_id == admin.ps_id)
     # Test fixture never appears in a dashboard figure.
-    count_q = where_not_test(count_q, exclude_test_unit(Case.unit_id), exclude_test_ps(Case.ps_id))
+    count_q = where_not_test(count_q, admin, exclude_test_unit(Case.unit_id), exclude_test_ps(Case.ps_id))
     # Applied to BOTH counts below — a filtered table with an unfiltered
     # "yesterday" column would silently compare different populations.
     count_q = _apply_financial_filter(count_q, financial)
@@ -2486,7 +2486,7 @@ async def compute_fir_ps_performance(
     if admin.role != "super_admin":
         yday_q = yday_q.where(Case.unit_id == admin.unit_id).where(Case.ps_id == admin.ps_id)
     # Test fixture never appears in a dashboard figure.
-    yday_q = where_not_test(yday_q, exclude_test_unit(Case.unit_id), exclude_test_ps(Case.ps_id))
+    yday_q = where_not_test(yday_q, admin, exclude_test_unit(Case.unit_id), exclude_test_ps(Case.ps_id))
     yday_q = _apply_financial_filter(yday_q, financial)
     yday_rows = (await db.execute(yday_q)).all()
 
@@ -2507,7 +2507,7 @@ async def compute_fir_ps_performance(
         if admin.role != "super_admin":
             ct_q = ct_q.where(Case.unit_id == admin.unit_id).where(Case.ps_id == admin.ps_id)
         # Test fixture never appears in a dashboard figure.
-        ct_q = where_not_test(ct_q, exclude_test_unit(Case.unit_id), exclude_test_ps(Case.ps_id))
+        ct_q = where_not_test(ct_q, admin, exclude_test_unit(Case.unit_id), exclude_test_ps(Case.ps_id))
         ct_q = _apply_financial_filter(ct_q, financial)
         for uid, pid, name, n in (await db.execute(ct_q)).all():
             if pid is None:
@@ -2602,7 +2602,7 @@ async def get_fir_crime_types(
         if admin.role != "super_admin":
             q = q.where(Case.unit_id == admin.unit_id).where(Case.ps_id == admin.ps_id)
         # Test fixture never appears in a dashboard figure.
-        q = where_not_test(q, exclude_test_unit(Case.unit_id), exclude_test_ps(Case.ps_id))
+        q = where_not_test(q, admin, exclude_test_unit(Case.unit_id), exclude_test_ps(Case.ps_id))
         return _apply_financial_filter(q, financial)
 
     def in_window(q, lo: date, hi: date):
@@ -2773,7 +2773,7 @@ async def get_fir_daily_growth(
     if admin.role != "super_admin":
         q = q.where(Case.unit_id == admin.unit_id).where(Case.ps_id == admin.ps_id)
     # Test fixture never appears in a dashboard figure.
-    q = where_not_test(q, exclude_test_unit(Case.unit_id), exclude_test_ps(Case.ps_id))
+    q = where_not_test(q, admin, exclude_test_unit(Case.unit_id), exclude_test_ps(Case.ps_id))
 
     counts: dict[date, tuple[int, int, int]] = {}
     for r in (await db.execute(q)).all():
@@ -2894,7 +2894,7 @@ async def get_ncrp_ps_comparison(
         .where(PoliceStation.is_active.is_(True))
         # Test fixture is a real, active station — drop it from the
         # station LIST too, or it appears as a permanent zero row.
-        .where(PoliceStation.station_name.notin_(TEST_STATION_NAMES))
+        .where(station_row_filter(admin))
         .order_by(PoliceStation.district_name, PoliceStation.station_name)
     )).all()
 
