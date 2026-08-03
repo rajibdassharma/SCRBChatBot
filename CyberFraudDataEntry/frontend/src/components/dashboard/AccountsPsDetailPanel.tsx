@@ -21,6 +21,15 @@ import type { AccountsPsComparison, AllAccount } from '../../types';
  *  "Name (mobile) — address; Name (mobile) — address" so the export
  *  stays a single row per account — easier to filter/sort in Excel. */
 
+/** Rows per page in the drill-down. A busy PS returns hundreds of
+ *  accounts and the table has 17 columns — rendering the lot made the
+ *  panel unusable to scroll. Exports are deliberately NOT paginated:
+ *  the download is the whole dataset, not the page you happen to be
+ *  looking at. */
+const PAGE_SIZE = 25;
+
+const fmtInt = (n: number) => n.toLocaleString('en-IN');
+
 const cardStyle = {
   background: '#fff',
   border: '1px solid rgba(0,0,0,0.06)',
@@ -89,17 +98,29 @@ export function AccountsPsDetailPanel({ ps, asOfDate, onBack }: Props) {
   const [rows, setRows] = useState<AllAccount[]>([]);
   const [loading, setLoading] = useState(true);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [page, setPage] = useState(0);
 
   useEffect(() => {
     setLoading(true);
     getAccountsDetailsByPs(asOfDate, ps.unit_id, ps.ps_id)
-      .then(setRows)
+      .then((r) => { setRows(r); setPage(0); })
       .catch((e) => {
         toast.error(`Failed to load account details: ${e?.message ?? 'unknown error'}`);
         setRows([]);
       })
       .finally(() => setLoading(false));
   }, [asOfDate, ps.unit_id, ps.ps_id]);
+
+  /** Page slice. Clamped rather than trusted: changing the date can
+   *  shrink the result set while `page` still points past the end,
+   *  which would otherwise render an empty table with rows available. */
+  const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+  const firstIdx = safePage * PAGE_SIZE;
+  const pageRows = useMemo(
+    () => rows.slice(firstIdx, firstIdx + PAGE_SIZE),
+    [rows, firstIdx],
+  );
 
   function toggleExpand(id: string) {
     setExpanded((prev) => {
@@ -177,7 +198,10 @@ export function AccountsPsDetailPanel({ ps, asOfDate, onBack }: Props) {
               Account Details — {ps.ps_name}
             </h1>
             <p className="text-sm font-medium" style={{ color: 'var(--ksp-red)' }}>
-              {ps.unit_name} · as of {asOfDate} · {rows.length} account{rows.length === 1 ? '' : 's'}
+              {ps.unit_name} · as of {asOfDate} ·{' '}
+              {rows.length === 0
+                ? 'no accounts'
+                : `showing ${fmtInt(firstIdx + 1)}–${fmtInt(Math.min(firstIdx + PAGE_SIZE, rows.length))} of ${fmtInt(rows.length)} account${rows.length === 1 ? '' : 's'}`}
             </p>
           </div>
         </div>
@@ -225,7 +249,7 @@ export function AccountsPsDetailPanel({ ps, asOfDate, onBack }: Props) {
                 </tr>
               </thead>
               <tbody>
-                {rows.map((r) => {
+                {pageRows.map((r) => {
                   const herders = r.mule_herders ?? [];
                   const canExpand = herders.length > 0;
                   const isOpen = expanded.has(r.id);
@@ -326,8 +350,61 @@ export function AccountsPsDetailPanel({ ps, asOfDate, onBack }: Props) {
               </tbody>
             </table>
           </div>
+
+          {/* Pager. Hidden entirely on a single page — controls that
+               can only do nothing are noise. Expanded herder rows are
+               keyed by account id, so they survive paging rather than
+               collapsing on every click. */}
+          {pageCount > 1 && (
+            <div className="flex items-center justify-between gap-3 px-4 py-3 flex-wrap"
+              style={{ borderTop: '1px solid rgba(11,44,74,0.10)', background: '#fafbfd' }}>
+              <span className="text-xs font-semibold" style={{ color: 'var(--ksp-navy)' }}>
+                Page {safePage + 1} of {pageCount}
+                <span className="opacity-60 font-normal">
+                  {'  ·  '}{fmtInt(rows.length)} accounts, {PAGE_SIZE} per page
+                </span>
+              </span>
+              <div className="flex items-center gap-1">
+                <PagerBtn label="First" disabled={safePage === 0} onClick={() => setPage(0)} />
+                <PagerBtn label="Prev"  disabled={safePage === 0} onClick={() => setPage(safePage - 1)} />
+                {pageWindow(safePage, pageCount).map((n) => (
+                  <button key={n} type="button" onClick={() => setPage(n)}
+                    className="px-2.5 py-1 rounded-lg text-xs font-bold min-w-[30px]"
+                    style={n === safePage
+                      ? { background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)' }
+                      : { background: '#fff', color: 'var(--ksp-navy)', border: '1px solid rgba(11,44,74,0.20)' }}>
+                    {n + 1}
+                  </button>
+                ))}
+                <PagerBtn label="Next" disabled={safePage >= pageCount - 1} onClick={() => setPage(safePage + 1)} />
+                <PagerBtn label="Last" disabled={safePage >= pageCount - 1} onClick={() => setPage(pageCount - 1)} />
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
+}
+
+function PagerBtn({ label, disabled, onClick }: {
+  label: string; disabled: boolean; onClick: () => void;
+}) {
+  return (
+    <button type="button" onClick={onClick} disabled={disabled}
+      className="px-2.5 py-1 rounded-lg text-xs font-bold disabled:opacity-35"
+      style={{ background: '#fff', color: 'var(--ksp-navy)', border: '1px solid rgba(11,44,74,0.20)' }}>
+      {label}
+    </button>
+  );
+}
+
+/** Up to 5 page numbers centred on the current page. A PS with 400
+ *  accounts is 16 pages — rendering every number turns the pager into
+ *  its own scrolling problem. */
+function pageWindow(current: number, total: number): number[] {
+  const span = Math.min(5, total);
+  let start = Math.max(0, current - Math.floor(span / 2));
+  if (start + span > total) start = total - span;
+  return Array.from({ length: span }, (_, i) => start + i);
 }

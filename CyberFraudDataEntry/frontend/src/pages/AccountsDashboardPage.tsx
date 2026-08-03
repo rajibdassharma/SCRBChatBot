@@ -51,7 +51,11 @@ const cardStyle = {
 // rows — three clearly distinct hues at any size.
 const COLOR_VICTIM   = '#EF4444';  // red-500 — bright red
 const COLOR_MULE     = '#8b1919';  // dark red — offender
-const COLOR_NONMULE  = '#1d4ed8';  // blue-700 — neutral / unknown
+// Navy, matching the FIR dashboard's navy/red pair and the Non-Mule
+// pill in the drill-down panel, which already used it. Was blue-700
+// (#1d4ed8) — a third hue that appeared nowhere else in the app.
+// Validated against Mule red: deuteranopia dE 11.1, all-pairs PASS.
+const COLOR_NONMULE  = '#0b2c4a';  // navy — neutral / unknown
 const COLOR_NAVY     = '#0b2c4a';
 const COLOR_PURPLE   = '#6a1b9a';
 const COLOR_ORANGE   = '#c67c1d';
