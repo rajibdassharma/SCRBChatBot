@@ -8,7 +8,7 @@ import type {
   AccountCaseDetail, CaseDetailFull,
   DisposalSummary, TrialSummary, PendingByYearRow,
   AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
-  AccountsGeoRegion, AccountsGeoScope,
+  AccountsGeoRegion, AccountsGeoScope, DuplicateIdSummary,
   AllAccount,
   PortalsDsrKpiSummary, PortalsDsrPsComparison,
   FirPsPerformanceRow, FirDailyPoint, FirCrimeTypeReport,
@@ -16,6 +16,8 @@ import type {
   AccountsFirTrace,
   NcrpKpiSummary, NcrpPsReportCount, NcrpBankConcentration, NcrpAtmLocation,
   RepeatAccount, AccountFirOccurrence,
+  MoneyTrailSummary, MoneyTrailScope,
+  StatementCoverageSummary, CoverageStatus, MuleNetworkSummary,
 } from '../../types';
 
 /** All Accounts dashboard — KPI cards + per-PS comparison. */
@@ -59,6 +61,55 @@ export async function getAccountsByGeography(
 ): Promise<AccountsGeoRegion[]> {
   const qs = new URLSearchParams({ date, scope, account_type: accountType });
   return apiFetch<AccountsGeoRegion[]>(`/api/v1/dashboard/accounts-geo?${qs.toString()}`);
+}
+
+/** F1 — accounts sharing the same ID photo. super_admin only; the
+ *  server returns 403 for anyone else. */
+/** Direct mule-to-mule transfer network (F4). super_admin only. */
+export async function getMuleNetwork(
+  crossFirOnly = true, stateScope: MoneyTrailScope = 'all', limit = 20000,
+): Promise<MuleNetworkSummary> {
+  const qs = new URLSearchParams({
+    cross_fir_only: String(crossFirOnly),
+    state_scope: stateScope,
+    limit: String(limit),
+  });
+  return apiFetch<MuleNetworkSummary>(`/api/v1/dashboard/mule-network?${qs.toString()}`);
+}
+
+/** Statement coverage work list (F2). super_admin only; 403 otherwise. */
+export async function getStatementCoverage(
+  stateScope: MoneyTrailScope = 'all', accountType = 'All',
+  status: CoverageStatus = 'missing', limit = 25000,
+): Promise<StatementCoverageSummary> {
+  const qs = new URLSearchParams({
+    state_scope: stateScope, account_type: accountType,
+    status, limit: String(limit),
+  });
+  return apiFetch<StatementCoverageSummary>(
+    `/api/v1/dashboard/statement-coverage?${qs.toString()}`);
+}
+
+/** Parsed bank-statement rollup (F2). super_admin only; 403 otherwise. */
+export async function getMoneyTrail(
+  stateScope: MoneyTrailScope = 'all', accountType = 'All',
+  accountLimit = 20000,
+): Promise<MoneyTrailSummary> {
+  const qs = new URLSearchParams({
+    state_scope: stateScope,
+    account_type: accountType,
+    account_limit: String(accountLimit),
+  });
+  return apiFetch<MoneyTrailSummary>(`/api/v1/dashboard/money-trail?${qs.toString()}`);
+}
+
+export async function getDuplicateIds(
+  minAccounts = 2, limit = 2000,
+): Promise<DuplicateIdSummary> {
+  const qs = new URLSearchParams({
+    min_accounts: String(minAccounts), limit: String(limit),
+  });
+  return apiFetch<DuplicateIdSummary>(`/api/v1/dashboard/duplicate-ids?${qs.toString()}`);
 }
 
 /** Top N banks by account-count for the Dashboard Overview insight panel. */
@@ -130,7 +181,7 @@ export async function getBankActionSla(date: string, lookbackDays = 180): Promis
   return apiFetch<BankSlaRow[]>(`/api/v1/dashboard/bank-action-sla?date=${date}&lookback_days=${lookbackDays}`);
 }
 
-export async function getRecurringAccounts(date: string, minCases = 2, limit = 50): Promise<RecurringAccount[]> {
+export async function getRecurringAccounts(date: string, minCases = 2, limit = 2000): Promise<RecurringAccount[]> {
   return apiFetch<RecurringAccount[]>(`/api/v1/dashboard/recurring-mule-accounts?date=${date}&min_cases=${minCases}&limit=${limit}`);
 }
 
@@ -158,7 +209,7 @@ export async function getLayerDistribution(date: string): Promise<LayerBucket[]>
   return apiFetch<LayerBucket[]>(`/api/v1/dashboard/layer-distribution?date=${date}`);
 }
 
-export async function getAccountsAtLayer(date: string, layer: number, limit = 200): Promise<LienAccountAtLayer[]> {
+export async function getAccountsAtLayer(date: string, layer: number, limit = 5000): Promise<LienAccountAtLayer[]> {
   return apiFetch<LienAccountAtLayer[]>(`/api/v1/dashboard/accounts-at-layer?date=${date}&layer=${layer}&limit=${limit}`);
 }
 
@@ -267,7 +318,7 @@ export function getNcrpTopAtmLocations(from: string, to: string, limit = 10): Pr
 export function getRepeatAccounts(
   accountType: 'Mule' | 'Non-Mule',
   minFirs = 2,
-  limit = 100,
+  limit = 1000,
 ): Promise<RepeatAccount[]> {
   const qs = new URLSearchParams({
     account_type: accountType,

@@ -55,10 +55,49 @@ chmod 750 "$BACKUP_DIR"
 # can't touch. Chown is a no-op if we're already the target user.
 chown -R cyberfraud:cyberfraud "$BACKUP_DIR" 2>/dev/null || true
 
-TIMESTAMP=$(date +'%Y-%m-%d_%H%M')
+# TZ=Asia/Kolkata because the SCHEDULE is IST (cyberfraud-backup.timer
+# fires at 00:00 Asia/Kolkata) while the server's clock is UTC. Without
+# it, the midnight-IST run stamps the file 18:33 the PREVIOUS DAY — so
+# the dump labelled the 9th actually holds data as of midnight opening
+# the 10th, and whoever restores it copies the wrong file.
+TIMESTAMP=$(TZ=Asia/Kolkata date +'%Y-%m-%d_%H%M')
 OUTFILE="$BACKUP_DIR/${DB_NAME}_${TIMESTAMP}.sql.gz"
 
 echo "[backup-db] $(date -Iseconds) — dumping $DB_NAME → $OUTFILE"
+
+# ── Derived analysis tables: EXCLUDED from the dump ──────────────────
+# These five hold nothing an operator typed. Every row is computed from
+# the files under backend/uploads/ by `python -m analysis.daily`, and
+# any of them can be rebuilt from scratch at any time.
+#
+# Measured 2026-08-07 on the dev copy: the source tables total ~30 MB,
+# these five total ~11.4 GB. Including them would make this nightly
+# dump 374x larger — and 374x slower to write, transfer, and restore —
+# to carry data that is a pure function of files we already back up
+# separately in backup-uploads.sh.
+#
+# --ignore-table drops STRUCTURE as well as rows. That is correct and
+# deliberate: migrations 019-023 create these tables, and both
+# update.sh and analysis.daily run those migrations, so a restore onto
+# a clean server still ends up with the right schema.
+#
+# The payoff on the DEV laptop is the part that matters day to day: a
+# dump that never mentions these tables cannot DROP them, so restoring
+# yesterday's production data leaves ~14 million parsed transactions —
+# the better part of a day's compute — untouched. Adding a table here
+# without that property would silently destroy it on every restore.
+DERIVED_TABLES=(
+    upload_ledger              # which files have been processed
+    statement_transactions     # parsed rows — the 11 GB
+    account_statement_summary  # per (account, channel) rollup
+    id_photo_hashes            # SHA-256 + perceptual hash per photo
+    mule_account_link          # direct mule -> mule transfers
+)
+IGNORE_ARGS=()
+for t in "${DERIVED_TABLES[@]}"; do
+    IGNORE_ARGS+=( "--ignore-table=${DB_NAME}.${t}" )
+done
+echo "[backup-db] excluding ${#DERIVED_TABLES[@]} derived table(s): ${DERIVED_TABLES[*]}"
 
 # ── Dump + compress in one streaming pipeline ────────────────────────
 # --single-transaction : consistent snapshot without table locks
@@ -74,6 +113,7 @@ MYSQL_PWD="$DB_PASS" mysqldump \
     --triggers \
     --quick \
     --hex-blob \
+    "${IGNORE_ARGS[@]}" \
     "$DB_NAME" \
   | gzip --best > "$OUTFILE"
 

@@ -836,6 +836,237 @@ export interface FirCrimeTypeReport {
   prev_to: string;
 }
 
+/** One account inside a duplicate-ID cluster. */
+export interface DuplicateIdMember {
+  account_id: string;
+  account_holder_name: string | null;
+  account_no: string | null;
+  fir_no: string | null;
+  account_type: string | null;
+  district: string | null;
+  ps_name: string | null;
+  bank_name: string | null;
+}
+
+/** Accounts whose uploaded ID photo is the same FILE.
+ *
+ *  `fingerprint` is the SHA-256 of the file bytes — nothing is read out
+ *  of the picture. Not a perceptual hash, and deliberately so: an
+ *  earlier build clustered on a 64-bit dHash and its two biggest
+ *  "findings" turned out to be 28 and 23 completely different documents
+ *  that merely shared the Aadhaar layout.
+ *
+ *  `has_victim` de-prioritises a cluster: a network does not recruit
+ *  the people it defrauds, so those read as placeholder images. */
+export interface DuplicateIdCluster {
+  fingerprint: string;
+  /** "exact" = byte-identical file, the only kind served today.
+   *  Reserved for a future offline near-duplicate pass ("similar"). */
+  match_type: string;
+  /** Signed, time-limited URL for one representative image. Every
+   *  member is byte-for-byte the same file, so one is enough to judge
+   *  whether this is a real ID document or a blank page. */
+  image_url: string | null;
+  images: number;
+  accounts: number;
+  distinct_holders: number;
+  distinct_account_nos: number;
+  distinct_firs: number;
+  distinct_ps: number;
+  distinct_districts: number;
+  has_victim: boolean;
+  account_types: string[];
+  members: DuplicateIdMember[];
+}
+
+/** One state a parsed statement file ended in. Shown on screen rather
+ *  than buried in a log: a money trail built from 60% of the statements
+ *  is a different object from one built from all of them. */
+export interface StatementQualityRow {
+  status: string;
+  files: number;
+}
+
+export interface StatementChannelRow {
+  channel: string;
+  txns: number;
+  debit: number;
+  credit: number;
+}
+
+/** One account's parsed statement totals. `verified` is false when any
+ *  source statement behind it failed its own balance check — the
+ *  numbers may be wrong and the UI must say so. */
+export interface StatementAccountRow {
+  account_id: string;
+  account_holder_name: string | null;
+  account_no: string | null;
+  bank_name: string | null;
+  fir_no: string | null;
+  account_type: string | null;
+  ps_name: string | null;
+  /** Numeric station id, carried so a row can be handed straight to the
+   *  FIR trace — FIR numbers are only unique per station. */
+  ps_id: number | null;
+  district: string | null;
+  /** State of the BANK BRANCH (all_accounts.branch_state), not the
+   *  police district. Free text and ~90% populated. */
+  branch_state: string | null;
+  txns: number;
+  debit: number;
+  credit: number;
+  first_txn: string | null;
+  last_txn: string | null;
+  /** False when rows behind this account were tested and DISAGREED.
+   *  Row-derived, matching the money columns — not the file-level
+   *  reconciliation flag, which over-warned on 59% of what it marked. */
+  verified: boolean;
+  /** Rows tested against the balance chain that did not agree. These
+   *  are excluded from debit/credit. Distinct from untested_txns:
+   *  this means wrong, not merely uncheckable. */
+  rejected_txns: number;
+  /** Rows here that had nothing to check their arithmetic against.
+   *  A COUNT — there is no rupee sibling, and that is the point: it
+   *  explains a ₹0 row without inventing a total for the part we
+   *  cannot vouch for. */
+  untested_txns: number;
+}
+
+/** A destination paid by MORE THAN ONE account — the collection-point
+ *  signal. `key` is an account number or UPI handle, never a name. */
+export interface SharedCounterparty {
+  key: string;
+  kind: string;
+  counterparty_name: string | null;
+  txns: number;
+  accounts: number;
+  firs: number;
+  total_debit: number;
+}
+
+/** One account on the Statement Coverage work list. Identity and age,
+ *  not rupees — this is a chasing list, not an analysis. */
+export interface StatementCoverageRow {
+  account_id: string;
+  account_holder_name: string | null;
+  account_no: string | null;
+  bank_name: string | null;
+  fir_no: string | null;
+  account_type: string | null;
+  ps_name: string | null;
+  district: string | null;
+  branch_state: string | null;
+  /** missing | unparsed | unreadable | parsed — derived, not stored. */
+  status: string;
+  /** Why an unreadable file failed, from the ledger. */
+  detail: string | null;
+  fir_date: string | null;
+  /** Null when the FIR date is unknown — must not sort as zero. */
+  days_open: number | null;
+}
+
+export type CoverageStatus = 'all' | 'missing' | 'unparsed' | 'unreadable' | 'parsed';
+
+export interface StatementCoverageSummary {
+  state_scope: MoneyTrailScope;
+  account_type: string;
+  status: CoverageStatus;
+  total_accounts: number;
+  missing: number;
+  unparsed: number;
+  unreadable: number;
+  parsed: number;
+  parsed_verified: number;
+  accounts_without_state: number;
+  rows: StatementCoverageRow[];
+}
+
+/** The account on the other end of a direct mule-to-mule transfer.
+ *  `direction` is relative to the row being expanded. */
+export interface MuleLinkPeer {
+  account_id: string;
+  account_holder_name: string | null;
+  account_no: string | null;
+  bank_name: string | null;
+  fir_no: string | null;
+  ps_name: string | null;
+  direction: string;
+  cross_fir: boolean;
+  txns: number;
+  amount: number;
+}
+
+/** A mule account and the other mule accounts it transfers with.
+ *  Not shared-destination, not payment gateways — A's statement names
+ *  B's account number and both are recorded as Mule. */
+export interface MuleNetworkRow {
+  account_id: string;
+  account_holder_name: string | null;
+  account_no: string | null;
+  bank_name: string | null;
+  fir_no: string | null;
+  ps_name: string | null;
+  ps_id: number | null;
+  district: string | null;
+  branch_state: string | null;
+  connected: number;
+  cross_fir: number;
+  out_links: number;
+  in_links: number;
+  txns: number;
+  amount: number;
+  peers: MuleLinkPeer[];
+}
+
+export interface MuleNetworkSummary {
+  total_links: number;
+  cross_fir_links: number;
+  accounts_in_network: number;
+  accounts_with_statements: number;
+  rows: MuleNetworkRow[];
+}
+
+/** Filter for the branch state of the account, not the police district. */
+export type MoneyTrailScope = 'all' | 'karnataka' | 'other';
+
+export interface MoneyTrailSummary {
+  /** Echoed by the server so exports are labelled from what the server
+   *  actually applied, not from client state that may have moved on. */
+  state_scope: MoneyTrailScope;
+  account_type: string;
+  /** Accounts with no branch state recorded. They appear only under
+   *  "All States" — see the endpoint for why they are not swept into
+   *  "Other States". */
+  accounts_without_state: number;
+  transactions: number;
+  accounts_covered: number;
+  statements_parsed: number;
+  date_from: string | null;
+  date_to: string | null;
+  /** Summed over RECONCILED statements only — see the endpoint docstring. */
+  total_debit: number;
+  total_credit: number;
+  verified_pct: number;
+  /** Transactions excluded from total_debit/total_credit because
+   *  nothing could test them. Shown so the KPI cards do not read as
+   *  complete when they are not. */
+  untested_txns: number;
+  quality: StatementQualityRow[];
+  channels: StatementChannelRow[];
+  top_accounts: StatementAccountRow[];
+  shared_counterparties: SharedCounterparty[];
+}
+
+export interface DuplicateIdSummary {
+  total_hashed: number;
+  clusters: number;
+  with_multiple_holders: number;
+  across_police_stations: number;
+  across_firs: number;
+  strong_signal: number;
+  rows: DuplicateIdCluster[];
+}
+
 export interface AccountsBankConcentration {
   bank_name: string;
   total: number;

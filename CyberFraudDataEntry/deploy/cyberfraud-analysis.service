@@ -1,0 +1,69 @@
+[Unit]
+Description=CyberFraud Data Entry — nightly upload analysis (F1 duplicate IDs, F2 statements, F4 mule network)
+After=mysql.service cyberfraud-backup.service
+Requires=mysql.service
+
+[Service]
+Type=oneshot
+User=cyberfraud
+Group=cyberfraud
+WorkingDirectory=/opt/cyberfraud/backend
+
+# --skip-relink is CORRECT here and wrong on the dev laptop.
+#
+# relink repairs foreign keys broken by a RESTORE: mysqldump writes
+# FOREIGN_KEY_CHECKS=0 and drops/recreates all_accounts, so ON DELETE
+# CASCADE never fires and derived rows can end up pointing at account
+# ids that no longer exist. Production never restores — it IS the
+# source — so there is nothing to repair, and relink is the one step
+# whose cost grows with the fact table.
+ExecStart=/opt/cyberfraud/venv/bin/python -m analysis.daily --skip-relink
+
+# ── Resource budget ──────────────────────────────────────────────────
+# The 10 GB default in analysis/runtime.py describes the 32 GB
+# development laptop, where an Intel Arc iGPU draws its video memory
+# from system RAM and exhausting that pool bugchecked the machine three
+# times. This VM is headless with no iGPU and 8 GB total: applying the
+# laptop's reserve here would make every worker plan come out negative,
+# pin the job at a single worker, and — because the low-water mark
+# tracks the reserve — stall at every chunk boundary on a machine that
+# is not actually under pressure.
+#
+# 2 GB is the headroom a headless Ubuntu box needs for MySQL's own
+# working set plus the page cache. LOW_WATER derives from this (1.2 GB)
+# unless overridden, so the two cannot drift apart.
+Environment=CFDSR_ANALYSIS_RESERVE_GB=2.0
+
+# ── Timeout ──────────────────────────────────────────────────────────
+# systemd's default start timeout is 90 SECONDS, which would kill this
+# unit mid-run on literally every invocation and leave a partial parse
+# behind. Nightly runs take 20-25 minutes for a normal day of uploads;
+# the FIRST run is a full backfill of the whole corpus and takes hours.
+# 6h is sized for that first run, not the steady state.
+#
+# Being killed is not corrupting — the ledger commits per batch and
+# every step is resumable — but it would mean the job never finishes,
+# silently, forever.
+TimeoutStartSec=6h
+
+# ── Priority ─────────────────────────────────────────────────────────
+# The backend serves ~90 operators on this same box. Analysis is a
+# background chore and must lose every contest against a request that
+# a human is waiting on.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=batch
+
+# ── Hardening ────────────────────────────────────────────────────────
+# Reads uploads/, writes only to MySQL over the local socket. It needs
+# no write access to the filesystem at all beyond a private /tmp, which
+# pdfplumber uses for spill files.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+
+StandardOutput=journal
+StandardError=journal
+
+# Triggered by .timer — no [Install] section in the .service itself

@@ -65,7 +65,7 @@ echo "    Done."
 
 # ── 3. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 3. Run additive DB migrations 001 → 004, 006 → 018 (idempotent) ==="
+echo "=== 3. Run additive DB migrations 001 → 004, 006 → 023 (idempotent) ==="
 # Migration 005 (chat_messages) is deliberately skipped until the GPU box
 # is in place for the chat feature — there's no point provisioning an
 # empty audit table for an endpoint the prod app does not yet expose.
@@ -93,6 +93,11 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.016_add_crime_type_expansion
     venv/bin/python -m migrations.017_add_victim_and_accused_accounts
     venv/bin/python -m migrations.018_rename_cen_to_cyber_in_ps_names
+    venv/bin/python -m migrations.019_add_upload_analysis_tables
+    venv/bin/python -m migrations.020_account_statement_summary
+    venv/bin/python -m migrations.021_mule_account_links
+    venv/bin/python -m migrations.022_statement_chain_ok
+    venv/bin/python -m migrations.023_summary_untested_totals
 "
 
 # ── 4. Build the frontend ────────────────────────────────────────────
@@ -545,6 +550,56 @@ if [ "$CEN_LEFT" = "0" ]; then
     echo "    ✓ police_stations.station_name has no standalone 'CEN' (migration 018 applied)"
 else
     echo "    ✗ $CEN_LEFT rows still contain standalone 'CEN' — migration 018 did not complete"
+    exit 1
+fi
+
+# Migrations 019-023 — the upload-analysis tables.
+#
+# These start EMPTY on production and stay that way: parsing runs on the
+# analysis machine, and results arrive via deploy/import-analysis.sh.
+# So the check is for STRUCTURE, never row counts — an empty table here
+# is the correct state, not a failure.
+#
+# Without these tables the import has nowhere to land and fails with
+# "table missing"; without the columns, it fails mid-swap having
+# already emptied the live table.
+for T in upload_ledger statement_transactions account_statement_summary \
+         id_photo_hashes mule_account_link; do
+    HAVE=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+        -e "SELECT COUNT(*) FROM information_schema.tables
+            WHERE table_schema='$DB_NAME' AND table_name='$T'" 2>/dev/null || echo "ERROR")
+    if [ "$HAVE" = "1" ]; then
+        echo "    ✓ $T exists (migrations 019-021)"
+    else
+        echo "    ✗ $T missing — migrations 019-021 did not complete"
+        exit 1
+    fi
+done
+
+# Migration 022 — the per-row chain verdict column.
+CHAIN_OK=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema='$DB_NAME' AND table_name='statement_transactions'
+          AND column_name='chain_ok'" 2>/dev/null || echo "ERROR")
+if [ "$CHAIN_OK" = "1" ]; then
+    echo "    ✓ statement_transactions.chain_ok present (migration 022)"
+else
+    echo "    ✗ statement_transactions.chain_ok missing — migration 022 did not complete"
+    exit 1
+fi
+
+# Migration 023 — the untested_* totals the dashboards read. All three,
+# because the endpoint selects untested_txns and the import copies every
+# column: a partial migration would pass a one-column check and then
+# fail the import halfway through the swap.
+UNTESTED=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema='$DB_NAME' AND table_name='account_statement_summary'
+          AND column_name IN ('untested_txns','untested_debit','untested_credit')" 2>/dev/null || echo "ERROR")
+if [ "$UNTESTED" = "3" ]; then
+    echo "    ✓ account_statement_summary.untested_* present (migration 023)"
+else
+    echo "    ✗ expected 3 untested_* columns, found $UNTESTED — migration 023 did not complete"
     exit 1
 fi
 

@@ -3,8 +3,7 @@ import {
   BarChart3, Users, ShieldAlert, HelpCircle, MapPin, Camera,
   Trophy, FileDown, FileSpreadsheet, Search, Network, Waypoints, Repeat,
   // Aliased: an unqualified `Map` would shadow the global Map constructor.
-  Map as MapIcon,
-} from 'lucide-react';
+  Map as MapIcon, Fingerprint, Banknote, FileWarning, ArrowLeft} from 'lucide-react';
 import { toast } from 'sonner';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
@@ -17,6 +16,11 @@ import {
   getAccountsByGeography,
 } from '../lib/api/dashboard';
 import { AccountsGeoMap } from '../components/dashboard/AccountsGeoMap';
+import { DuplicateIdsTab } from '../components/dashboard/DuplicateIdsTab';
+import { MoneyTrailTab } from '../components/dashboard/MoneyTrailTab';
+import { Pager, paginate, PAGE_SIZE } from '../components/common/Pager';
+import { StatementCoverageTab } from '../components/dashboard/StatementCoverageTab';
+import { MuleNetworkTab } from '../components/dashboard/MuleNetworkTab';
 import { INDIA_LAYOUT, KARNATAKA_LAYOUT, KARNATAKA_REGION_ALIASES } from '../lib/utils/geo-tile-grid';
 import {
   downloadAccountsPsComparisonExcel, downloadAccountsPsComparisonPdf,
@@ -219,7 +223,23 @@ export function AccountsDashboardPage() {
   // to be role-gated separately.
   const { user } = useAuthStore();
   const isSuperAdmin = user?.role === 'super_admin';
-  const [tab, setTab] = useState<'overview' | 'map' | 'deep' | 'graph' | 'repeat'>('overview');
+  const [tab, setTab] = useState<'overview' | 'map' | 'deep' | 'graph' | 'repeat' | 'dupids' | 'money' | 'coverage' | 'network'>('overview');
+
+  // Set when an account row in Money Trail is clicked. Carries the two
+  // things a trace actually keys on -- FIR numbers repeat across
+  // stations, so the id is not optional -- plus where to go back to.
+  //
+  // Held here rather than inside DeepAnalysisTab because that component
+  // unmounts whenever another tab is shown: state living in it would be
+  // discarded on the very navigation this feature performs.
+  const [focus, setFocus] = useState<{
+    firNo: string; psId: number; from: typeof tab;
+  } | null>(null);
+
+  const traceFir = (firNo: string, psId: number) => {
+    setFocus({ firNo, psId, from: tab });
+    setTab('deep');
+  };
 
   // Drill-down: full account detail grid for a single PS, with Excel + PDF export.
   // Clicking a row in the per-PS comparison table sets this; the Back button on
@@ -316,15 +336,65 @@ export function AccountsDashboardPage() {
             }}>
             <Repeat className="w-4 h-4" /> Repeat Accounts
           </button>
+          <button type="button"
+            onClick={() => setTab('dupids')}
+            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
+            style={{
+              background: tab === 'dupids' ? 'var(--ksp-navy)' : 'transparent',
+              color: tab === 'dupids' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+              borderBottom: tab === 'dupids' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
+            }}>
+            <Fingerprint className="w-4 h-4" /> Duplicate IDs
+          </button>
+          <button type="button"
+            onClick={() => setTab('money')}
+            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
+            style={{
+              background: tab === 'money' ? 'var(--ksp-navy)' : 'transparent',
+              color: tab === 'money' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+              borderBottom: tab === 'money' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
+            }}>
+            <Banknote className="w-4 h-4" /> Money Trail
+          </button>
+          <button type="button"
+            onClick={() => setTab('coverage')}
+            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
+            style={{
+              background: tab === 'coverage' ? 'var(--ksp-navy)' : 'transparent',
+              color: tab === 'coverage' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+              borderBottom: tab === 'coverage' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
+            }}>
+            <FileWarning className="w-4 h-4" /> Statement Coverage
+          </button>
+          <button type="button"
+            onClick={() => setTab('network')}
+            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
+            style={{
+              background: tab === 'network' ? 'var(--ksp-navy)' : 'transparent',
+              color: tab === 'network' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
+              borderBottom: tab === 'network' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
+            }}>
+            <Waypoints className="w-4 h-4" /> Mule Network
+          </button>
         </div>
       )}
 
       {(tab === 'deep' || tab === 'graph') && isSuperAdmin ? (
-        <DeepAnalysisTab mode={tab === 'graph' ? 'graph' : 'table'} />
+        <DeepAnalysisTab mode={tab === 'graph' ? 'graph' : 'table'}
+          focus={focus}
+          onBack={focus ? () => { const t = focus.from; setFocus(null); setTab(t); } : undefined} />
       ) : tab === 'map' && isSuperAdmin ? (
         <GeoMapTab date={date} />
       ) : tab === 'repeat' && isSuperAdmin ? (
         <RepeatAccountsTab />
+      ) : tab === 'dupids' && isSuperAdmin ? (
+        <DuplicateIdsTab />
+      ) : tab === 'money' && isSuperAdmin ? (
+        <MoneyTrailTab onTrace={traceFir} />
+      ) : tab === 'coverage' && isSuperAdmin ? (
+        <StatementCoverageTab />
+      ) : tab === 'network' && isSuperAdmin ? (
+        <MuleNetworkTab onTrace={traceFir} />
       ) : loading ? (
         <div className="text-center py-16 font-semibold" style={{ color: 'var(--ksp-navy)' }}>Loading dashboard...</div>
       ) : (
@@ -666,7 +736,16 @@ const nodeColorFor = (a: { source: string; account_type: string | null; layer: n
     ? NON_MULE_COLOR
     : layerColor(a.layer);
 
-function DeepAnalysisTab({ mode }: { mode: 'table' | 'graph' }) {
+function DeepAnalysisTab({ mode, focus, onBack }: {
+  mode: 'table' | 'graph';
+  /** Set when the user arrived by clicking an account in Money Trail.
+   *  Both fields are required by the trace: FIR numbers are only unique
+   *  per station. */
+  focus?: { firNo: string; psId: number } | null;
+  /** Present only on an arrival-by-click, so the officer can get back
+   *  to the row they came from. */
+  onBack?: () => void;
+}) {
   // Same component instance owns both the table and graph views so
   // switching tabs at the top preserves trace state -- no re-fetch.
   const [firInput, setFirInput] = useState('');
@@ -730,6 +809,32 @@ function DeepAnalysisTab({ mode }: { mode: 'table' | 'graph' }) {
     }
   };
 
+  // Arriving from a Money Trail click: fill both inputs and run the
+  // trace immediately.
+  //
+  // Keyed on firNo + psId rather than on the object, because the parent
+  // creates a fresh object on every click — depending on the object
+  // itself would re-fire the trace on unrelated re-renders. Clicking
+  // the SAME row twice deliberately does nothing: the result is already
+  // on screen.
+  const autoKey = focus ? `${focus.firNo}|${focus.psId}` : '';
+  const [tracedKey, setTracedKey] = useState('');
+  useEffect(() => {
+    if (!focus || autoKey === tracedKey) return;
+    setFirInput(focus.firNo);
+    setSelectedPsId(focus.psId);
+    setTracedKey(autoKey);
+    setFirSubmitted(focus.firNo);
+    setLoading(true);
+    getAccountsFirTrace(focus.firNo, focus.psId)
+      .then(setTrace)
+      .catch((e) => {
+        setTrace(null);
+        toast.error(e instanceof Error ? e.message : 'Trace failed');
+      })
+      .finally(() => setLoading(false));
+  }, [autoKey, tracedKey, focus]);
+
   // Account-state split: how many accounts of a given account_type
   // touching this FIR sit in Karnataka vs elsewhere. `all_accounts`
   // is the only source with `account_type`. NULL branch_state counts
@@ -769,6 +874,17 @@ function DeepAnalysisTab({ mode }: { mode: 'table' | 'graph' }) {
     <div className="space-y-6">
       {/* FIR input bar -- PS dropdown + FIR text + Trace. Both are
            required because FIR Nos are only unique per (unit_id, ps_id). */}
+      {/* Shown only when the officer arrived by clicking a row, so the
+          way back is on screen at the moment it is wanted. Without it
+          the return trip means re-picking the tab, then the filters,
+          then the page — and the row they were reading is gone. */}
+      {onBack && (
+        <button type="button" onClick={onBack}
+          className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-semibold"
+          style={{ background: 'var(--ksp-navy)', color: '#fff' }}>
+          <ArrowLeft className="w-4 h-4" /> Back to Money Trail
+        </button>
+      )}
       <div className="rounded-2xl p-4 flex flex-wrap items-center gap-3" style={cardStyle}>
         <label className="flex items-center gap-2 min-w-[260px]">
           <span className="text-xs font-semibold" style={{ color: 'var(--ksp-navy)' }}>PS:</span>
@@ -1458,6 +1574,15 @@ function GeoMapTab({ date }: { date: string }) {
   );
 }
 
+/** Rows requested per account type.
+ *
+ *  Was 100, which at the default min_firs=2 returned 112 of 711 real
+ *  repeat accounts and said nothing — 599 accounts registered against
+ *  multiple FIRs were simply absent from a screen whose entire purpose
+ *  is to list them. 1,000 covers the current data with room to spare,
+ *  and the banner below fires if it is ever reached anyway. */
+const ROW_CAP = 1000;
+
 function RepeatAccountsTab() {
   const [minFirs, setMinFirs] = useState(2);
   const [muleRows, setMuleRows] = useState<RepeatAccount[] | null>(null);
@@ -1472,8 +1597,8 @@ function RepeatAccountsTab() {
     let alive = true;
     setLoading(true);
     Promise.allSettled([
-      getRepeatAccounts('Mule', minFirs, 100),
-      getRepeatAccounts('Non-Mule', minFirs, 100),
+      getRepeatAccounts('Mule', minFirs, ROW_CAP),
+      getRepeatAccounts('Non-Mule', minFirs, ROW_CAP),
     ]).then(([m, n]) => {
       if (!alive) return;
       if (m.status === 'fulfilled') setMuleRows(m.value);
@@ -1485,8 +1610,23 @@ function RepeatAccountsTab() {
     return () => { alive = false; };
   }, [minFirs]);
 
+  // A full page means the cap was hit, so there are probably more rows
+  // than are shown. The endpoint returns a bare list with no total, so
+  // this is inferred rather than reported — imperfect, but far better
+  // than a table that silently stops.
+  const truncated = (muleRows?.length ?? 0) >= ROW_CAP
+                 || (nonMuleRows?.length ?? 0) >= ROW_CAP;
+
   return (
     <div className="space-y-6">
+      {truncated && (
+        <div className="rounded-xl px-4 py-3 text-xs font-semibold"
+          style={{ background: 'rgba(198,124,29,0.10)',
+                   border: '1px solid rgba(198,124,29,0.35)', color: '#8b1919' }}>
+          ⚠ Showing the first {ROW_CAP.toLocaleString('en-IN')} accounts per type —
+          there are more. Raise the minimum-FIR threshold to narrow the list.
+        </div>
+      )}
       {/* Threshold picker */}
       <div className="rounded-2xl p-4 flex flex-wrap items-center gap-4" style={cardStyle}>
         <div className="text-sm">
@@ -1547,12 +1687,29 @@ function RepeatAccountsTable({ title, typeLabel, accent, rows, onAccountClick }:
   rows: RepeatAccount[];
   onAccountClick: (accountNo: string) => void;
 }) {
+  // Page state lives HERE, not in the parent, so the Mule and Non-Mule
+  // tables page independently — 699 rows in one and 12 in the other,
+  // and moving through one has no business resetting the other.
+  const [page, setPage] = useState(0);
+  // Reset to the first page when the underlying rows change, i.e. when
+  // the Min-FIRs threshold moves. Page 12 of the old list is a blank
+  // screen against the new one (docs/UX.md §3.1).
+  useEffect(() => { setPage(0); }, [rows]);
+  const pg = paginate(rows.length, page);
+  const pageRows = pg.slice(rows);
+
   return (
     <div className="rounded-2xl overflow-hidden" style={cardStyle}>
       <div className="px-5 py-3" style={{ borderTop: `4px solid ${accent}` }}>
         <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>{title}</h3>
         <p className="text-xs opacity-60 mt-0.5">
-          {rows.length} account{rows.length === 1 ? '' : 's'} · sorted by FIR count. Click an account number to open the FIR + layer history.
+          {rows.length === 0
+            ? 'no accounts'
+            : `showing ${(pg.firstIdx + 1).toLocaleString('en-IN')}–`
+              + `${pg.lastIdx.toLocaleString('en-IN')} of `
+              + `${rows.length.toLocaleString('en-IN')} account`
+              + `${rows.length === 1 ? '' : 's'}`}
+          {' '}· sorted by FIR count. Click an account number to open the FIR + layer history.
         </p>
       </div>
       <div className="overflow-x-auto">
@@ -1583,7 +1740,7 @@ function RepeatAccountsTable({ title, typeLabel, accent, rows, onAccountClick }:
                 </td>
               </tr>
             )}
-            {rows.map((r) => (
+            {pageRows.map((r) => (
               <tr key={r.account_no} className="border-t border-slate-100 hover:bg-slate-50">
                 <td className="px-3 py-2 font-mono truncate" title={r.account_no}>
                   <button type="button" onClick={() => onAccountClick(r.account_no)}
@@ -1604,6 +1761,8 @@ function RepeatAccountsTable({ title, typeLabel, accent, rows, onAccountClick }:
           </tbody>
         </table>
       </div>
+      <Pager total={rows.length} page={pg.safePage} pageCount={pg.pageCount}
+        onPage={setPage} noun="accounts" size={PAGE_SIZE} />
     </div>
   );
 }

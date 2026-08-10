@@ -129,6 +129,29 @@ const INDIA_TILES: MapShape[] = [
  *  ("BNU" over "BU"), so they win where the names match. */
 const TILE_LABELS = new Map(INDIA_TILES.map((t) => [t.name, t.label]));
 
+/** Two-letter code for a state or UT — "Maharashtra" -> "MH".
+ *
+ *  Exported so a narrow table column can share the map's abbreviations
+ *  instead of carrying a second list that drifts from it. Matching is
+ *  trimmed and case-insensitive because `all_accounts.branch_state` is
+ *  free text: the picklist is enforced only in the browser, so legacy
+ *  rows hold whatever was typed.
+ *
+ *  Returns null when the value is unknown, and the caller shows the raw
+ *  string. Silently dropping an unrecognised state would hide exactly
+ *  the data-quality problem worth seeing. */
+export function stateAbbr(name: string | null | undefined): string | null {
+  if (!name) return null;
+  const key = name.trim();
+  const hit = TILE_LABELS.get(key);
+  if (hit) return hit;
+  const lower = key.toLowerCase();
+  for (const [n, l] of TILE_LABELS) {
+    if (n.toLowerCase() === lower) return l;
+  }
+  return null;
+}
+
 export const INDIA_LAYOUT: MapLayout = BOUNDARY_SHAPES.length > 0
   ? {
       id: 'india-states',

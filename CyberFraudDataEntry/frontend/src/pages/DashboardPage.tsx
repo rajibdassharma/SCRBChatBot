@@ -705,7 +705,7 @@ function InvestigationTab({ date }: { date: string }) {
   useEffect(() => {
     setLoading(true);
     Promise.allSettled([
-      getRecurringAccounts(date, 2, 50),
+      getRecurringAccounts(date, 2, 2000),
       getBankConcentration(date, 15),
       getDestinationBankConcentration(date, 15),
       getAtmHotspots(date, 15),

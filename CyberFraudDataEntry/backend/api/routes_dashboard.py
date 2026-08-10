@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import case, select, func, and_
+from sqlalchemy import case, select, func, and_, text, true as sa_true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -17,12 +17,16 @@ from models.refund import Refund
 from models.petition import Petition
 from models.dsr_entry import DsrEntry
 from models.nil_declaration import NilDeclaration
+from models.statement_transaction import StatementTransaction
+from models.account_statement_summary import AccountStatementSummary
+from models.upload_ledger import UploadLedger
 from models.mule_entry import MuleEntry
 from models.mule_report import MuleReport
 from models.money_transfer import MoneyTransfer
 from models.atm_withdrawal import AtmWithdrawal
 from models.aeps_transaction import AepsTransaction
 from models.all_account import AllAccount, ACCOUNT_TYPES
+from models.id_photo_hash import IdPhotoHash
 from models.all_account_mule_herder import AllAccountMuleHerder
 from models.victim import Victim
 from models.victim_account import VictimAccount
@@ -45,6 +49,11 @@ from schemas.dashboard import (
     FirPsPerformanceRow, FirDailyPoint,
     FirCrimeTypeReport, FirCrimeTypeRow, FirCrimeOther, FirCrimeDistrictCell,
     FirPsCrimeCount,
+    DuplicateIdSummary, DuplicateIdCluster, DuplicateIdMember,
+    MuleNetworkSummary, MuleNetworkRow, MuleLinkPeer,
+    StatementCoverageSummary, StatementCoverageRow,
+    MoneyTrailSummary, StatementQualityRow, StatementChannelRow,
+    StatementAccountRow, SharedCounterparty,
     NcrpKpiSummary, NcrpPsReportCount, NcrpBankConcentration, NcrpAtmLocation,
     RepeatAccount, AccountFirOccurrence,
 )
@@ -753,7 +762,7 @@ async def get_bank_action_sla(
 async def get_recurring_mule_accounts(
     target_date: date = Query(..., alias="date"),
     min_cases: int = Query(2, ge=2, le=50),
-    limit: int = Query(50, ge=1, le=200),
+    limit: int = Query(2000, ge=1, le=5000),
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1190,7 +1199,7 @@ async def get_layer_distribution(
 async def get_accounts_at_layer(
     target_date: date = Query(..., alias="date"),
     layer: int = Query(..., ge=1, le=50),
-    limit: int = Query(200, ge=1, le=500),
+    limit: int = Query(5000, ge=1, le=20000),
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):
@@ -1622,6 +1631,794 @@ async def get_accounts_comparison(
 # the value picks a SQLAlchemy column below, so letting the client name
 # it would be a straightforward injection of our own choosing.
 _GEO_SCOPES = {"state", "district", "reporting"}
+
+
+@router.get("/duplicate-ids", response_model=DuplicateIdSummary)
+async def get_duplicate_ids(
+    min_accounts: int = Query(2, ge=2, le=50),
+    limit: int = Query(2000, ge=1, le=5000,
+        description="Max clusters. 50 hid 193 of 243 real clusters; the client also warns if this is reached."),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Accounts whose uploaded ID photo is the SAME FILE (F1).
+
+    super_admin only, and deliberately so. The entire value of this
+    view is that a cluster spans police stations — a station-level
+    admin seeing another district's accounts would breach the VAPT
+    7.7/7.8 scoping rule that every other cross-PS surface (Repeat
+    Accounts, Deep Analysis) already respects.
+
+    The match is SHA-256 of the file bytes. Nothing is read OUT of the
+    image: no name, no Aadhaar number, no date of birth. That keeps the
+    finding clear of identity-extraction questions entirely.
+
+    It clusters on SHA-256 rather than the perceptual hash, and that
+    choice was forced by being wrong the first time. Clustering on a
+    64-bit dHash produced two headline clusters of 28 and 23 documents;
+    both were false — 28 and 23 distinct files, 28 and 23 different
+    holder names. The dHash had matched the Aadhaar LAYOUT, not the
+    document, because ID cards are near-identical by design. Exact file
+    identity cannot fail that way: same bytes means the same upload.
+
+    The 24x24 dHash is still stored, and does separate those cases
+    correctly, but near-duplicate search is O(n^2) over ~10.7k images
+    and belongs in an offline pass, not in a request. When that lands
+    it arrives as match_type="similar" alongside these.
+
+    Only rows already in id_photo_hashes are considered — populated by
+    analysis/hash_id_photos.py, not computed here. This endpoint is a
+    read over pre-computed fingerprints and stays fast.
+    """
+    if admin.role != "super_admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Duplicate ID analysis is available to SCRB HQ accounts only.",
+        )
+
+    # Fetch ONLY rows that belong to a multi-account cluster. The
+    # subquery keeps this proportional to the finding (~1.3k rows on
+    # the current corpus) rather than to the whole table.
+    q = (
+        select(
+            IdPhotoHash.file_sha256,
+            IdPhotoHash.file_path,
+            IdPhotoHash.account_id,
+            AllAccount.account_holder_name,
+            AllAccount.account_no,
+            AllAccount.fir_no,
+            AllAccount.account_type,
+            AllAccount.bank_name,
+            Unit.name.label("district"),
+            PoliceStation.station_name.label("ps_name"),
+        )
+        .select_from(IdPhotoHash)
+        .join(AllAccount, AllAccount.id == IdPhotoHash.account_id)
+        .outerjoin(Unit, Unit.id == AllAccount.unit_id)
+        .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+        .where(IdPhotoHash.file_sha256.in_(
+            select(IdPhotoHash.file_sha256)
+            .group_by(IdPhotoHash.file_sha256)
+            .having(func.count(func.distinct(IdPhotoHash.account_id)) >= min_accounts)
+        ))
+    )
+    q = where_not_test(q, admin,
+                       exclude_test_unit(AllAccount.unit_id),
+                       exclude_test_ps(AllAccount.ps_id))
+    rows = (await db.execute(q)).all()
+
+    total_hashed = (await db.execute(
+        select(func.count(IdPhotoHash.id))
+    )).scalar() or 0
+
+    grouped: dict[str, list] = {}
+    for r in rows:
+        grouped.setdefault(r.file_sha256, []).append(r)
+
+    clusters: List[DuplicateIdCluster] = []
+    for fp, members in grouped.items():
+        accounts = {m.account_id for m in members}
+        if len(accounts) < min_accounts:
+            continue
+        holders = {(m.account_holder_name or "").strip().lower()
+                   for m in members if (m.account_holder_name or "").strip()}
+        types = sorted({m.account_type for m in members if m.account_type})
+        clusters.append(DuplicateIdCluster(
+            fingerprint=fp,
+            match_type="exact",
+            # Every member IS byte-for-byte the same file, so the first
+            # is representative in the strictest sense. Signed with the
+            # same 1-hour HMAC scheme the rest of /uploads/* uses — no
+            # new access path.
+            image_url=sign_path(members[0].file_path),
+            images=len(members),
+            accounts=len(accounts),
+            distinct_holders=len(holders),
+            distinct_account_nos=len({(m.account_no or "").strip()
+                                      for m in members if (m.account_no or "").strip()}),
+            distinct_firs=len({m.fir_no for m in members if m.fir_no}),
+            distinct_ps=len({m.ps_name for m in members if m.ps_name}),
+            distinct_districts=len({m.district for m in members if m.district}),
+            has_victim="Victim" in types,
+            account_types=types,
+            members=[DuplicateIdMember(
+                account_id=m.account_id,
+                account_holder_name=m.account_holder_name,
+                account_no=m.account_no,
+                fir_no=m.fir_no,
+                account_type=m.account_type,
+                district=m.district,
+                ps_name=m.ps_name,
+                bank_name=m.bank_name,
+            ) for m in members],
+        ))
+
+    # Rank by SPREAD, not size, and push victim-bearing clusters down.
+    # A network does not recruit the people it defrauds, so a cluster
+    # containing Victim accounts reads as a placeholder image — on the
+    # current corpus the single largest cluster is exactly that, and
+    # left unranked it would sit at the top of the screen and teach
+    # officers the feature is noise.
+    #
+    # The lead term is the WEAKER of {distinct account numbers, distinct
+    # holder names}, not either one alone, because identity reuse needs
+    # both and each is innocuous by itself. Two real cases from this
+    # corpus forced that, one for each half:
+    #
+    #   names alone   — one file, three FIRs, three districts, names
+    #                   "M/S. GREEN AURA ENTERPRISES" / "Karan" /
+    #                   "Karan s/o manoj", all on ONE account number at
+    #                   one bank. One mule account complained about in
+    #                   three districts, with the name typed three ways.
+    #   numbers alone — one file, six accounts, six account numbers, ONE
+    #                   name. A person's own six accounts.
+    #
+    # min() of the two ranks both of those below a cluster with four
+    # names on four different account numbers, which is the real thing.
+    clusters.sort(
+        key=lambda c: (
+            0 if c.has_victim else 1,
+            min(c.distinct_account_nos, c.distinct_holders, 50),
+            min(c.distinct_ps, 20),
+            min(c.distinct_districts, 20),
+            min(c.distinct_account_nos, 50),
+            c.distinct_firs,
+        ),
+        reverse=True,
+    )
+
+    return DuplicateIdSummary(
+        total_hashed=int(total_hashed),
+        clusters=len(clusters),
+        with_multiple_holders=sum(1 for c in clusters if c.distinct_holders >= 2),
+        across_police_stations=sum(1 for c in clusters if c.distinct_ps >= 2),
+        across_firs=sum(1 for c in clusters if c.distinct_firs >= 2),
+        # "Strong" means the innocent explanations are exhausted: one
+        # file, 2+ DIFFERENT account numbers, 2+ different holder names.
+        # Both halves are load-bearing. Different names on ONE account
+        # number is an operator typing the same person three ways;
+        # different account numbers under ONE name is one person's own
+        # accounts. Only both together say "this document was used to
+        # open accounts for people it does not belong to".
+        #
+        # Note what is NOT required: cross-station spread. An earlier
+        # definition demanded 2+ police stations, on the reasoning that
+        # spread is hardest to explain innocently. It scored the real
+        # top finding at zero — one ID file behind SEVEN accounts, seven
+        # names and seven account numbers, all inside a single station.
+        # A mule farm run by one recruiter sits in one station, and that
+        # is not a weaker case, only a narrower one. Station spread is
+        # its own KPI (across_police_stations) rather than a gate here.
+        strong_signal=sum(1 for c in clusters
+                          if c.distinct_account_nos >= 2
+                          and c.distinct_holders >= 2
+                          and not c.has_victim),
+        rows=clusters[:limit],
+    )
+
+
+#: Handle fragments belonging to payment infrastructure rather than to
+#: a person or a business. These are the rails — bill-payment
+#: aggregators, card switches, wallet PSPs — so they are paid by
+#: virtually every account and carry no investigative signal.
+#:
+#: Substring match on the UPI handle, deliberately loose: PSPs mint
+#: per-merchant handles (bbpsbp@ybl, bbpsbp@ax) and matching the stem
+#: catches the family. A false positive here costs one row on a
+#: leaderboard; a false negative fills the top of the panel with noise.
+#: Accepted values for the Money Trail state filter.
+_MT_SCOPES = {"all", "karnataka", "other"}
+
+_PAYMENT_INFRA = (
+    "bbps", "billdesk", "euronet", "razorpay", "payu", "ccavenue",
+    "cashfree", "billpay", "npci", "upiswitch", "atomtech", "worldline",
+    "pinelabs", "phonepe", "paytm-", "gpay", "googlepay", "okpay",
+)
+
+
+#: Accepted values for the Statement Coverage status filter.
+_COVERAGE_STATUS = {"all", "missing", "unparsed", "unreadable", "parsed"}
+
+#: Believable window for an FIR registration date, used only for
+#: ageing. `cases.registration_date` in this corpus runs from 0001-01-01
+#: to 2028-07-28 — both ends are data-entry noise, and a row aged from
+#: the year 1 would sit permanently at the top of a work list sorted by
+#: how long the gap has been open.
+_FIR_DATE_MIN = date(2015, 1, 1)
+
+
+@router.get("/statement-coverage", response_model=StatementCoverageSummary)
+async def get_statement_coverage(
+    state_scope: str = Query("all", description="all | karnataka | other"),
+    account_type: str = Query("All", description="All | Mule | Non-Mule | Victim"),
+    status: str = Query("all",
+        description="all | missing | unparsed | unreadable | parsed"),
+    limit: int = Query(25000, ge=1, le=30000,
+        description="Max rows. 5,000 hid 12,618 of 17,618 accounts."),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Which accounts still have no usable bank statement (F2 coverage).
+
+    super_admin only, matching every other cross-PS surface.
+
+    WHY THIS IS A SEPARATE SCREEN FROM MONEY TRAIL
+    ----------------------------------------------
+    Money Trail analyses statements that exist. This one is about the
+    ones that do not, which is a chasing job rather than an analysis —
+    the output is a list to hand a bank nodal officer, so the export is
+    the deliverable and the columns are identity and age, not rupees.
+
+    It also exists because the absence was invisible. Money Trail
+    showed 4 Karnataka mule accounts and the map showed 744; nothing on
+    screen explained that the difference was unparsed uploads rather
+    than accounts with no money movement. A dashboard that cannot say
+    what it is missing invites exactly that reading.
+
+    FOUR STATES, NOT ONE "MISSING"
+    ------------------------------
+        missing     no file attached                -> chase the bank
+        unparsed    attached, batch job hasn't run  -> clears itself
+        unreadable  attached, yielded no rows       -> OCR or parser work
+        parsed      transactions extracted
+
+    Lumping these together would put the batch job's own backlog in
+    front of an officer as though it were their problem. On the current
+    corpus `unparsed` is 90% of everything, and none of it is anyone's
+    work.
+    """
+    if admin.role != "super_admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Statement coverage is available to SCRB HQ accounts only.")
+    if state_scope not in _MT_SCOPES:
+        raise HTTPException(status_code=422,
+            detail=f"state_scope must be one of: {', '.join(sorted(_MT_SCOPES))}")
+    if account_type != "All" and account_type not in ACCOUNT_TYPES:
+        raise HTTPException(status_code=422,
+            detail=f"account_type must be 'All' or one of: {', '.join(sorted(ACCOUNT_TYPES))}")
+    if status not in _COVERAGE_STATUS:
+        raise HTTPException(status_code=422,
+            detail=f"status must be one of: {', '.join(sorted(_COVERAGE_STATUS))}")
+
+    has_file = and_(AllAccount.account_statement_path.isnot(None),
+                    AllAccount.account_statement_path != "")
+    # Joined on account_id, which the parser sets from the same basename
+    # mapping the upload used. A ledger row with a NULL account_id is an
+    # orphan file belonging to no account, and correctly matches nothing
+    # here.
+    led_status = UploadLedger.status
+    status_expr = case(
+        (~has_file, "missing"),
+        (led_status.is_(None), "unparsed"),
+        (led_status.in_(["scanned", "failed", "deferred"]), "unreadable"),
+        else_="parsed",
+    )
+
+    # One case row per FIR. A plain join fans out — `cases` holds
+    # duplicate fir_no values, and joining directly turned 1,415
+    # missing-statement accounts into 5,002 rows.
+    fir_dates = (
+        select(Case.fir_no.label("fir_no"),
+               func.min(Case.registration_date).label("rd"))
+        .where(Case.registration_date.isnot(None))
+        .where(Case.registration_date >= _FIR_DATE_MIN)
+        .group_by(Case.fir_no)
+        .subquery()
+    )
+
+    def scoped(q):
+        q = (q.select_from(AllAccount)
+              .outerjoin(UploadLedger, UploadLedger.account_id == AllAccount.id)
+              .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+              .outerjoin(Unit, Unit.id == AllAccount.unit_id))
+        q = where_not_test(q, admin,
+                           exclude_test_unit(AllAccount.unit_id),
+                           exclude_test_ps(AllAccount.ps_id))
+        if account_type != "All":
+            q = q.where(AllAccount.account_type == account_type)
+        st = func.lower(func.trim(func.coalesce(AllAccount.branch_state, "")))
+        if state_scope == "karnataka":
+            q = q.where(st == "karnataka")
+        elif state_scope == "other":
+            q = q.where(st != "karnataka").where(st != "")
+        return q
+
+    # Counts ignore the STATUS filter on purpose, so the KPI row stays a
+    # stable denominator while the user clicks between statuses.
+    counts = {k: 0 for k in ("missing", "unparsed", "unreadable", "parsed")}
+    verified_parsed = 0
+    for st_val, n, ok_n in (await db.execute(scoped(select(
+        status_expr.label("st"),
+        func.count(AllAccount.id),
+        func.coalesce(func.sum(case((led_status == "ok", 1), else_=0)), 0),
+    )).group_by(status_expr))).all():
+        counts[str(st_val)] = int(n)
+        if str(st_val) == "parsed":
+            verified_parsed = int(ok_n or 0)
+
+    unstated = 0
+    if state_scope != "all":
+        q_un = (select(func.count(AllAccount.id)).select_from(AllAccount)
+                .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+                .where(func.trim(func.coalesce(AllAccount.branch_state, "")) == ""))
+        q_un = where_not_test(q_un, admin,
+                              exclude_test_unit(AllAccount.unit_id),
+                              exclude_test_ps(AllAccount.ps_id))
+        if account_type != "All":
+            q_un = q_un.where(AllAccount.account_type == account_type)
+        unstated = int((await db.execute(q_un)).scalar() or 0)
+
+    q = scoped(select(
+        AllAccount.id, AllAccount.account_holder_name, AllAccount.account_no,
+        AllAccount.bank_name, AllAccount.fir_no, AllAccount.account_type,
+        PoliceStation.station_name, Unit.name,
+        func.trim(func.coalesce(AllAccount.branch_state, "")),
+        status_expr, UploadLedger.detail, fir_dates.c.rd,
+    )).outerjoin(fir_dates, fir_dates.c.fir_no == AllAccount.fir_no)
+    if status != "all":
+        q = q.where(status_expr == status)
+    # Oldest gap first, and NULL ages last in both directions — an
+    # unknown age is not a young one.
+    q = q.order_by(fir_dates.c.rd.is_(None), fir_dates.c.rd.asc()).limit(limit)
+
+    today = date.today()
+    rows = [
+        StatementCoverageRow(
+            account_id=r[0], account_holder_name=r[1], account_no=r[2],
+            bank_name=r[3], fir_no=r[4], account_type=r[5], ps_name=r[6],
+            district=r[7], branch_state=r[8] or None, status=str(r[9]),
+            detail=r[10], fir_date=r[11],
+            days_open=(today - r[11]).days if r[11] else None,
+        )
+        for r in (await db.execute(q)).all()
+    ]
+
+    return StatementCoverageSummary(
+        state_scope=state_scope, account_type=account_type, status=status,
+        total_accounts=sum(counts.values()),
+        missing=counts["missing"], unparsed=counts["unparsed"],
+        unreadable=counts["unreadable"], parsed=counts["parsed"],
+        parsed_verified=verified_parsed,
+        accounts_without_state=unstated,
+        rows=rows,
+    )
+
+
+@router.get("/mule-network", response_model=MuleNetworkSummary)
+async def get_mule_network(
+    cross_fir_only: bool = Query(True,
+        description="Only accounts with at least one link to a DIFFERENT FIR"),
+    state_scope: str = Query("all", description="all | karnataka | other"),
+    limit: int = Query(5000, ge=1, le=20000),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Mule accounts directly connected to other mule accounts (F4).
+
+    super_admin only. The entire value here is that links cross police
+    stations and FIRs, so a station-scoped view would be meaningless
+    and would breach the VAPT 7.7/7.8 rule besides.
+
+    WHAT A LINK IS
+    --------------
+    A's parsed bank statement records a transfer to B's account number,
+    and both A and B are already recorded in all_accounts as Mule.
+    Nothing is inferred. This is deliberately NOT the shared-destination
+    signal: two mules paying the same payment gateway are not connected
+    in any useful sense, and treating them as connected would link every
+    account to every other through BBPS and Amazon.
+
+    Reads mule_account_link, built by analysis/build_links.py. Matching
+    a free-text counterparty number against 13,970 mule numbers takes
+    ~75,000 indexed lookups and half a minute — not something to do
+    behind a page load. See migration 021 for why the normalisation
+    cannot be expressed as a SQL join.
+
+    ON THE AMOUNTS
+    --------------
+    Link COUNTS are sound: counterparty extraction is independent of the
+    amount columns that the balance-chain work has yet to clean up. The
+    rupee figures are better here than elsewhere by luck rather than
+    design — the badly misparsed rows had no counterparty matching a
+    mule, so they never became links — but they are still summed from
+    unvalidated rows and should be read as indicative.
+    """
+    if admin.role != "super_admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Mule network analysis is available to SCRB HQ accounts only.")
+    if state_scope not in _MT_SCOPES:
+        raise HTTPException(status_code=422,
+            detail=f"state_scope must be one of: {', '.join(sorted(_MT_SCOPES))}")
+
+    links = (await db.execute(text("""
+        SELECT src_account_id, dst_account_id, txns, total_debit, cross_fir
+        FROM mule_account_link"""))).all()
+    if not links:
+        return MuleNetworkSummary()
+
+    ids = {r[0] for r in links} | {r[1] for r in links}
+    q = (select(
+            AllAccount.id, AllAccount.account_holder_name, AllAccount.account_no,
+            AllAccount.bank_name, AllAccount.fir_no,
+            PoliceStation.station_name, PoliceStation.id, Unit.name,
+            func.trim(func.coalesce(AllAccount.branch_state, "")),
+         )
+         .select_from(AllAccount)
+         .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+         .outerjoin(Unit, Unit.id == AllAccount.unit_id)
+         .where(AllAccount.id.in_(ids)))
+    q = where_not_test(q, admin,
+                       exclude_test_unit(AllAccount.unit_id),
+                       exclude_test_ps(AllAccount.ps_id))
+    info = {r[0]: r for r in (await db.execute(q)).all()}
+
+    def in_scope(aid: str) -> bool:
+        r = info.get(aid)
+        if r is None:
+            return False           # filtered out by test-station scoping
+        st = (r[8] or "").strip().lower()
+        if state_scope == "karnataka":
+            return st == "karnataka"
+        if state_scope == "other":
+            return st not in ("karnataka", "")
+        return True
+
+    # Accumulate both directions onto each account. A transfer is
+    # recorded once, on the payer's statement; the receiver needs to see
+    # it too, so each link is read from both ends.
+    agg: dict = {}
+
+    def bucket(aid):
+        return agg.setdefault(aid, {"peers": {}, "txns": 0, "amt": 0.0,
+                                    "out": 0, "in": 0, "cross": set()})
+
+    for src, dst, n, amt, xf in links:
+        n, amt, xf = int(n), float(amt or 0), bool(xf)
+        for me, other, direction in ((src, dst, "out"), (dst, src, "in")):
+            if not in_scope(me) or other not in info:
+                continue
+            b = bucket(me)
+            b["txns"] += n
+            b["amt"] += amt
+            b["out" if direction == "out" else "in"] += 1
+            if xf:
+                b["cross"].add(other)
+            o = info[other]
+            b["peers"][(other, direction)] = MuleLinkPeer(
+                account_id=other, account_holder_name=o[1], account_no=o[2],
+                bank_name=o[3], fir_no=o[4], ps_name=o[5],
+                direction=direction, cross_fir=xf, txns=n, amount=amt)
+
+    rows: List[MuleNetworkRow] = []
+    for aid, b in agg.items():
+        peers = list(b["peers"].values())
+        connected = len({p.account_id for p in peers})
+        cross = len(b["cross"])
+        if cross_fir_only and cross == 0:
+            continue
+        r = info[aid]
+        peers.sort(key=lambda p: (-int(p.cross_fir), -p.amount))
+        rows.append(MuleNetworkRow(
+            account_id=aid, account_holder_name=r[1], account_no=r[2],
+            bank_name=r[3], fir_no=r[4], ps_name=r[5], ps_id=r[6],
+            district=r[7], branch_state=r[8] or None,
+            connected=connected, cross_fir=cross,
+            out_links=b["out"], in_links=b["in"],
+            txns=b["txns"], amount=b["amt"], peers=peers))
+
+    # Cross-FIR reach first: a mule wired to six accounts inside its own
+    # FIR is one case, while a mule wired to two accounts in two other
+    # FIRs is three cases nobody had joined.
+    rows.sort(key=lambda r: (r.cross_fir, r.connected, r.amount), reverse=True)
+
+    with_stmts = (await db.execute(
+        select(func.count(func.distinct(AccountStatementSummary.account_id)))
+        .select_from(AccountStatementSummary)
+        .join(AllAccount, AllAccount.id == AccountStatementSummary.account_id)
+        .where(AllAccount.account_type == "Mule"))).scalar() or 0
+
+    return MuleNetworkSummary(
+        total_links=len(links),
+        cross_fir_links=sum(1 for r in links if r[4]),
+        accounts_in_network=len(agg),
+        accounts_with_statements=int(with_stmts),
+        rows=rows[:limit],
+    )
+
+
+@router.get("/money-trail", response_model=MoneyTrailSummary)
+async def get_money_trail(
+    state_scope: str = Query("all",
+        description="all | karnataka | other — on all_accounts.branch_state, "
+                    "i.e. where the BANK BRANCH is, not the police district"),
+    account_type: str = Query("All", description="All | Mule | Non-Mule | Victim"),
+    account_limit: int = Query(20000, ge=1, le=25000,
+        description="Max accounts returned. The client paginates and exports "
+                    "these, so it needs the whole set, not one page of it."),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """What the parsed bank statements say (F2).
+
+    super_admin only, on the same reasoning as Duplicate IDs: this view
+    crosses police station boundaries, and a station-level admin seeing
+    another district's transactions would breach the VAPT 7.7/7.8
+    scoping rule.
+
+    WHY account_limit IS 20,000 AND NOT 1,000
+    -----------------------------------------
+    It was 1,000 when this corpus held 154 accounts, and it silently
+    truncated the moment the backfill passed that. Measured: raising it
+    costs the server nothing — 1,000 rows took 793 ms and 20,000 took
+    825 ms, because the cost is the GROUP BY, not the rows returned. It
+    costs the client ~404 bytes a row, so the full corpus is about
+    5.4 MB uncompressed and under 1 MB gzipped.
+
+    `accounts_covered` is deliberately computed WITHOUT the limit, so
+    the client can always tell that it received fewer accounts than
+    exist and say so. A truncated table that looks complete is worse
+    than a slow one.
+
+    READS THE SUMMARY, NOT THE TRANSACTIONS
+    ---------------------------------------
+    Every figure here comes from account_statement_summary, which the
+    parser maintains at (account, channel) grain. The fact table is not
+    touched.
+
+    That is a measured decision. Aggregating statement_transactions per
+    request cost ~6.8s on 190,435 rows, with cold and warm timings
+    identical because the 194 MB table does not fit the 128 MB InnoDB
+    buffer pool. After the full backfill it is ~15.5M rows — the same
+    screen, roughly 80x the work. The summary is ~700 rows today and
+    ~130k after the backfill, so the cost stops tracking transaction
+    volume and starts tracking account count, which grows far slower.
+
+    VERIFIED vs UNVERIFIED IS SURFACED, NOT HIDDEN
+    ----------------------------------------------
+    Each statement carries its own arithmetic check: a running balance
+    satisfying prev - debit + credit = balance on every row. Statements
+    that fail are still parsed and stored, because a lead an officer
+    can eyeball beats no lead — but their debit and credit columns may
+    be transposed, so presenting their totals as fact would be a lie
+    told in a confident font.
+
+    Coverage counts therefore span every parsed row, while rupee totals
+    come only from reconciled statements. Before that rule was applied
+    the tab reported ₹111 trillion of credits — a third of India's GDP,
+    from 154 accounts — because 214 rows in one failed file had a
+    currency column read as an amount. The correct figure is ₹1.10
+    billion.
+    """
+    if admin.role != "super_admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Money trail analysis is available to SCRB HQ accounts only.",
+        )
+    if state_scope not in _MT_SCOPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"state_scope must be one of: {', '.join(sorted(_MT_SCOPES))}")
+    if account_type != "All" and account_type not in ACCOUNT_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"account_type must be 'All' or one of: {', '.join(sorted(ACCOUNT_TYPES))}")
+
+    S = AccountStatementSummary
+
+    def scoped(q):
+        """Join the summary to its account and apply the standard filters."""
+        q = (q.select_from(S)
+              .join(AllAccount, AllAccount.id == S.account_id)
+              .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+              .outerjoin(Unit, Unit.id == AllAccount.unit_id))
+        q = where_not_test(q, admin,
+                           exclude_test_unit(AllAccount.unit_id),
+                           exclude_test_ps(AllAccount.ps_id))
+        if account_type != "All":
+            q = q.where(AllAccount.account_type == account_type)
+        # branch_state is free text, so compare TRIMmed and case-folded.
+        # "Karnataka " and "karnataka" are the same state; only an exact
+        # match would put them on opposite sides of this filter.
+        st = func.lower(func.trim(func.coalesce(AllAccount.branch_state, "")))
+        if state_scope == "karnataka":
+            q = q.where(st == "karnataka")
+        elif state_scope == "other":
+            # NOT-Karnataka AND recorded. Accounts with a blank state are
+            # deliberately in NEITHER bucket: for a Karnataka police
+            # force, filing an unknown branch under "Other States" would
+            # assert the one fact the row is missing. They remain
+            # reachable under All States, and accounts_without_state
+            # reports how many there are so the difference is explained
+            # rather than merely noticed.
+            q = q.where(st != "karnataka").where(st != "")
+        return q
+
+    # File outcomes, straight from the ledger — one row per uploaded
+    # file, so this is small however large the corpus of rows becomes.
+    led = (await db.execute(text(
+        "SELECT status, COUNT(*) FROM upload_ledger "
+        "WHERE file_kind = 'statement' GROUP BY status"
+    ))).all()
+    quality = [StatementQualityRow(status=k, files=v)
+               for k, v in sorted(led, key=lambda kv: -kv[1])]
+
+    head = (await db.execute(scoped(select(
+        func.coalesce(func.sum(S.txns), 0),
+        func.count(func.distinct(S.account_id)),
+        func.min(S.first_txn),
+        func.max(S.last_txn),
+        func.coalesce(func.sum(S.verified_txns), 0),
+        func.coalesce(func.sum(S.verified_debit), 0),
+        func.coalesce(func.sum(S.verified_credit), 0),
+        # Count only. There is a summary column holding the untested
+        # DEBIT too, and it is not read here or anywhere else: a sum of
+        # amounts that nothing could check is not a smaller truth than
+        # the verified total, it is an unbacked claim wearing the same
+        # rupee sign. The count is the honest form of the same fact.
+        func.coalesce(func.sum(S.untested_txns), 0),
+    )))).first()
+    if not head or not head[0]:
+        return MoneyTrailSummary(quality=quality, state_scope=state_scope,
+                                 account_type=account_type)
+
+    total_txns = int(head[0])
+    verified_rows = int(head[4] or 0)
+
+    # Distinct statement FILES in scope. Counted on the ledger rather
+    # than the summary: the summary is grouped by channel, so a file's
+    # rows appear under several channels and could not be counted once.
+    stmt_q = (select(func.count(func.distinct(UploadLedger.file_path)))
+              .select_from(UploadLedger)
+              .join(AllAccount, AllAccount.id == UploadLedger.account_id)
+              .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+              .where(UploadLedger.file_kind == "statement"))
+    stmt_q = where_not_test(stmt_q, admin,
+                            exclude_test_unit(AllAccount.unit_id),
+                            exclude_test_ps(AllAccount.ps_id))
+    if account_type != "All":
+        stmt_q = stmt_q.where(AllAccount.account_type == account_type)
+    statements_parsed = int((await db.execute(stmt_q)).scalar() or 0)
+
+    channels = [
+        StatementChannelRow(channel=r[0] or "Not identified", txns=int(r[1]),
+                            debit=float(r[2] or 0), credit=float(r[3] or 0))
+        for r in (await db.execute(scoped(select(
+            S.channel,
+            func.coalesce(func.sum(S.txns), 0),
+            func.coalesce(func.sum(S.debit), 0),
+            func.coalesce(func.sum(S.credit), 0),
+        )).group_by(S.channel)
+          .order_by(func.sum(S.txns).desc()).limit(12))).all()
+    ]
+
+    top_accounts = [
+        StatementAccountRow(
+            account_id=r[0], account_holder_name=r[1], account_no=r[2],
+            bank_name=r[3], fir_no=r[4], account_type=r[5], ps_name=r[6],
+            district=r[7], branch_state=r[8] or None,
+            txns=int(r[9]), debit=float(r[10] or 0), credit=float(r[11] or 0),
+            first_txn=r[12], last_txn=r[13],
+            ps_id=r[15], untested_txns=int(r[16] or 0),
+            rejected_txns=max(0, int(r[9]) - int(r[17] or 0) - int(r[16] or 0)),
+            # THE BADGE COMES FROM ROWS, NOT FROM THE FILE FLAG.
+            #
+            # It used to be MIN(all_verified) -- the file-level
+            # reconciliation result. But the money beside it is summed
+            # from verified_debit, which already excludes every row that
+            # failed. So an account could show a figure built purely
+            # from passing rows and still be stamped UNVERIFIED because
+            # one file it came from scored 99.22% instead of 100%.
+            #
+            # Measured before this change: 19,762 groups carried the
+            # badge and 11,728 of them -- 59% -- had ZERO rejected rows.
+            # A warning wrong three times in five is one an officer
+            # learns to scroll past, which costs more than it saves on
+            # the 41% that are real.
+            #
+            # Untested rows deliberately do NOT trip it: "nothing could
+            # check this" is already reported, precisely, by the
+            # unchecked count. Reserve the badge for arithmetic that
+            # actively disagreed.
+            verified=(int(r[9]) - int(r[17] or 0) - int(r[16] or 0)) <= 0,
+        )
+        for r in (await db.execute(scoped(select(
+            S.account_id,
+            AllAccount.account_holder_name, AllAccount.account_no,
+            AllAccount.bank_name, AllAccount.fir_no, AllAccount.account_type,
+            PoliceStation.station_name, Unit.name,
+            func.trim(func.coalesce(AllAccount.branch_state, "")),
+            func.coalesce(func.sum(S.txns), 0),
+            # verified_debit, NOT debit — the same rule the KPI cards
+            # above already follow. Summing the unverified column here
+            # was how one RBL statement, whose account number had been
+            # read as its debit amount, reached the top of this table
+            # showing ₹6.68 QUADRILLION. The KPIs were protected; the
+            # rows beneath them were not, and the rows are what an
+            # officer reads and exports.
+            #
+            # An account that cannot be verified therefore shows ₹0 with
+            # an UNVERIFIED badge rather than a confident wrong number.
+            # Its transaction count is still shown, so it never vanishes
+            # — only its money claim is withheld.
+            func.coalesce(func.sum(S.verified_debit), 0),
+            func.coalesce(func.sum(S.verified_credit), 0),
+            func.min(S.first_txn),
+            func.max(S.last_txn),
+            # all_verified is the FILE-level reconciliation flag. It is
+            # still selected, but no longer decides the badge — see the
+            # row-level computation below.
+            func.min(S.all_verified),
+            PoliceStation.id,
+            # Why this row's money may read Rs 0. Without it, an account
+            # whose statement had no balance column is indistinguishable
+            # from one that genuinely moved nothing -- and those two
+            # deserve opposite reactions from an investigator.
+            func.coalesce(func.sum(S.untested_txns), 0),
+            # Rows that were tested AND passed. Combined with txns and
+            # untested above, this yields the rejected count -- the only
+            # one of the three that means "these figures are wrong".
+            func.coalesce(func.sum(S.verified_txns), 0),
+        )).group_by(
+            S.account_id, AllAccount.account_holder_name,
+            AllAccount.account_no, AllAccount.bank_name, AllAccount.fir_no,
+            AllAccount.account_type, PoliceStation.station_name, Unit.name,
+            func.trim(func.coalesce(AllAccount.branch_state, "")),
+            PoliceStation.id,
+        ).order_by(func.sum(S.debit).desc()).limit(account_limit))).all()
+    ]
+
+    # Measured OUTSIDE the state scope on purpose, and skipped when no
+    # state filter is active. Inside the scope it would always read 0 —
+    # precisely when the UI needs to say "these N accounts have no state
+    # and appear only under All States".
+    unstated = 0
+    if state_scope != "all":
+        q_un = (select(func.count(func.distinct(S.account_id)))
+                .select_from(S)
+                .join(AllAccount, AllAccount.id == S.account_id)
+                .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+                .where(func.trim(func.coalesce(AllAccount.branch_state, "")) == ""))
+        q_un = where_not_test(q_un, admin,
+                              exclude_test_unit(AllAccount.unit_id),
+                              exclude_test_ps(AllAccount.ps_id))
+        if account_type != "All":
+            q_un = q_un.where(AllAccount.account_type == account_type)
+        unstated = int((await db.execute(q_un)).scalar() or 0)
+
+    return MoneyTrailSummary(
+        state_scope=state_scope, account_type=account_type,
+        accounts_without_state=unstated,
+        transactions=total_txns, accounts_covered=int(head[1]),
+        statements_parsed=statements_parsed,
+        date_from=head[2], date_to=head[3],
+        total_debit=float(head[5] or 0), total_credit=float(head[6] or 0),
+        verified_pct=round(100.0 * verified_rows / max(1, total_txns), 1),
+        untested_txns=int(head[7] or 0),
+        quality=quality, channels=channels, top_accounts=top_accounts,
+        shared_counterparties=[],
+    )
 
 
 @router.get("/accounts-geo", response_model=List[AccountsGeoRegion])
@@ -3030,7 +3827,11 @@ async def get_repeat_accounts(
     account_type: str = Query(..., description="Account type to aggregate -- 'Mule' or 'Non-Mule'"),
     min_firs: int = Query(default=2, ge=2, le=50,
                           description="Minimum distinct FIR count to be considered repeat"),
-    limit: int = Query(default=100, ge=1, le=500),
+    limit: int = Query(default=1000, ge=1, le=5000,
+                       description="Max rows. 100 was the old default and it "
+                                   "silently hid 599 of 711 repeat accounts at "
+                                   "min_firs=2 — the client shows a warning if "
+                                   "this cap is ever reached."),
     admin: CurrentUser = Depends(require_admin),
     db: AsyncSession = Depends(get_db),
 ):

@@ -21,6 +21,17 @@ python-dotenv>=1.0.0
 gunicorn>=23.0.0
 # Excel upload/parsing for bank transaction files + seed (All District CEN_PS.xlsx)
 openpyxl>=3.1.0
+
+# ── Upload analysis (analysis/) deps live in requirements-analysis.txt ─
+# pdfplumber, xlrd and an explicit Pillow are NOT listed here on
+# purpose. The web application never imports the `analysis` package, so
+# the server has no use for them — and pdfplumber 0.11.10+ pulls
+# Pillow>=12.2, which is the library reportlab renders every
+# operator-facing PDF with. Production must not take that upgrade to
+# gain a capability it does not use.
+#
+# Install on the machine that parses uploads (the dev laptop):
+#     pip install -r requirements.txt -r requirements-analysis.txt
 # PDF report generation (DSR, Mule reports, Case files, Dashboard snapshot)
 reportlab>=4.2.0
 # HTTP client used by bulk indexing + tests

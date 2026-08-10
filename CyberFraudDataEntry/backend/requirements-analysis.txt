@@ -1,0 +1,41 @@
+# ============================================================================
+# CyberFraud Data Entry — dependencies for the UPLOAD ANALYSIS jobs only.
+#
+# Install on the machine that PARSES uploaded files (currently the
+# development laptop). Do NOT install on the production server.
+#
+#     pip install -r requirements.txt -r requirements-analysis.txt
+#
+# WHY THIS IS A SEPARATE FILE
+# ---------------------------
+# The web application never imports the `analysis` package — verified
+# across cyber_fraud.py, api/ and models/ — and pdfplumber/xlrd appear
+# nowhere outside analysis/. So the running server has no use for them.
+#
+# Keeping them out of requirements.txt is not tidiness, it is risk
+# removal. pdfplumber 0.11.10+ requires Pillow>=12.2, and Pillow is what
+# reportlab renders every operator-facing PDF with — case files, mule
+# reports, the daily DSR sheets. Adding pdfplumber to production's
+# dependency set would silently upgrade Pillow underneath reportlab for
+# ~90 users, to gain a capability production does not use.
+#
+# The analysis results reach production as a ~15 MB SQL export instead
+# (deploy/export-analysis.sh → deploy/import-analysis.sh), so the server
+# gets the findings without ever running the parser.
+# ============================================================================
+
+# PDF statement reading. 0.11.4 pinned deliberately: later releases
+# require Pillow>=12.2, which conflicts with other tooling commonly
+# present on a shared development machine (streamlit pins pillow<12).
+# 0.11.4 is the version the current corpus was parsed with.
+pdfplumber==0.11.4
+
+# Legacy .xls statements. 2.0 dropped .xlsx support on purpose —
+# openpyxl (in requirements.txt) covers those.
+xlrd>=2.0.1
+
+# ID-photo decoding for the duplicate-ID hashes. Arrives transitively
+# via reportlab, but analysis/hash_id_photos.py imports PIL directly, so
+# it is declared rather than assumed. Capped below 12 to match the
+# pdfplumber pin above.
+pillow>=10.0.0,<12

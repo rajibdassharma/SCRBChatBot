@@ -401,6 +401,335 @@ class FirDailyPoint(BaseModel):
     non_financial: int = 0
 
 
+class DuplicateIdMember(BaseModel):
+    """One account inside a duplicate-ID cluster."""
+    account_id: str
+    account_holder_name: Optional[str] = None
+    account_no: Optional[str] = None
+    fir_no: Optional[str] = None
+    account_type: Optional[str] = None
+    district: Optional[str] = None
+    ps_name: Optional[str] = None
+    bank_name: Optional[str] = None
+
+
+class DuplicateIdCluster(BaseModel):
+    """A set of accounts whose uploaded ID photo is the SAME FILE.
+
+    `fingerprint` is the SHA-256 of the file bytes — not anything read
+    out of the picture. No name, no number, no date of birth is
+    extracted at any point.
+
+    SHA-256 and not a perceptual hash, and the distinction is not
+    academic. An earlier build clustered on a 64-bit dHash and produced
+    two headline clusters of 28 and 23 "matching" documents. Both were
+    wrong: each held 28 and 23 DISTINCT files under 28 and 23 different
+    holder names. The perceptual hash had matched the Aadhaar template
+    — same emblem, same bands, same photo box — not the document. A
+    fingerprint that flags every Aadhaar card as a duplicate of every
+    other Aadhaar card is worse than no fingerprint, because it looks
+    like a result. So the visible finding is now exact-file identity,
+    which cannot mean anything else.
+
+    SPREAD is what makes a cluster interesting, not size. One image on
+    twenty accounts under one name in one station is probably one
+    person, or one operator attaching the same file repeatedly. The
+    same file behind many DIFFERENT holders across several stations is
+    what a mule farm looks like.
+
+    `has_victim` de-prioritises a cluster: a network does not recruit
+    the people it defrauds, so a victim-bearing cluster reads as a
+    placeholder or default image."""
+    fingerprint: str
+    #: "exact" = byte-identical file. The only kind served today.
+    #: Reserved so a future near-duplicate pass (24x24 dHash, computed
+    #: offline — it is O(n^2) and does not belong in a request) can be
+    #: added as "similar" without the client having to guess which
+    #: kind of match it is looking at.
+    match_type: str = "exact"
+    #: Signed, time-limited URL for ONE representative image from the
+    #: cluster — every member is the same picture, so one is enough.
+    #: Lets an officer judge in a glance whether this is a real ID
+    #: document or a blank page, which no count can tell them.
+    image_url: Optional[str] = None
+    images: int = 0
+    accounts: int = 0
+    distinct_holders: int = 0
+    distinct_account_nos: int = 0
+    distinct_firs: int = 0
+    distinct_ps: int = 0
+    distinct_districts: int = 0
+    has_victim: bool = False
+    account_types: List[str] = []
+    members: List[DuplicateIdMember] = []
+
+
+class DuplicateIdSummary(BaseModel):
+    total_hashed: int = 0
+    clusters: int = 0
+    with_multiple_holders: int = 0
+    across_police_stations: int = 0
+    across_firs: int = 0
+    strong_signal: int = 0
+    rows: List[DuplicateIdCluster] = []
+
+
+class StatementQualityRow(BaseModel):
+    """How many source statements ended in each state.
+
+    Shown on the screen rather than hidden in a log, because the honest
+    denominator matters: a money trail built from 60% of the statements
+    is a different object from one built from all of them, and only this
+    row tells the officer which they are looking at."""
+    status: str
+    files: int = 0
+
+
+class StatementChannelRow(BaseModel):
+    channel: str
+    txns: int = 0
+    debit: float = 0
+    credit: float = 0
+
+
+class StatementAccountRow(BaseModel):
+    """One account's parsed statement totals."""
+    account_id: str
+    account_holder_name: Optional[str] = None
+    account_no: Optional[str] = None
+    bank_name: Optional[str] = None
+    fir_no: Optional[str] = None
+    account_type: Optional[str] = None
+    ps_name: Optional[str] = None
+    #: Numeric id, carried so the client can hand this row straight to
+    #: the FIR trace. FIR numbers are only unique per station, so a
+    #: trace needs the id, not the name -- and making the officer pick
+    #: the station again from a 45-entry dropdown, when the row already
+    #: knows it, is the friction this removes.
+    ps_id: Optional[int] = None
+    district: Optional[str] = None
+    #: all_accounts.branch_state -- the state the BANK BRANCH sits in,
+    #: not the police district handling the case. Free text (the
+    #: picklist is browser-side only), so it is trimmed server-side and
+    #: may be blank on rows predating migrations 010/012.
+    branch_state: Optional[str] = None
+    txns: int = 0
+    debit: float = 0
+    credit: float = 0
+    first_txn: Optional[date] = None
+    last_txn: Optional[date] = None
+    #: False when this account contributed rows whose arithmetic was
+    #: tested and DISAGREED. Derived per-row, matching the money
+    #: columns; it is not the file-level reconciliation flag, which
+    #: over-warned on 59% of the accounts it marked.
+    verified: bool = True
+    #: Rows tested against the balance chain that did NOT agree. These
+    #: are excluded from debit/credit above. Unlike untested_txns this
+    #: means the source is wrong, not merely uncheckable -- the one
+    #: state that earns a warning badge.
+    rejected_txns: int = 0
+    #: Rows this account contributed that had NOTHING to test against
+    #: -- a statement with no balance column cannot be checked, so its
+    #: arithmetic is unknown rather than wrong.
+    #:
+    #: A COUNT, deliberately, and there is no untested_debit sibling.
+    #: Summing untested amounts would produce exactly the figure the
+    #: chain check exists to withhold: one export whose account number
+    #: was read as its debit reached Rs 6.68 QUADRILLION, and no
+    #: balance column existed to contradict it. The count says "1,204
+    #: rows here are unverifiable" -- true, useful, and impossible to
+    #: mistake for money. Their sum would say nothing true at all.
+    untested_txns: int = 0
+
+
+class SharedCounterparty(BaseModel):
+    """One destination that received money from MORE THAN ONE account.
+
+    This is the F4 signal in its simplest form. A single mule account
+    paying a merchant is ordinary; eleven unrelated mule accounts across
+    four FIRs paying the SAME UPI handle is a collection point.
+
+    `key` is an account number or a UPI handle — never a name. Names are
+    truncated and misspelt by the banks, and F1 already showed what
+    happens when a name is treated as an identity."""
+    key: str
+    kind: str = "upi"
+    counterparty_name: Optional[str] = None
+    txns: int = 0
+    accounts: int = 0
+    firs: int = 0
+    total_debit: float = 0
+
+
+class MoneyTrailSummary(BaseModel):
+    """Everything the Money Trail tab renders, in one response.
+
+    The active filters are echoed back so the client labels exports
+    from the SERVER's understanding of the request rather than from its
+    own state. A PDF that says "Karnataka / Mule" while holding
+    something else is worse than one with no label at all."""
+    #: Echoed: all | karnataka | other
+    state_scope: str = "all"
+    #: Echoed: All | Mule | Non-Mule | Victim
+    account_type: str = "All"
+    #: Accounts with a blank branch_state under the current type filter.
+    #: They appear only under "All States" -- see the endpoint for why
+    #: they are not swept into "Other States".
+    accounts_without_state: int = 0
+    transactions: int = 0
+    accounts_covered: int = 0
+    statements_parsed: int = 0
+    date_from: Optional[date] = None
+    date_to: Optional[date] = None
+    total_debit: float = 0
+    total_credit: float = 0
+    #: Share of stored rows that came from a reconciled statement.
+    verified_pct: float = 0
+    #: Rows whose arithmetic could not be tested at all, as a COUNT.
+    #: total_debit/total_credit above already exclude them, so without
+    #: this number the KPI cards would silently under-report and look
+    #: complete. With it the officer reads "Rs X across N txns, plus M
+    #: unverifiable" and knows the size of what is missing.
+    #:
+    #: No rupee figure accompanies it on purpose -- see
+    #: StatementAccountRow.untested_txns.
+    untested_txns: int = 0
+    quality: List[StatementQualityRow] = []
+    channels: List[StatementChannelRow] = []
+    top_accounts: List[StatementAccountRow] = []
+    shared_counterparties: List[SharedCounterparty] = []
+
+
+class StatementCoverageRow(BaseModel):
+    """One account on the Statement Coverage work list.
+
+    Deliberately NOT a financial row — no totals, no transaction count.
+    This answers "whose bank statement is still missing, and for how
+    long", which is a chasing job, not an analysis.
+
+    `status` is derived, not stored:
+        missing     no file attached to the account at all
+        unparsed    file attached, the parser has not reached it yet
+        unreadable  file attached and read, but yielded no transactions
+                    (scanned image needing OCR, or an unknown layout)
+        parsed      transactions extracted
+
+    Only `missing` and `unreadable` are anyone's work. `unparsed` is the
+    batch job's backlog and clears itself."""
+    account_id: str
+    account_holder_name: Optional[str] = None
+    account_no: Optional[str] = None
+    bank_name: Optional[str] = None
+    fir_no: Optional[str] = None
+    account_type: Optional[str] = None
+    ps_name: Optional[str] = None
+    district: Optional[str] = None
+    branch_state: Optional[str] = None
+    status: str = "missing"
+    #: Why an `unreadable` file failed, straight from the ledger —
+    #: "no text layer (OCR queue)" reads very differently from
+    #: "no usable header row" and leads to a different fix.
+    detail: Optional[str] = None
+    #: FIR registration date, used as the ageing clock. NULL when the
+    #: FIR has no case row or its date is outside a believable window.
+    fir_date: Optional[date] = None
+    #: Days since fir_date. NULL when fir_date is NULL — an unknown age
+    #: must not sort as though it were zero.
+    days_open: Optional[int] = None
+
+
+class StatementCoverageSummary(BaseModel):
+    """KPI counts plus the filtered work list.
+
+    The counts are over the CURRENT state/type filter but ignore the
+    status filter, so the four numbers always add up to total_accounts
+    no matter which status is being viewed. A KPI row that changed
+    every time you clicked a status would be useless as a denominator."""
+    state_scope: str = "all"
+    account_type: str = "All"
+    status: str = "all"
+    total_accounts: int = 0
+    missing: int = 0
+    unparsed: int = 0
+    unreadable: int = 0
+    parsed: int = 0
+    #: Of `parsed`, how many reconciled. Carried so this tab agrees with
+    #: the Money Trail tab rather than implying every parsed statement
+    #: is trustworthy.
+    parsed_verified: int = 0
+    #: Accounts with no branch_state recorded, under the current type
+    #: filter. Same reasoning as Money Trail: they sit in neither
+    #: Karnataka nor Other States.
+    accounts_without_state: int = 0
+    rows: List[StatementCoverageRow] = []
+
+
+class MuleLinkPeer(BaseModel):
+    """The account on the other end of a direct transfer.
+
+    `direction` is from the perspective of the row being expanded:
+    'out' means this row's account PAID the peer, 'in' means it
+    received. Both come from the same stored link, read from opposite
+    ends — a transfer is only ever recorded once, on the payer's
+    statement."""
+    account_id: str
+    account_holder_name: Optional[str] = None
+    account_no: Optional[str] = None
+    bank_name: Optional[str] = None
+    fir_no: Optional[str] = None
+    ps_name: Optional[str] = None
+    direction: str = "out"
+    cross_fir: bool = False
+    txns: int = 0
+    amount: float = 0
+
+
+class MuleNetworkRow(BaseModel):
+    """One mule account and everything it is directly connected to.
+
+    A connection means A's own bank statement records a transfer to B's
+    account number, and both A and B are already recorded as Mule. It is
+    not inferred from a shared destination and has nothing to do with
+    payment gateways — those were deliberately excluded, because every
+    account pays BBPS and linking on that would connect everyone to
+    everyone.
+
+    `cross_fir` is what makes a row worth reading. Two mules connected
+    inside the SAME FIR is expected: they were reported together, which
+    is why both are on file. A transfer between mules in DIFFERENT FIRs
+    joins two investigations nobody had joined."""
+    account_id: str
+    account_holder_name: Optional[str] = None
+    account_no: Optional[str] = None
+    bank_name: Optional[str] = None
+    fir_no: Optional[str] = None
+    ps_name: Optional[str] = None
+    ps_id: Optional[int] = None
+    district: Optional[str] = None
+    branch_state: Optional[str] = None
+    connected: int = 0
+    cross_fir: int = 0
+    out_links: int = 0
+    in_links: int = 0
+    txns: int = 0
+    amount: float = 0
+    #: Embedded rather than fetched on expand. The whole network is
+    #: ~1,300 links, so a second round trip per row would cost more
+    #: than sending it all once.
+    peers: List[MuleLinkPeer] = []
+
+
+class MuleNetworkSummary(BaseModel):
+    total_links: int = 0
+    cross_fir_links: int = 0
+    accounts_in_network: int = 0
+    #: Mule accounts that have a statement parsed at all — the honest
+    #: denominator. An account with no statement cannot show a link, and
+    #: its absence from this list says nothing about it.
+    accounts_with_statements: int = 0
+    rows: List[MuleNetworkRow] = []
+
+
 class FirCrimeTypeRow(BaseModel):
     """One crime type on the FIR Dashboard's Crime Type tab.
 

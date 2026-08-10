@@ -168,6 +168,11 @@ scripts run under the `cyberfraud` user:
   `cyber_fraud_dsr`, gzipped, timestamped, into a backup dir.
   **Retention: keeps only the newest snapshot** (name-exclusion prune,
   deterministic — no `-mtime` guesswork).
+  **Excludes the five derived analysis tables** — see
+  [Upload Analysis](#upload-analysis-f1--f2) for why. Measured
+  2026-08-07: source tables are 30 MB, the derived ones 11.4 GB, so
+  including them would make the nightly dump **374× larger** for data
+  that can be rebuilt from the uploaded files at any time.
 - **`deploy/backup-uploads.sh`** — tarball of `backend/uploads/`,
   same retention.
 
@@ -206,6 +211,258 @@ sudo chown -R cyberfraud:cyberfraud /opt/cyberfraud/backend/uploads
 
 Adjust paths if your install put the backup dir somewhere else — check
 `backup-db.sh` for the exact `BACKUP_DIR` it uses.
+
+---
+
+## Upload Analysis (F1 / F2)
+
+Derives findings from the files officers upload: duplicate ID photos
+(F1), parsed bank statements (F2), and the mule-to-mule transfer network
+(F4). Nothing here is entered by hand — it is all computed from
+`backend/uploads/`.
+
+### The rule that governs everything below
+
+**These tables are DERIVED and are never backed up.** They can be
+rebuilt from the uploaded files at any time, so production and the dev
+laptop each maintain their own copy rather than shipping 15 GB across
+the network every night.
+
+| table | what it holds |
+|---|---|
+| `upload_ledger` | one row per processed file; drives incremental runs |
+| `statement_transactions` | parsed transaction lines (~15 GB) |
+| `account_statement_summary` | per (account, channel) rollup the dashboards read |
+| `id_photo_hashes` | SHA-256 + perceptual hash per ID photo |
+| `mule_account_link` | direct mule → mule transfers |
+
+### Where the analysis actually runs — the laptop, not the server
+
+**Production does not parse anything.** It receives finished results as
+a ~7 MB SQL import. This is deliberate, and it is a storage decision:
+
+| | |
+|---|---|
+| production disk | 50 GB total |
+| `uploads/` | 15 GB |
+| uploads backup tarball | ~15 GB (PDFs/JPEGs barely compress) |
+| OS, MySQL, node_modules | ~10 GB |
+| **`statement_transactions`** | **12.5 GB** |
+
+The fact table alone would not fit. It is also unnecessary: **no API
+route reads it** — `routes_dashboard.py` imports `StatementTransaction`
+but never queries it, and every dashboard reads
+`account_statement_summary` (27 MB) instead. So the laptop keeps the
+12.5 GB and ships the 76 MB that the dashboards actually use.
+
+The second reason is dependency isolation. `pdfplumber` 0.11.10+
+requires `Pillow>=12.2`, and Pillow is what **reportlab** renders every
+operator-facing PDF with. Installing the parser on production would
+upgrade Pillow underneath reportlab for ~90 users to gain a capability
+production does not use. Hence `requirements-analysis.txt`, which the
+server never installs.
+
+**Revisit this when production storage grows.** `deploy/install-analysis.sh`
+plus `cyberfraud-analysis.{service,timer}` are written and ready to move
+the job onto the server; they are deliberately NOT installed today.
+
+### Daily cycle
+
+Steps 1–6 are the existing deploy/backup routine and are unchanged.
+Three steps are added:
+
+| # | Step | Where |
+|---|---|---|
+| 7 | restore the dump, copy uploads, `python -m analysis.daily` | laptop |
+| 8 | `python -m analysis.export_for_prod` | laptop |
+| 9 | `scp` + `deploy/import-analysis.sh` | prod |
+
+```powershell
+# 7 + 8 — laptop (~40 min)
+mysql -u root -p cyber_fraud_dsr < proddata\dbdump_<date>.sql
+cd backend
+python -m analysis.daily
+python -m analysis.export_for_prod      # -> proddata/analysis_<date>.sql.gz
+```
+
+```bash
+# 9 — prod (~10 s, no downtime, no restart)
+scp proddata/analysis_<date>.sql.gz cyberfraud@PROD:/opt/cyberfraud/backups/
+sudo /opt/cyberfraud/deploy/import-analysis.sh \
+     /opt/cyberfraud/backups/analysis_<date>.sql.gz
+```
+
+The export is a Python module, not a shell script, because it runs on
+Windows: PowerShell's `>` encodes as UTF-16 and truncates binary
+streams, so `mysqldump | gzip > file` silently produces a **corrupt
+archive** outside git-bash — discovered only at import time on the
+server. It passes `--result-file` so mysqldump writes the bytes itself.
+
+**Freshness.** The dump is taken at 00:00 IST and imported at 11:00, so
+production's analysis data is 11 h old at refresh and ~35 h old just
+before the next one. Only newly uploaded files are affected; everything
+else on the dashboards is live production data.
+
+### Why the import cannot disturb the running app
+
+`import-analysis.sh` loads into **staging** tables first, then does one
+transaction per table: `DELETE` + `INSERT…SELECT`. InnoDB's MVCC means
+concurrent readers keep seeing the old rows until `COMMIT`, so no
+dashboard can ever observe a half-loaded table. The naive
+`TRUNCATE` + `INSERT` would show every officer an empty Money Trail for
+the duration — an answer, not an error, which is worse.
+
+The `SELECT` **LEFT JOINs** `all_accounts` and keeps NULL `account_id`
+rows. That detail matters: 15,917 of `upload_ledger`'s 34,006 rows have
+no resolved account, and Statement Coverage counts them with no join at
+all. An inner join silently discarded 47% of that denominator and made
+coverage look better than it was — caught by rehearsing the import
+against a scratch database before it ever touched production.
+
+### Dev laptop — after the 11:00 restore
+
+The midnight dump and uploads tarball contain everything through
+midnight, so the dev copy is up to a day behind production. Statement
+Coverage shows that honestly as "not yet parsed".
+
+```bash
+# 1. restore the dump (~30 MB) and extract the uploads tarball
+# 2. then:
+cd CyberFraudDataEntry/backend
+python -m analysis.daily
+```
+
+`analysis.daily` runs, stopping at the first failure:
+
+1. migrations 019–023 — idempotent, no-ops once applied
+2. **relink** — repairs account links the restore broke (~2 s)
+3. **parse_statements** — incremental, only files not in the ledger
+4. **hash_id_photos** — full re-hash, ~8 min
+5. **build_links** — rebuilds the mule → mule network (~35 s). After
+   parsing, never before: links are found by matching counterparty
+   numbers in freshly parsed rows against known mule accounts, so
+   running it first would miss everything new.
+6. **summary --check** — verifies the dashboard cache still matches its
+   source rows; **exits non-zero on any mismatch**
+
+### Why `relink` is needed on dev and not on production
+
+`mysqldump` writes `FOREIGN_KEY_CHECKS=0`, and a restore **drops and
+recreates** `all_accounts` rather than deleting from it — so the
+`ON DELETE CASCADE` that normally keeps derived rows honest never fires
+and MySQL never re-validates.
+
+The case that actually hurts: an account deleted and re-entered upstream
+gets a **new UUID** while pointing at the same uploaded file. The ledger
+still lists that file as parsed so the parser skips it, and the
+transactions still carry the old id — leaving the new account showing
+"Not yet parsed" permanently. `relink` re-points the rows; it does not
+re-parse, because the rows are fine and only the pointer is wrong.
+
+### Money figures: only chain-verified rows are summed
+
+Every statement carries its own arithmetic check —
+`previous − debit + credit = balance` on each row. `chain_ok` records
+the verdict **per row**:
+
+| value | meaning | counted as money? |
+|---|---|---|
+| `1` | tested, and the arithmetic agreed | **yes** |
+| `0` | tested, and it did not | no |
+| `-1` | nothing to test against | no, reported separately |
+
+This is not caution for its own sake. A file-level verdict was
+previously used to vouch for the rows inside it, and a statement scoring
+99.22% had 29 rows carrying ₹205,642,955,681 of a ₹205,648,905,136
+total. Separately, an export with **no balance column** had its account
+number read as the debit on all 16,493 rows — nothing could contradict
+it, and the dashboard reported ₹6.68 quadrillion.
+
+`-1` is a distinct answer from `1`, never a lenient version of it.
+Rejected money is *wrong*; untested money is *unknown*, and the UI says
+"₹X verified · ₹Y unverifiable" rather than hiding the second figure or
+folding it into the first.
+
+`chain_ok` is written **at parse time**, so new data is correct on
+arrival and the nightly job stays one step.
+
+### Rebuilding after a parser change
+
+Bump `PARSER_VERSION` in `analysis/parse_statements.py`; the ledger then
+treats every file as stale and the next run re-reads the corpus.
+
+For fixes that only affect derived values, cheaper tools exist:
+
+```bash
+python -m analysis.stamp_chain      # re-derive chain_ok from stored rows
+python -m analysis.summary          # rebuild the dashboard cache
+python -m analysis.build_links      # rebuild the mule network (~35 s)
+python -m analysis.progress         # read-only; safe during a run
+python -m analysis.export_for_prod  # package results for the server
+```
+
+**`failed` is not a terminal state.** Every run retries files marked
+`failed`, so a parser fix needs no bookkeeping — the next run picks them
+up. Only `ok`, `scanned` and `unverified` are skipped. This is why a
+missing dependency looks alarming but costs nothing: on 2026-08-07 a
+misconfigured interpreter left 4,824 files failing with
+`ModuleNotFoundError` (every PDF and `.xls` in the corpus), and simply
+installing `requirements-analysis.txt` and re-running recovered them.
+
+Parsing needs the extra dependencies:
+
+```bash
+pip install -r requirements.txt -r requirements-analysis.txt
+```
+
+`stamp_chain` resumes by default and skips files already stamped. On a
+full re-stamp pass `--no-resume` is faster — the resume lookup scans the
+whole fact table and costs more than it saves unless most of the work is
+already done.
+
+### Resource behaviour
+
+Batch jobs budget workers from **free memory**, not core count, and hold
+a reserve back for the OS and the shared-iGPU pool. That is not tuning:
+an early version ran 20 workers chosen off core count and bugchecked the
+dev laptop three times in twenty minutes (`0x0000010E`,
+`VIDEO_MEMORY_MANAGEMENT_INTERNAL`).
+
+Consequences worth knowing:
+
+- **Free memory sets the pace.** On the dev laptop, 14 GB free gives 8
+  workers; 10 GB free gives 1, and the same job goes from ~1.5 h to
+  ~6.5 h. Closing a couple of applications is the cheapest speed-up
+  available.
+- `--workers` is an **upper bound only** — the budget can lower it and
+  never raise it.
+- Every run is **resumable**. Stop it any time; the ledger commits per
+  batch, so at most the current batch is lost.
+- **A stalled chunk gives up rather than hanging the run.** A worker that
+  dies without resolving its future used to block `as_completed`
+  forever: 2026-08-10 saw 13 minutes of 0% CPU, no I/O, zero worker
+  children and no progress. Each chunk now carries a deadline
+  (`CHUNK_TIMEOUT_PER_FILE_S`, 60 s/file, 600 s floor); on expiry the
+  outstanding files are recorded as `failed` — so the next run retries
+  them — and the pool is rebuilt.
+
+Tunable via the environment when the defaults do not fit the machine:
+
+| variable | default | when to change it |
+|---|---|---|
+| `CFDSR_ANALYSIS_RESERVE_GB` | 10.0 | Lower on a headless server. 10 GB describes a 32 GB laptop whose Intel Arc iGPU draws video memory from system RAM; a 4 vCPU / 8 GB VM needs ~2.0, or every plan comes out negative and pins the job at one worker. |
+| `CFDSR_ANALYSIS_LOW_WATER_GB` | 0.6 × reserve | Derived on purpose. A low-water mark above the reserve makes the job wait for memory it was never going to be given. |
+| `CFDSR_ANALYSIS_CHUNK_TIMEOUT_S` | 60.0 | Raise only if legitimate files exceed a minute each. |
+
+### Editing `backend/analysis/` while a run is in flight
+
+**Don't.** On Windows every worker is spawned fresh and re-imports the
+package, so a syntax error in any module under `analysis/` kills every
+new worker immediately — the parent survives, the run dies, and the
+console fills with `SyntaxError` from `multiprocessing.spawn`.
+
+Verified this the hard way on 2026-08-10. If a change is urgent, stop
+the run first; it is resumable and costs at most the current batch.
 
 ---
 

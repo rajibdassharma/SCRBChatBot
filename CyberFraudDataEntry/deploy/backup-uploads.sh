@@ -40,7 +40,11 @@ chmod 750 "$BACKUP_DIR"
 # the target user.
 chown -R cyberfraud:cyberfraud "$BACKUP_DIR" 2>/dev/null || true
 
-TIMESTAMP=$(date +'%Y-%m-%d_%H%M')
+# TZ=Asia/Kolkata — matches backup-db.sh. The timer fires at 00:00 IST
+# on a UTC-clocked server, so an unqualified `date` names the file with
+# the previous day's date. The DB dump and this tarball must carry the
+# SAME stamp or a restore pairs mismatched halves.
+TIMESTAMP=$(TZ=Asia/Kolkata date +'%Y-%m-%d_%H%M')
 OUTFILE="$BACKUP_DIR/uploads_${TIMESTAMP}.tar.gz"
 
 echo "[backup-uploads] $(date -Iseconds) — archiving $UPLOAD_DIR → $OUTFILE"

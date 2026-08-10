@@ -1,0 +1,28 @@
+[Unit]
+Description=Nightly upload analysis (duplicate IDs, bank statements, mule network) at 01:00 IST
+
+[Timer]
+# 01:00 IST — one hour after cyberfraud-backup.timer fires at 00:00.
+#
+# The gap is for load, not correctness: analysis only ever writes to
+# the five derived tables, and the backup no longer dumps those, so the
+# two cannot interfere with each other's data. But both are I/O-heavy
+# and this VM has 4 vCPUs, so overlapping them would just make each
+# slower while operators are least likely to notice either.
+#
+# Explicit Asia/Kolkata so this holds whether the server's local
+# timezone is UTC or IST.
+OnCalendar=*-*-* 01:00:00 Asia/Kolkata
+
+# If the server was off at the trigger time, fire on next boot. Safe to
+# run late: the ledger makes every run incremental, so a missed night
+# is picked up by the next one rather than being lost.
+Persistent=true
+
+# Spread load if other timers also fire on the hour.
+RandomizedDelaySec=5min
+
+Unit=cyberfraud-analysis.service
+
+[Install]
+WantedBy=timers.target
