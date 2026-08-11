@@ -104,17 +104,19 @@ MAX_WORKERS = min(8, os.cpu_count() or 8)
 #: process-spawn cost on every file.
 TASKS_PER_CHILD = 20
 
-#: Deadline for one chunk of work, as seconds PER FILE in the chunk.
+#: Give up on a chunk when NO file has completed for this long.
 #:
-#: Named constants rather than literals inside governed_map because a
-#: timeout that cannot be measured or adjusted is a guess that outlives
-#: its evidence. 60s is ~55x the observed 1.1s average and still clears
-#: the corpus's worst case -- a 1,421-page statement -- comfortably.
-CHUNK_TIMEOUT_PER_FILE_S = _env_float("CFDSR_ANALYSIS_CHUNK_TIMEOUT_S", 60.0)
-
-#: Floor for that deadline, so a small final chunk is not given an
-#: unreasonably tight one.
-CHUNK_TIMEOUT_FLOOR_S = _env_float("CFDSR_ANALYSIS_CHUNK_FLOOR_S", 600.0)
+#: Idle time, not total time. The distinction is the whole point: a
+#: chunk of 1,400-page statements may legitimately run for many
+#: minutes, and any total budget loose enough to allow that is also
+#: loose enough to let a dead pool sit for half an hour. Measured
+#: 2026-08-11: a total budget of 60s/file gave a 32-file chunk a
+#: 32-minute deadline while nothing at all was happening.
+#:
+#: 300s against a worst-observed single file of ~90s (1,421 pages, one
+#: worker) leaves better than 3x headroom, and a dead pool trips it in
+#: one interval because a dead pool completes nothing.
+IDLE_TIMEOUT_S = _env_float("CFDSR_ANALYSIS_IDLE_TIMEOUT_S", 300.0)
 
 #: Pause and re-check when free memory falls below this.
 #:
@@ -402,10 +404,21 @@ def governed_map(fn, items, requested_workers: int = 0, chunk: int = 0,
         # shutdown(wait=True) and would have blocked on the same dead
         # worker. Both the wait and the teardown need an escape.
         #
-        # The budget covers the whole chunk, because that is what
-        # as_completed measures. See CHUNK_TIMEOUT_PER_FILE_S.
-        budget = max(CHUNK_TIMEOUT_FLOOR_S,
-                     CHUNK_TIMEOUT_PER_FILE_S * len(batch))
+        # The deadline measures IDLENESS, not total elapsed time.
+        #
+        # The first attempt at this used a whole-chunk budget of 60s per
+        # file. That number describes the wrong thing. A chunk of 32
+        # files got a 32-minute deadline, so when the pool died on
+        # 2026-08-11 the run sat at 0% CPU with zero workers for ten
+        # minutes and had another twenty-two to go before anything
+        # noticed. Meanwhile a legitimately slow chunk — a batch of
+        # 1,400-page statements — could exceed any total budget generous
+        # enough to be safe, and would be killed while working fine.
+        #
+        # Both cases are answered by asking a different question: how
+        # long since ANY file completed? Steady progress resets the
+        # clock however long the chunk takes in total; a dead pool trips
+        # it in one interval, because a dead pool completes nothing.
         timed_out = False
         ex = cf.ProcessPoolExecutor(
             max_workers=workers,
@@ -415,26 +428,33 @@ def governed_map(fn, items, requested_workers: int = 0, chunk: int = 0,
         try:
             futs = {ex.submit(fn, it): it for it in batch}
             pending = set(futs)
-            try:
-                for fut in cf.as_completed(futs, timeout=budget):
-                    pending.discard(fut)
+            while pending:
+                # wait() returns as soon as anything finishes, or after
+                # the idle window with nothing done — which is the
+                # signal we actually want.
+                done, pending = cf.wait(
+                    pending, timeout=IDLE_TIMEOUT_S,
+                    return_when=cf.FIRST_COMPLETED)
+                if not done:
+                    timed_out = True
+                    if log:
+                        log(f"  no file completed in {IDLE_TIMEOUT_S:.0f}s — "
+                            f"abandoning {len(pending)} file(s) and "
+                            f"rebuilding the pool")
+                    # Yielded as failures rather than dropped. The caller
+                    # records a failure, and `failed` is retried on the
+                    # next run, so a stall costs a retry, never a file.
+                    for fut in pending:
+                        fut.cancel()
+                        yield futs[fut], None
+                    break
+                for fut in done:
                     it = futs[fut]
                     try:
                         yield it, fut.result()
                     except Exception:                  # noqa: BLE001
                         # A crashed worker must not abort a 16k-file run.
                         yield it, None
-            except TimeoutError:
-                timed_out = True
-                if log:
-                    log(f"  chunk stalled after {budget:.0f}s — abandoning "
-                        f"{len(pending)} file(s) and rebuilding the pool")
-                # Yielded as failures rather than dropped. The caller
-                # records a failure, and `failed` is retried on the next
-                # run, so a stall costs a retry and never a file.
-                for fut in pending:
-                    fut.cancel()
-                    yield futs[fut], None
         finally:
             # wait=False ONLY after a timeout. In the normal case the
             # workers must still be joined, so their memory is actually
