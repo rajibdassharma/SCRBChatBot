@@ -266,31 +266,94 @@ server never installs.
 plus `cyberfraud-analysis.{service,timer}` are written and ready to move
 the job onto the server; they are deliberately NOT installed today.
 
-### Daily cycle
+### Daily cycle — the whole procedure
 
-Steps 1–6 are the existing deploy/backup routine and are unchanged.
-Three steps are added:
+Nine steps. 1–6 are the pre-existing routine, unchanged. 7–9 are the
+analysis cycle. **Total hands-on time is a few minutes; the only long
+wait is step 7 at ~4 min.**
 
-| # | Step | Where |
-|---|---|---|
-| 7 | restore the dump, copy uploads, `python -m analysis.daily` | laptop |
-| 8 | `python -m analysis.export_for_prod` | laptop |
-| 9 | `scp` + `deploy/import-analysis.sh` | prod |
+**1. Develop** on the laptop.
+
+**2. Push — ONCE.** One commit, one push, per deploy. A second push
+means a second pull, and on this setup a pull is never just a pull:
+it drags a full `update.sh`, a backend restart (~10 s of 502s for ~90
+operators) and a repo visibility flip. Walk the whole change set —
+file modes, files scripts reference, migrations registered in
+`update.sh`, docs — before the first push.
+
+**3. Pull on production.** `/opt/scrb` is root-owned, so `sudo`:
+
+```bash
+cd /opt/scrb && sudo git pull
+```
+
+The repo is private and the server stores no credentials, so flip
+`rajibdassharma/SCRBChatBot` to public on GitHub first and back to
+private after. (Ending this properly: `sudo git config --global
+credential.helper store`, then one pull that prompts for a PAT.)
+
+**4. Deploy — CODE CHANGES ONLY.**
+
+```bash
+sudo bash /opt/scrb/CyberFraudDataEntry/deploy/update.sh
+```
+
+Must end with every check `✓`. **Skip this entirely on a data-only
+day** — steps 7–9 need no deploy, and running it costs a restart for
+nothing.
+
+**5. Backups fire at 00:00 IST** on the server (`cyberfraud-backup.timer`).
+Nothing to do.
+
+**6. Copy the backups to the laptop** — the `.sql.gz` into `proddata/`,
+the uploads tarball extracted into `backend/uploads/`.
+
+**7. Restore and analyse — laptop, ~4 min.**
 
 ```powershell
-# 7 + 8 — laptop (~40 min)
 mysql -u root -p cyber_fraud_dsr < proddata\dbdump_<date>.sql
 cd backend
 python -m analysis.daily
-python -m analysis.export_for_prod      # -> proddata/analysis_<date>.sql.gz
+```
+
+Must end `ALL STEPS OK` and `0 mismatched`. **If it reports mismatches,
+stop** — a summary row disagrees with its source; run
+`python -m analysis.summary` before going further.
+
+**8. Export — laptop, ~1 min.**
+
+```powershell
+python -m analysis.export_for_prod
+```
+
+Writes `proddata/analysis_<date>.sql.gz` (~8 MB). It refuses to run if
+the summary is behind the parse; **do not answer `y` past that** — the
+export would carry stale totals under today's name.
+
+**9. Ship and import — production, ~10 s, no downtime, no restart.**
+
+```powershell
+scp proddata\analysis_<date>.sql.gz cyberfraud@117.200.49.38:/opt/cyberfraud/backups/
 ```
 
 ```bash
-# 9 — prod (~10 s, no downtime, no restart)
-scp proddata/analysis_<date>.sql.gz cyberfraud@PROD:/opt/cyberfraud/backups/
-sudo /opt/cyberfraud/deploy/import-analysis.sh \
+sudo /opt/scrb/CyberFraudDataEntry/deploy/import-analysis.sh \
      /opt/cyberfraud/backups/analysis_<date>.sql.gz
 ```
+
+Must end `orphaned summary rows : 0`.
+
+Run it from **`/opt/scrb/...`, not `/opt/cyberfraud/deploy/`**:
+`update.sh` syncs `backend/` and `frontend/` into the runtime but NOT
+`deploy/`, so the copy there is stale or absent.
+
+#### Which steps apply when
+
+| situation | steps |
+|---|---|
+| code change, no new data | 1 → 4 |
+| new data, no code change | 5 → 9 |
+| both | 1 → 9 |
 
 The export is a Python module, not a shell script, because it runs on
 Windows: PowerShell's `>` encodes as UTF-16 and truncates binary
@@ -453,6 +516,27 @@ Tunable via the environment when the defaults do not fit the machine:
 | `CFDSR_ANALYSIS_RESERVE_GB` | 10.0 | Lower on a headless server. 10 GB describes a 32 GB laptop whose Intel Arc iGPU draws video memory from system RAM; a 4 vCPU / 8 GB VM needs ~2.0, or every plan comes out negative and pins the job at one worker. |
 | `CFDSR_ANALYSIS_LOW_WATER_GB` | 0.6 × reserve | Derived on purpose. A low-water mark above the reserve makes the job wait for memory it was never going to be given. |
 | `CFDSR_ANALYSIS_CHUNK_TIMEOUT_S` | 60.0 | Raise only if legitimate files exceed a minute each. |
+
+### MySQL: the buffer pool is the real bottleneck
+
+`innodb_buffer_pool_size` defaults to **128 MB**. `statement_transactions`
+is **12.7 GB**. The pool can therefore cache ~1% of the table, so nearly
+every read of it goes to disk — which is why the integrity check, the
+mule-link rebuild and any full aggregate feel slow regardless of what
+the Python does. Query-level tuning works around this; it does not fix
+it.
+
+```sql
+SET GLOBAL innodb_buffer_pool_size = 4294967296;   -- 4 GB, takes effect live
+```
+
+Measured 2026-08-10: the scoped check went 91 s → 63 s on a still-cold
+pool. **This resets when MySQL restarts** — put `innodb_buffer_pool_size=4G`
+in `my.ini` (Windows) or `/etc/mysql/mysql.conf.d/mysqld.cnf` (server)
+to keep it.
+
+On the 8 GB production VM size this against what MySQL can actually
+have alongside gunicorn — 1–2 GB, not 4.
 
 ### Editing `backend/analysis/` while a run is in flight
 
