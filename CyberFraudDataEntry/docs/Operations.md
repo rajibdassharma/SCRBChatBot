@@ -517,6 +517,29 @@ Tunable via the environment when the defaults do not fit the machine:
 | `CFDSR_ANALYSIS_LOW_WATER_GB` | 0.6 × reserve | Derived on purpose. A low-water mark above the reserve makes the job wait for memory it was never going to be given. |
 | `CFDSR_ANALYSIS_CHUNK_TIMEOUT_S` | 60.0 | Raise only if legitimate files exceed a minute each. |
 
+### The systemd timers run the RUNTIME copy of deploy/
+
+`cyberfraud-backup.service` executes `/opt/cyberfraud/deploy/backup-all.sh`
+— the copy under the runtime, not the one in the git clone. Until
+2026-08-12 `update.sh` synced `backend/` and `frontend/` but not
+`deploy/`, so every fix to a backup script sat in `/opt/scrb` doing
+nothing, and only `install-backup.sh` — run by hand, months apart —
+ever refreshed them.
+
+What that cost: `backup-db.sh` gained `--ignore-table` for the five
+derived analysis tables, the server never received it, and once
+`import-analysis.sh` began populating those tables on production the
+nightly dump grew from **18 MB to 46 MB**. Nothing failed. The backups
+simply carried ~76 MB of data that exists to be rebuilt.
+
+`update.sh` now syncs `deploy/` too, and step 8 asserts the runtime
+`backup-db.sh` still excludes all five tables — the drift was silent,
+so it needed a check rather than a convention.
+
+**When editing anything under `deploy/`, the change reaches the server
+only after `update.sh` runs.** A `git pull` alone updates the clone, not
+what the timers execute.
+
 ### MySQL: the buffer pool is the real bottleneck
 
 `innodb_buffer_pool_size` defaults to **128 MB**. `statement_transactions`

@@ -111,10 +111,33 @@ ls -la "$SOURCE/frontend/dist/" | head -10
 
 # ── 5. Sync code from source to runtime ──────────────────────────────
 echo
-echo "=== 5. Sync backend + frontend dist to $RUNTIME ==="
+echo "=== 5. Sync backend + frontend dist + deploy to $RUNTIME ==="
 sudo cp -r "$SOURCE/backend" "$RUNTIME/"
 sudo cp -r "$SOURCE/frontend" "$RUNTIME/"
-sudo chown -R cyberfraud:cyberfraud "$RUNTIME/backend" "$RUNTIME/frontend"
+
+# deploy/ was NOT synced until 2026-08-12, and the omission was silent
+# and expensive.
+#
+# The systemd timers execute /opt/cyberfraud/deploy/backup-all.sh, which
+# is this copy — not the one in the git clone. So every fix to a backup
+# script sat in /opt/scrb doing nothing, and the only thing that ever
+# refreshed them was install-backup.sh, run by hand months apart.
+#
+# What it cost: backup-db.sh gained --ignore-table for the five derived
+# analysis tables, the server never received it, and once
+# import-analysis.sh started populating those tables on production the
+# nightly dump silently grew from 18 MB to 46 MB. Nothing failed; the
+# backups were simply carrying ~76 MB of data that is rebuildable by
+# design. Left alone it would keep growing with the corpus.
+#
+# Syncing here means a deploy-script fix reaches the server the same way
+# a backend fix does: git pull, update.sh, done.
+sudo cp -r "$SOURCE/deploy" "$RUNTIME/"
+# Executable bits: git stores most of these 100644, and the timers call
+# them via `bash <script>` so it does not matter there — but a human
+# running ./backup-db.sh should not get "permission denied".
+sudo chmod +x "$RUNTIME"/deploy/*.sh
+sudo chown -R cyberfraud:cyberfraud "$RUNTIME/backend" "$RUNTIME/frontend" "$RUNTIME/deploy"
 
 # ── 6. Restart backend ───────────────────────────────────────────────
 echo
@@ -600,6 +623,29 @@ if [ "$UNTESTED" = "3" ]; then
     echo "    ✓ account_statement_summary.untested_* present (migration 023)"
 else
     echo "    ✗ expected 3 untested_* columns, found $UNTESTED — migration 023 did not complete"
+    exit 1
+fi
+
+# The RUNTIME copy of backup-db.sh must exclude the derived analysis
+# tables. Checked here rather than trusted, because the failure mode is
+# silent: nothing errors, the nightly dump just quietly grows.
+#
+# It reached 46 MB from 18 MB before anyone noticed, and only because
+# the size was watched. statement_transactions is 12.5 GB on the
+# analysis machine — if production ever carries it, an unfixed script
+# would try to dump that too.
+MISSING_EXCL=0
+for T in upload_ledger statement_transactions account_statement_summary \
+         id_photo_hashes mule_account_link; do
+    if ! grep -q "$T" "$RUNTIME/deploy/backup-db.sh" 2>/dev/null; then
+        echo "    ✗ $RUNTIME/deploy/backup-db.sh does not exclude $T"
+        MISSING_EXCL=1
+    fi
+done
+if [ "$MISSING_EXCL" -eq 0 ]; then
+    echo "    ✓ runtime backup-db.sh excludes all 5 derived tables"
+else
+    echo "    ✗ the nightly dump will carry rebuildable data — step 5 did not sync deploy/"
     exit 1
 fi
 
