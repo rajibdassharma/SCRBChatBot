@@ -238,6 +238,43 @@ class FirTraceAccount(BaseModel):
     ifsc_code: Optional[str] = None
     amount: float = 0        # normalised across sources (amount_lien_marked / amount_transferred / transaction_amount)
     account_type: Optional[str] = None  # Victim / Mule / Non-Mule -- only populated for all_accounts source
+    #: Present only for rows sourced from all_accounts -- the other four
+    #: source tables carry no account id to join on. Everything below is
+    #: therefore zero for those rows, which is a gap in the source data
+    #: rather than a statement that the account is clean.
+    account_id: Optional[str] = None
+    #: Transactions naming a crypto exchange or asset. A LEAD, not proof:
+    #: see analysis/parsers/crypto.py for the false positives this has
+    #: already produced on real narrations.
+    crypto_txns: int = 0
+    crypto_exchanges: List[str] = []
+    #: Chain-passed rows only, matching every other money figure here.
+    crypto_debit: float = 0
+    #: Transfers to mule accounts that are NOT part of this FIR. Counted
+    #: rather than drawn -- each one is a thread leading out of this case
+    #: file, and the count is what tells an officer to go looking.
+    external_links: int = 0
+
+
+class FirTraceFlow(BaseModel):
+    """One account-to-account transfer inside this FIR's account set.
+
+    Read from mule_account_link, which is built by matching counterparty
+    numbers in parsed statements against known mule accounts. This is
+    the first edge on this screen that is EVIDENCE rather than layout:
+    the layer columns say how far from the victim an account sits, but
+    they never said who paid whom. An arrow here means one account's own
+    bank statement names the other's account number.
+
+    Only drawn between two accounts already in the trace. A link to an
+    account outside this FIR is counted on the account instead -- drawing
+    it would put a node on screen that the officer did not ask to see
+    and that this FIR's case file does not cover."""
+    src_account_id: str
+    dst_account_id: str
+    txns: int = 0
+    amount: float = 0
+    cross_fir: bool = False
 
 
 class AccountsFirTrace(BaseModel):
@@ -248,6 +285,8 @@ class AccountsFirTrace(BaseModel):
     fir_no: str
     case: Optional[FirTraceCase] = None
     accounts: List[FirTraceAccount] = []
+    #: Drawable transfers between two accounts in `accounts`.
+    flows: List[FirTraceFlow] = []
     warnings: List[str] = []
 
 

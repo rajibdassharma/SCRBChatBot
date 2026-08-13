@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import case, select, func, and_, text, true as sa_true
+from sqlalchemy import bindparam, case, select, func, and_, text, true as sa_true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -46,7 +46,7 @@ from schemas.dashboard import (
     AccountsKpiSummary, AccountsPsComparison, AccountsBankConcentration,
     AccountsGeoRegion,
     AccountsDailyPoint, AccountsLayerDistribution,
-    AccountsFirTrace, FirTraceCase, FirTraceAccount,
+    AccountsFirTrace, FirTraceCase, FirTraceAccount, FirTraceFlow,
     FirPsPerformanceRow, FirDailyPoint,
     FirCrimeTypeReport, FirCrimeTypeRow, FirCrimeOther, FirCrimeDistrictCell,
     FirPsCrimeCount,
@@ -2801,6 +2801,7 @@ async def get_accounts_fir_trace(
     )).scalars().all()
     for a in all_acc_rows:
         accounts.append(FirTraceAccount(
+            account_id=str(a.id),
             source="all_accounts",
             layer=a.layer,
             account_no=a.account_no,
@@ -2870,7 +2871,58 @@ async def get_accounts_fir_trace(
     if not accounts:
         warnings.append("No accounts, liens, or transfers found for this FIR.")
 
+    # ── Crypto and transfer edges for the register accounts.
+    #
+    # Both read tables the batch jobs maintain, so a trace costs two
+    # small indexed lookups rather than touching statement_transactions.
+    # Accounts from the four case-child tables carry no id and are
+    # skipped: they are still drawn, just without these annotations.
+    traced_ids = [a.account_id for a in accounts if a.account_id]
+    flows: list[FirTraceFlow] = []
+    if traced_ids:
+        by_id = {a.account_id: a for a in accounts if a.account_id}
+
+        crypto = (await db.execute(
+            select(CryptoTxn.account_id, CryptoTxn.exchange,
+                   func.count().label("n"),
+                   func.sum(case((CryptoTxn.chain_ok == 1,
+                                  func.coalesce(CryptoTxn.debit, 0)),
+                                 else_=0)))
+            .where(CryptoTxn.account_id.in_(traced_ids))
+            .group_by(CryptoTxn.account_id, CryptoTxn.exchange))).all()
+        for aid, exch, n, deb in crypto:
+            acc = by_id.get(str(aid))
+            if not acc:
+                continue
+            acc.crypto_txns += int(n or 0)
+            acc.crypto_debit += float(deb or 0)
+            if exch and exch not in acc.crypto_exchanges:
+                acc.crypto_exchanges.append(exch)
+
+        links = (await db.execute(text(
+            "SELECT src_account_id, dst_account_id, txns, total_debit, "
+            "cross_fir FROM mule_account_link "
+            "WHERE src_account_id IN :ids OR dst_account_id IN :ids"
+        ).bindparams(bindparam("ids", expanding=True)),
+            {"ids": traced_ids})).all()
+        inside = set(traced_ids)
+        for src, dst, n, amt, xf in links:
+            s_id, d_id = str(src), str(dst)
+            if s_id in inside and d_id in inside:
+                flows.append(FirTraceFlow(
+                    src_account_id=s_id, dst_account_id=d_id,
+                    txns=int(n or 0), amount=float(amt or 0),
+                    cross_fir=bool(xf)))
+            else:
+                # One end is outside this FIR. Counted on whichever end
+                # IS in the trace, so the screen can say "this account
+                # also pays two mules you are not looking at".
+                end = by_id.get(s_id) or by_id.get(d_id)
+                if end:
+                    end.external_links += 1
+
     return AccountsFirTrace(
+        flows=flows,
         fir_no=fir,
         case=case_meta,
         accounts=accounts,

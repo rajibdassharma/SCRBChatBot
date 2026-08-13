@@ -157,10 +157,27 @@ async def _check(conn, full: bool = False, hours: int = RECENT_HOURS) -> int:
     cached: dict = {}
 
     if full:
-        print("  scope: ALL accounts")
+        # Say what is about to happen, because nothing else will.
+        #
+        # This branch is ONE aggregate over the whole fact table: no
+        # WHERE, so no index, so a full scan plus a 21M-row GROUP BY
+        # through a 128 MB buffer pool. There is no chunk boundary to
+        # report from and no row counter to read -- the process simply
+        # sits silent until MySQL returns, measured at ~10 minutes on
+        # the 2026-08-13 corpus. Printing the shape of the wait is the
+        # only progress available, and it beats leaving someone to
+        # wonder whether the job has hung.
+        n = (await conn.execute(text(
+            "SELECT COUNT(*) FROM statement_transactions"))).scalar() or 0
+        print(f"  scope: ALL accounts — one aggregate over {n:,} rows")
+        print("  this runs silent for several minutes (~10 at 21M rows); "
+              "it has not hung", flush=True)
+        t_full = time.time()
         live = {(r[0], r[1]): (int(r[2]), float(r[3]), float(r[4]))
                 for r in (await conn.execute(
                     text(_AGG.format(where="")))).all()}
+        print(f"  aggregate returned in {time.time() - t_full:.0f}s",
+              flush=True)
         cached = {(r[0], r[1]): (int(r[2]), float(r[3]), float(r[4]))
                   for r in (await conn.execute(text(
                       "SELECT account_id, channel, txns, debit, credit "

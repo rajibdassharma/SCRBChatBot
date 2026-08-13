@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import {
+  useEffect, useLayoutEffect, useMemo, useRef, useState,
+  type ReactNode,
+} from 'react';
 import {
   BarChart3, Users, ShieldAlert, HelpCircle, MapPin, Camera,
   Trophy, FileDown, FileSpreadsheet, Search, Network, Waypoints, Repeat,
@@ -38,7 +41,7 @@ import { AccountsPsDetailPanel } from '../components/dashboard/AccountsPsDetailP
 import type {
   AccountsKpiSummary, AccountsPsComparison,
   AccountsDailyPoint, AccountsLayerDistribution,
-  AccountsFirTrace, FirTraceAccount, FirTraceSource,
+  AccountsFirTrace, FirTraceAccount, FirTraceSource, FirTraceFlow,
   RepeatAccount, AccountFirOccurrence,
   AccountsGeoRegion, AccountsGeoScope,
 } from '../types';
@@ -673,6 +676,9 @@ const LAYER_PALETTE = [
 ];
 const LAYER_UNKNOWN_COLOR = '#94a3b8';   // slate-400 -- for NULL-layer accounts
 const NON_MULE_COLOR      = '#374151';   // slate-700 -- Non-Mule stays dark grey regardless of layer
+const CRYPTO_COLOR        = '#b45309';   // amber-700 -- crypto cash-out column and badges
+const FLOW_COLOR          = '#0b2c4a';
+const FLOW_CROSS_FIR      = '#8b1919';
 const layerColor = (layer: number | null | undefined): string =>
   layer == null ? LAYER_UNKNOWN_COLOR : LAYER_PALETTE[(layer - 1 + LAYER_PALETTE.length) % LAYER_PALETTE.length];
 
@@ -1054,6 +1060,78 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
   // on entry.
   const [hovered, setHovered] = useState<{ content: ReactNode; x: number; y: number } | null>(null);
 
+  // ---- money-flow edges ------------------------------------------
+  //
+  // Measured from the DOM rather than modelled alongside it. The
+  // columns are a flex layout whose node positions depend on how many
+  // accounts each layer holds and how wide the viewport is; a parallel
+  // coordinate model would have to reproduce all of that and would go
+  // wrong the first time either changed.
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const nodeEls = useRef(new Map<string, HTMLDivElement>());
+  const [edges, setEdges] = useState<{
+    key: string; x1: number; y1: number; x2: number; y2: number;
+    colour: string; label: string;
+  }[]>([]);
+  const [canvas, setCanvas] = useState({ w: 0, h: 0 });
+
+  // Crypto accounts get a terminal node of their own, so the cash-out
+  // reads as the end of the flow instead of a badge bolted to a node.
+  const cryptoAccounts = useMemo(
+    () => trace.accounts.filter((a) => a.account_id && a.crypto_txns > 0),
+    [trace]);
+
+  const flows: FirTraceFlow[] = trace.flows ?? [];
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const cont = canvasRef.current;
+      if (!cont) return;
+      const cr = cont.getBoundingClientRect();
+      const at = (k: string) => {
+        const el = nodeEls.current.get(k);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return {
+          cx: r.left - cr.left + r.width / 2,
+          cy: r.top - cr.top + r.height / 2,
+          rw: r.width / 2,
+        };
+      };
+      const out: typeof edges = [];
+      for (const f of flows) {
+        const a = at(f.src_account_id); const b = at(f.dst_account_id);
+        if (!a || !b) continue;
+        out.push({
+          key: `f:${f.src_account_id}:${f.dst_account_id}`,
+          x1: a.cx, y1: a.cy, x2: b.cx, y2: b.cy,
+          colour: f.cross_fir ? FLOW_CROSS_FIR : FLOW_COLOR,
+          label: `${formatNumber(f.txns)} txn`,
+        });
+      }
+      for (const a of cryptoAccounts) {
+        const p = at(a.account_id!); const q = at(`crypto:${a.account_id}`);
+        if (!p || !q) continue;
+        out.push({
+          key: `c:${a.account_id}`,
+          x1: p.cx, y1: p.cy, x2: q.cx, y2: q.cy,
+          colour: CRYPTO_COLOR,
+          label: `${formatNumber(a.crypto_txns)} txn`,
+        });
+      }
+      setEdges(out);
+      setCanvas({ w: cont.scrollWidth, h: cont.scrollHeight });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (canvasRef.current) ro.observe(canvasRef.current);
+    window.addEventListener('resize', measure);
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
+  }, [trace, flows, cryptoAccounts]);
+
+  const externalTotal = trace.accounts.reduce(
+    (n, a) => n + (a.external_links || 0), 0);
+
   const layersPresent = columns.filter((c) => c.layer != null && c.accounts.length > 0)
                                .map((c) => c.layer as number);
   const hasUnlayered = columns.some((c) => c.layer == null && c.accounts.length > 0);
@@ -1068,14 +1146,70 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
           Money Flow Graph — FIR {trace.fir_no}
         </h3>
         <p className="text-xs opacity-60 mt-0.5">
-          Victim on the left, then one column per money-trail layer. Hover any node for account details.
-          Node-to-node connections are not drawn yet (DB only stores source→dest for Mule Transfers) — coming next.
+          Victim on the left, then one column per money-trail layer, then crypto cash-out.
+          Hover any node for details. <b>Arrows are evidence, not layout</b> — one account's own
+          bank statement names the other's account number.
+          {flows.length > 40 && ` ${formatNumber(flows.length)} transfers — counts hidden to keep the shape readable.`}
         </p>
+        {/* Say when there is nothing to draw, and why. A graph with no
+            arrows otherwise reads as "no transfers happened", when it
+            almost always means the statements are not on file. Only
+            177 of 3,822 FIRs have a link between two of their OWN
+            accounts. */}
+        {flows.length === 0 && (
+          <p className="text-xs mt-1" style={{ color: COLOR_MULE }}>
+            No statement-derived transfer between two accounts of this FIR.
+            {externalTotal > 0
+              ? ` ${externalTotal} link(s) lead to mule accounts outside it — those accounts are ringed.`
+              : ' Either the statements are not parsed yet, or the counterparties are not on file.'}
+          </p>
+        )}
       </div>
 
       <div className="px-5 pb-5">
         <div className="overflow-x-auto">
-          <div className="flex gap-6 items-start min-w-fit pt-3 pb-2">
+          <div ref={canvasRef} className="relative flex gap-6 items-start min-w-fit pt-3 pb-2">
+            {/* Edge layer, behind the nodes. pointer-events none so it
+                never steals a hover from the node it points at. */}
+            {edges.length > 0 && (
+              <svg width={canvas.w} height={canvas.h}
+                className="absolute left-0 top-0"
+                style={{ pointerEvents: 'none', zIndex: 0 }}>
+                <defs>
+                  <marker id="fir-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                    markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+                  </marker>
+                </defs>
+                {edges.map((e) => {
+                  // Labels only while they can still be read. FIR
+                  // 0007/2026 at PS 37 carries 364 internal edges -- a
+                  // real mule farm, and every label on it would overlap
+                  // its neighbours into a grey smear that hides the
+                  // structure the arrows exist to show.
+                  const showLabel = edges.length <= 40;
+                  const dx = e.x2 - e.x1, dy = e.y2 - e.y1;
+                  const len = Math.sqrt(dx * dx + dy * dy) || 1;
+                  const gap = 25;
+                  return (
+                    <g key={e.key} style={{ color: e.colour }}>
+                      <line
+                        x1={e.x1 + (dx / len) * gap} y1={e.y1 + (dy / len) * gap}
+                        x2={e.x2 - (dx / len) * gap} y2={e.y2 - (dy / len) * gap}
+                        stroke={e.colour} strokeWidth={1.8} strokeOpacity={0.75}
+                        markerEnd="url(#fir-arrow)" />
+                      {showLabel && (
+                        <text x={(e.x1 + e.x2) / 2} y={(e.y1 + e.y2) / 2 - 4}
+                          textAnchor="middle"
+                          style={{ fontSize: 9, fill: e.colour, fontWeight: 700 }}>
+                          {e.label}
+                        </text>
+                      )}
+                    </g>
+                  );
+                })}
+              </svg>
+            )}
             {/* Victim column -- rendered even when there's no case row so the layout is anchored. */}
             <div className="flex flex-col items-center gap-3 min-w-[100px]">
               <div className="text-[11px] font-bold uppercase tracking-wide"
@@ -1118,6 +1252,25 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
                   <FlowNode
                     key={`${col.key}-${i}`}
                     color={nodeColorFor(a)}
+                    nodeRef={(el) => {
+                      if (!a.account_id) return;
+                      if (el) nodeEls.current.set(a.account_id, el);
+                      else nodeEls.current.delete(a.account_id);
+                    }}
+                    // An account paying mules outside this FIR is a lead
+                    // out of the case file. Ringed rather than drawn:
+                    // drawing it would put a node on screen that this
+                    // FIR does not cover.
+                    ring={a.external_links > 0 ? COLOR_MULE : undefined}
+                    badge={a.crypto_txns > 0 ? (
+                      <span
+                        className="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center"
+                        style={{ background: CRYPTO_COLOR, color: '#fff',
+                                 fontSize: 9, fontWeight: 800 }}
+                        title={`${a.crypto_txns} crypto transaction(s)`}>
+                        ₿
+                      </span>
+                    ) : undefined}
                     content={
                       <>
                         <div className="font-bold mb-1" style={{ color: 'var(--ksp-navy)' }}>
@@ -1134,6 +1287,22 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
                             Amount: ₹ {formatNumber(Math.round(a.amount))}
                           </div>
                         )}
+                        {a.crypto_txns > 0 && (
+                          <div className="mt-1 font-bold" style={{ color: CRYPTO_COLOR }}>
+                            Crypto: {formatNumber(a.crypto_txns)} txn ·{' '}
+                            {a.crypto_exchanges.join(', ')}
+                            {a.crypto_debit > 0
+                              && ` · ₹ ${formatNumber(Math.round(a.crypto_debit))} out`}
+                            <div className="font-normal opacity-70">
+                              matched on the bank narration — a lead, not proof
+                            </div>
+                          </div>
+                        )}
+                        {a.external_links > 0 && (
+                          <div className="mt-1" style={{ color: COLOR_MULE }}>
+                            Pays {a.external_links} mule account(s) outside this FIR
+                          </div>
+                        )}
                       </>
                     }
                     onHover={(c, x, y) => setHovered({ content: c, x, y })}
@@ -1142,6 +1311,55 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
                 ))}
               </div>
             ))}
+
+            {/* Crypto cash-out column. Placed after the deepest layer
+                because that is what it is: the end of the trail, where
+                money leaves the banking system. Rendered only when
+                there is something in it — an always-present empty
+                column would imply every FIR was checked and cleared,
+                and only 128 of 3,822 have any crypto at all. */}
+            {cryptoAccounts.length > 0 && (
+              <div className="flex flex-col items-center gap-3 min-w-[110px]">
+                <div className="text-[11px] font-bold uppercase tracking-wide flex items-center gap-1.5"
+                     style={{ color: CRYPTO_COLOR }}>
+                  <span className="inline-block w-2.5 h-2.5 rounded-full"
+                        style={{ background: CRYPTO_COLOR }} />
+                  Crypto
+                  <span className="opacity-60">({cryptoAccounts.length})</span>
+                </div>
+                {cryptoAccounts.map((a) => (
+                  <FlowNode
+                    key={`crypto-${a.account_id}`}
+                    color={CRYPTO_COLOR}
+                    nodeRef={(el) => {
+                      const k = `crypto:${a.account_id}`;
+                      if (el) nodeEls.current.set(k, el);
+                      else nodeEls.current.delete(k);
+                    }}
+                    content={
+                      <>
+                        <div className="font-bold mb-1" style={{ color: CRYPTO_COLOR }}>
+                          {a.crypto_exchanges.join(', ') || 'Crypto'}
+                        </div>
+                        <div><span className="opacity-60">From:</span> {a.account_holder_name ?? '—'}</div>
+                        <div><span className="opacity-60">Transactions:</span> {formatNumber(a.crypto_txns)}</div>
+                        {a.crypto_debit > 0 && (
+                          <div><span className="opacity-60">Money out:</span> ₹ {formatNumber(Math.round(a.crypto_debit))}</div>
+                        )}
+                        <div className="mt-1 opacity-70">
+                          Flagged by matching the bank narration against
+                          exchange and asset names. Verify the narration
+                          before acting — money figures count only
+                          chain-reconciled rows.
+                        </div>
+                      </>
+                    }
+                    onHover={(c, x, y) => setHovered({ content: c, x, y })}
+                    onLeave={() => setHovered(null)}
+                  />
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
@@ -1159,6 +1377,23 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
           {hasNonMule && (
             <LegendChip color={NON_MULE_COLOR} label="NM (Non-Mule)" />
           )}
+          {cryptoAccounts.length > 0 && (
+            <LegendChip color={CRYPTO_COLOR} label="Crypto cash-out" />
+          )}
+          {externalTotal > 0 && (
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-3 rounded-full"
+                    style={{ background: '#fff', boxShadow: `0 0 0 2px ${COLOR_MULE}` }} />
+              ringed = pays a mule outside this FIR
+            </span>
+          )}
+          {flows.some((f) => f.cross_fir) && (
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-0.5"
+                    style={{ background: FLOW_CROSS_FIR }} />
+              arrow crossing two FIRs
+            </span>
+          )}
         </div>
       </div>
 
@@ -1170,11 +1405,20 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
   );
 }
 
-function FlowNode({ color, content, onHover, onLeave }: {
+function FlowNode({ color, content, onHover, onLeave, nodeRef, badge, ring }: {
   color: string;
   content: ReactNode;
   onHover: (content: ReactNode, x: number, y: number) => void;
   onLeave: () => void;
+  /** Registers the DOM node so edges can be measured against it. Edges
+   *  are drawn from real laid-out positions rather than a parallel
+   *  coordinate model, so they cannot drift out of step with the
+   *  columns when the layout reflows. */
+  nodeRef?: (el: HTMLDivElement | null) => void;
+  /** Small corner marker — used for the crypto flag. */
+  badge?: ReactNode;
+  /** Outline colour, for accounts with links leading out of this FIR. */
+  ring?: string;
 }) {
   // Small solid circle. onMouseEnter + onMouseMove both report the
   // current cursor position so the floating tooltip tracks the mouse
@@ -1186,16 +1430,20 @@ function FlowNode({ color, content, onHover, onLeave }: {
     onHover(content, r.right, r.top);
   };
   return (
-    <div
-      className="w-11 h-11 rounded-full shadow-md cursor-help ring-2 ring-white transition-transform hover:scale-110"
-      style={{ background: color }}
-      tabIndex={0}
-      onMouseEnter={report}
-      onMouseMove={report}
-      onMouseLeave={onLeave}
-      onFocus={reportFromFocus}
-      onBlur={onLeave}
-    />
+    <div className="relative" ref={nodeRef}>
+      <div
+        className="w-11 h-11 rounded-full shadow-md cursor-help ring-2 transition-transform hover:scale-110"
+        style={{ background: color, ...(ring
+          ? { boxShadow: `0 0 0 3px ${ring}` } : {}) }}
+        tabIndex={0}
+        onMouseEnter={report}
+        onMouseMove={report}
+        onMouseLeave={onLeave}
+        onFocus={reportFromFocus}
+        onBlur={onLeave}
+      />
+      {badge}
+    </div>
   );
 }
 

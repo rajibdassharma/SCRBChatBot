@@ -1164,12 +1164,40 @@ export interface FirTraceAccount {
   ifsc_code: string | null;
   amount: number;
   account_type: string | null;
+  /** Only for rows from all_accounts — the four case-child tables carry
+   *  no id to join on, so everything below is 0 for them. That is a gap
+   *  in the source, not a statement that the account is clean. */
+  account_id: string | null;
+  crypto_txns: number;
+  crypto_exchanges: string[];
+  crypto_debit: number;
+  /** Links to mule accounts OUTSIDE this FIR. Counted, not drawn — each
+   *  is a thread leading out of this case file. */
+  external_links: number;
+}
+
+/** One statement-derived transfer between two accounts in the trace.
+ *
+ *  The first edge on the Graphical Analysis view that is EVIDENCE
+ *  rather than layout: layer columns say how far from the victim an
+ *  account sits, never who paid whom. An arrow means one account's own
+ *  bank statement names the other's account number. */
+export interface FirTraceFlow {
+  src_account_id: string;
+  dst_account_id: string;
+  txns: number;
+  amount: number;
+  cross_fir: boolean;
 }
 
 export interface AccountsFirTrace {
   fir_no: string;
   case: FirTraceCase | null;
   accounts: FirTraceAccount[];
+  /** Transfers where BOTH ends are in `accounts`. Empty for most FIRs:
+   *  only 177 of 3,822 have an internal link, because a link needs both
+   *  accounts' statements parsed AND both recorded as Mule. */
+  flows: FirTraceFlow[];
   warnings: string[];
 }
 
