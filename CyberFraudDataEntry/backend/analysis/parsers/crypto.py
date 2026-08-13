@@ -64,9 +64,9 @@ _EXCHANGES: list[tuple[str, re.Pattern]] = [
     ("SUNCRYPTO",  re.compile(r"suncrypto", re.I)),
     ("MUDREX",     re.compile(r"mudrex", re.I)),
     ("COINBASE",   re.compile(r"coinbase", re.I)),
-    ("KRAKEN",     re.compile(r"kraken", re.I)),
+
     ("BITFINEX",   re.compile(r"bitfinex", re.I)),
-    ("KUCOIN",     re.compile(r"kucoin", re.I)),
+
     ("BYBIT",      re.compile(r"bybit", re.I)),
     ("FLITPAY",    re.compile(r"flitpay", re.I)),
     ("COINSBIT",   re.compile(r"coinsbit", re.I)),
@@ -78,6 +78,21 @@ _EXCHANGES: list[tuple[str, re.Pattern]] = [
     # character.
     ("OKX",        re.compile(r"\bokx\b", re.I)),
     ("HUOBI",      re.compile(r"\bhuobi\b", re.I)),
+    # KUCOIN and KRAKEN joined the bounded group after the first real
+    # build, which is the only way this kind of thing ever shows up.
+    #
+    #   kucoin  matched "ISHWAR CState Bankucoin p" -- the k comes from
+    #           "Bank" and the rest from a separate field run together.
+    #           Exactly the ASHOKX failure with a different word.
+    #   kraken  matched "krakenface@axl", a person's UPI handle. One
+    #           row, and it was the ONLY row the rule had.
+    #
+    # The cost is real: a genuinely jammed "...KRAKEN01234" is now
+    # missed. That is the right side to err on here. A missed row leaves
+    # a gap someone can still find in the statement; a wrong row puts a
+    # named exchange against an account in a case file.
+    ("KUCOIN",     re.compile(r"\bkucoin\b", re.I)),
+    ("KRAKEN",     re.compile(r"\bkraken\b", re.I)),
 ]
 
 #: Assets and generic wording. Word-boundaried, and NO THREE-LETTER
@@ -105,6 +120,52 @@ _ASSETS: list[tuple[str, re.Pattern]] = [
     ("ETHEREUM", re.compile(r"\bethereum\b", re.I)),
     ("CRYPTO",   re.compile(r"\bcrypto\b|\bblockchain\b|\bvirtual\s+digital\s+asset\b", re.I)),
 ]
+
+
+#: Literal substrings for a SQL pre-filter, lower-case.
+#:
+#: WHY THE SCAN NEEDS ONE
+#: statement_transactions is ~21 million rows and 25 GB against a 128 MB
+#: buffer pool. Streaming all of it into Python to run 26 regexes per
+#: row means shipping the whole fact table over the wire to discard
+#: essentially all of it. One indexed-free but single-pass REGEXP in
+#: MySQL returns the few thousand candidates instead.
+#:
+#: THIS LIST MUST BE A SUPERSET, NEVER A FILTER
+#: It decides what detect() is even shown. A token missing here is a
+#: silent false NEGATIVE -- rows that would have matched are never
+#: considered, and nothing on any screen says so. It is therefore the
+#: literal core of every pattern above, with no cleverness: no
+#: shortening, no shared stems, no boundaries. detect() remains the
+#: only authority on what actually counts.
+#:
+#: _self_test() asserts every known-positive case survives this filter,
+#: so adding a pattern above without a token here fails the test rather
+#: than quietly narrowing the scan.
+SQL_TOKENS: list[str] = [
+    # exchanges
+    "binance", "wazirx", "coindcx", "coinswitch", "zebpay", "bitbns",
+    "giottus", "unocoin", "buyucoin", "suncrypto", "mudrex", "coinbase",
+    "kraken", "bitfinex", "kucoin", "bybit", "flitpay", "coinsbit",
+    "pi42", "vauld", "okx", "huobi",
+    # assets and generic wording
+    "usdt", "tether", "bitcoin", "ethereum", "crypto", "blockchain",
+    # "virtual\s+digital\s+asset" -- the first word is enough, and the
+    # \s+ means no single literal spans the phrase.
+    "virtual",
+]
+
+
+def prefilter(text: str | None) -> bool:
+    """Could this narration possibly match? Cheap, and deliberately loose.
+
+    Mirrors what the SQL does, so a caller that has already loaded rows
+    can apply the same superset without a second round trip.
+    """
+    if not text:
+        return False
+    low = text.lower()
+    return any(t in low for t in SQL_TOKENS)
 
 
 def detect(text: str | None) -> str | None:
@@ -153,6 +214,14 @@ _CASES: list[tuple[str, str | None]] = [
     ("CLG/RSM TRADING/752049/IND/05.02.2020", None),
     (None, None),
     ("", None),
+    # From the first real build of crypto_txn -- both were WRITTEN as
+    # genuine hits before the boundaries went on.
+    ("UPIP2A425794535124ISHWAR CState Bankucoin p", None),
+    ("UPI/422280593906/CR/Kart/SBIN/krakenface@axl/Payme", None),
+    # ...and the ones that must still survive.
+    ("UPI/022709339093/BitbnsAccount/depositbns@axis/HDF", "BITBNS"),
+    ("MMT/IMPS/409114484063/OKX CFO/ANTARIKSHA/Union Ban", "OKX"),
+    ("FT IMPS/IFI/221013457635/FLITPAY PRIVATE LIMI/", "FLITPAY"),
 ]
 
 
@@ -163,6 +232,13 @@ def _self_test() -> int:
         if got != want:
             bad += 1
             print(f"  FAIL want={want!r} got={got!r}  {(text or '')[:62]}")
+        # The pre-filter decides what detect() ever sees, so a case that
+        # SHOULD match must survive it. A miss here is a false negative
+        # that no screen would ever reveal.
+        if want is not None and not prefilter(text):
+            bad += 1
+            print(f"  FAIL prefilter drops a real {want} match: "
+                  f"{(text or '')[:62]}")
     print(f"  {len(_CASES) - bad}/{len(_CASES)} cases pass")
     return bad
 

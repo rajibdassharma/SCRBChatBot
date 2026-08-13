@@ -397,7 +397,7 @@ python -m analysis.daily
 
 `analysis.daily` runs, stopping at the first failure:
 
-1. migrations 019–023 — idempotent, no-ops once applied
+1. migrations 019–024 — idempotent, no-ops once applied
 2. **relink** — repairs account links the restore broke (~2 s)
 3. **parse_statements** — incremental, only files not in the ledger
 4. **hash_id_photos** — full re-hash, ~8 min
@@ -405,7 +405,16 @@ python -m analysis.daily
    parsing, never before: links are found by matching counterparty
    numbers in freshly parsed rows against known mule accounts, so
    running it first would miss everything new.
-6. **summary --check** — verifies the dashboard cache still matches its
+6. **build_crypto --recent 48** — finds statement rows naming a crypto
+   exchange or asset. After parsing, for the same reason as build_links.
+   `--recent`, not a full rebuild: a rebuild rescans all 21M narrations
+   and takes ~7 min on its own.
+
+   **`--recent` only ADDS rows.** After changing a pattern in
+   `analysis/parsers/crypto.py`, run a full `python -m
+   analysis.build_crypto` by hand — otherwise rows matched by the
+   withdrawn rule stay on screen, indistinguishable from current ones.
+7. **summary --check** — verifies the dashboard cache still matches its
    source rows; **exits non-zero on any mismatch**
 
 ### Why `relink` is needed on dev and not on production
@@ -460,9 +469,21 @@ For fixes that only affect derived values, cheaper tools exist:
 python -m analysis.stamp_chain      # re-derive chain_ok from stored rows
 python -m analysis.summary          # rebuild the dashboard cache
 python -m analysis.build_links      # rebuild the mule network (~35 s)
+python -m analysis.build_crypto     # rebuild crypto_txn (~7 min, full)
 python -m analysis.progress         # read-only; safe during a run
+python -m analysis.progress --watch # same, refreshing with an ETA
 python -m analysis.export_for_prod  # package results for the server
 ```
+
+**Crypto detection is deliberately conservative.** `parsers/crypto.py`
+carries 26 regression cases, most of them FALSE positives taken from
+real narrations: `ASHOKX` read as OKX, a bank's joint-holder field read
+as ETH, `Bankucoin` read as KuCoin, `krakenface@axl` read as Kraken.
+Three-letter tickers are excluded entirely — three letters is not enough
+signal in bank narration. Widening a pattern without adding its
+counter-example to `_CASES` is how all four of those shipped.
+
+Run `python -m analysis.parsers.crypto` to execute the self-test alone.
 
 **`failed` is not a terminal state.** Every run retries files marked
 `failed`, so a parser fix needs no bookkeeping — the next run picks them

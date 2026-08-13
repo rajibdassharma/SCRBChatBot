@@ -71,6 +71,8 @@ STEPS = [
      ["-m", "migrations.022_statement_chain_ok"]),
     ("migration 023 — untested totals on the summary",
      ["-m", "migrations.023_summary_untested_totals"]),
+    ("migration 024 — crypto transactions",
+     ["-m", "migrations.024_crypto_transactions"]),
     ("relink — repair account links after the restore",
      ["-m", "analysis.relink"]),
     ("parse statements — incremental",
@@ -82,6 +84,16 @@ STEPS = [
     # accounts, so running this first would miss everything new.
     ("rebuild mule network links",
      ["-m", "analysis.build_links"]),
+    # After parsing, for the same reason as the links rebuild: it reads
+    # freshly parsed narrations. --recent rather than a full rebuild,
+    # which rescans 21M rows and takes ~7 minutes on its own.
+    #
+    # NOTE: --recent only ADDS rows. After changing a pattern in
+    # analysis/parsers/crypto.py, run a full `python -m
+    # analysis.build_crypto` by hand — otherwise rows matched by the
+    # withdrawn rule stay on screen, indistinguishable from current ones.
+    ("find crypto transactions — incremental",
+     ["-m", "analysis.build_crypto", "--recent", "48"]),
     ("verify summary cache",
      ["-m", "analysis.summary", "--check"]),
 ]

@@ -588,7 +588,7 @@ fi
 # "table missing"; without the columns, it fails mid-swap having
 # already emptied the live table.
 for T in upload_ledger statement_transactions account_statement_summary \
-         id_photo_hashes mule_account_link; do
+         id_photo_hashes mule_account_link crypto_txn; do
     HAVE=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
         -e "SELECT COUNT(*) FROM information_schema.tables
             WHERE table_schema='$DB_NAME' AND table_name='$T'" 2>/dev/null || echo "ERROR")
@@ -647,14 +647,14 @@ fi
 # would try to dump that too.
 MISSING_EXCL=0
 for T in upload_ledger statement_transactions account_statement_summary \
-         id_photo_hashes mule_account_link; do
+         id_photo_hashes mule_account_link crypto_txn; do
     if ! grep -q "$T" "$RUNTIME/deploy/backup-db.sh" 2>/dev/null; then
         echo "    ✗ $RUNTIME/deploy/backup-db.sh does not exclude $T"
         MISSING_EXCL=1
     fi
 done
 if [ "$MISSING_EXCL" -eq 0 ]; then
-    echo "    ✓ runtime backup-db.sh excludes all 5 derived tables"
+    echo "    ✓ runtime backup-db.sh excludes all 6 derived tables"
 else
     echo "    ✗ the nightly dump will carry rebuildable data — step 5 did not sync deploy/"
     exit 1
