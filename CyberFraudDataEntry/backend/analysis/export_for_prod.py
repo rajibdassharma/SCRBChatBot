@@ -72,6 +72,7 @@ TABLES = [
     "upload_ledger",
     "id_photo_hashes",
     "mule_account_link",
+    "crypto_txn",
 ]
 
 #: IST. The filename must agree with the backup filenames it will sit

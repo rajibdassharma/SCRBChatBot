@@ -29,12 +29,13 @@ import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import {
-  Banknote, TrendingUp, TrendingDown, Users, Info, ArrowRightLeft,
+  Banknote, TrendingUp, TrendingDown, Users, ArrowRightLeft,
   ShieldCheck, FileSpreadsheet, FileText,
 } from 'lucide-react';
 import { getMoneyTrail } from '../../lib/api/dashboard';
 import { formatNumber } from '../../lib/utils/format';
 import { Pager, paginate, PAGE_SIZE } from '../common/Pager';
+import CaveatNote from '../common/CaveatNote';
 import { stateAbbr } from '../../lib/utils/geo-tile-grid';
 import type {
   MoneyTrailSummary, StatementAccountRow, MoneyTrailScope,
@@ -452,34 +453,34 @@ export function MoneyTrailTab({ onTrace }: {
           Icon={Banknote} />
       </div>
 
-      {/* The caveat travels with the numbers, always. */}
-      <div className="rounded-xl px-4 py-3 flex items-start gap-2"
-        style={{ background: 'rgba(198,124,29,0.10)', border: '1px solid rgba(198,124,29,0.35)' }}>
-        <Info className="w-4 h-4 mt-0.5 shrink-0" style={{ color: C_ORANGE }} />
-        <div className="text-xs" style={{ color: C_NAVY }}>
-          <b>Rupee totals count only statements whose own arithmetic agrees.</b>{' '}
-          Every statement has a running balance, and it must satisfy
-          <i> previous − debit + credit = balance </i> on every row. Files that fail
-          that check are still parsed and their rows are readable, but their debit and
-          credit columns may be swapped — so they are excluded from the totals above
-          and flagged in the table below.
-          {unverifiedFiles > 0 && (
-            <> <b>{formatNumber(unverifiedFiles)}</b> statement
-              {unverifiedFiles === 1 ? '' : 's'} did not reconcile.</>
-          )}
-          {scanned > 0 && (
-            <> <b>{formatNumber(scanned)}</b> more are scanned images and need OCR
-              before they can be read at all.</>
-          )}
-          {/* This screen shows only accounts whose statement has been
-              PARSED. Without saying so, a short list here reads as
-              "few accounts moved money" rather than "few statements
-              have been processed" — which is how 4 Karnataka mule
-              accounts got compared against 744 on the map. */}
-          {' '}This tab covers only accounts whose statement has been parsed —
-          see <b>Statement Coverage</b> for accounts still waiting on one.
-        </div>
-      </div>
+      {/* The caveat still travels with the numbers — collapsed to one
+          line, expanding on click. The summary line stays visible
+          because a figure whose qualification is invisible is a figure
+          that gets quoted without it, and this particular figure once
+          read Rs 111 trillion. */}
+      <CaveatNote summary="Reconciled statements only">
+        <b>Rupee totals count only statements whose own arithmetic agrees.</b>{' '}
+        Every statement has a running balance, and it must satisfy
+        <i> previous − debit + credit = balance </i> on every row. Files that fail
+        that check are still parsed and their rows are readable, but their debit and
+        credit columns may be swapped — so they are excluded from the totals above
+        and flagged in the table below.
+        {unverifiedFiles > 0 && (
+          <> <b>{formatNumber(unverifiedFiles)}</b> statement
+            {unverifiedFiles === 1 ? '' : 's'} did not reconcile.</>
+        )}
+        {scanned > 0 && (
+          <> <b>{formatNumber(scanned)}</b> more are scanned images and need OCR
+            before they can be read at all.</>
+        )}
+        {/* This screen shows only accounts whose statement has been
+            PARSED. Without saying so, a short list here reads as
+            "few accounts moved money" rather than "few statements
+            have been processed" — which is how 4 Karnataka mule
+            accounts got compared against 744 on the map. */}
+        {' '}This tab covers only accounts whose statement has been parsed —
+        see <b>Statement Coverage</b> for accounts still waiting on one.
+      </CaveatNote>
 
       {/* ---- accounts by money out ---- */}
       <div className="rounded-2xl overflow-hidden" style={cardStyle}>
@@ -489,10 +490,14 @@ export function MoneyTrailTab({ onTrace }: {
             <h3 className="text-sm font-bold" style={{ color: C_NAVY }}>
               Accounts by money out
             </h3>
-            <p className="text-xs mt-1 opacity-60">
-              Totals from each account’s own statements, largest outflow first.
-              {onTrace && ' Click an account holder to trace that FIR.'}
-            </p>
+            <div className="mt-1">
+              <CaveatNote summary="Largest outflow first, from each account’s own statements">
+                Every figure comes from the account’s own parsed statements rather
+                than from any central ledger, so an account with no statement on
+                file does not appear at all.
+                {onTrace && ' Click an account holder to trace that FIR.'}
+              </CaveatNote>
+            </div>
             {/* Karnataka + Other does NOT equal All, and saying so
                 is cheaper than letting an officer discover it while
                 checking totals. */}
@@ -532,7 +537,7 @@ export function MoneyTrailTab({ onTrace }: {
               even when the filters wrap onto their own line on a narrow
               screen; without it the buttons drift left under the
               dropdowns. */}
-          <div className="flex gap-2 items-center flex-wrap justify-end">
+          <div className="flex gap-2 items-center flex-wrap justify-end ml-auto">
             {/* Filters sit with the downloads, so the thing that
                 changes the data and the thing that exports it are
                 read together. */}
@@ -744,11 +749,13 @@ export function MoneyTrailTab({ onTrace }: {
       <div className="rounded-2xl overflow-hidden" style={cardStyle}>
         <div className="px-5 py-4" style={{ borderBottom: '3px solid var(--ksp-yellow)' }}>
           <h3 className="text-sm font-bold" style={{ color: C_NAVY }}>How money moved</h3>
-          <p className="text-xs mt-1 opacity-60">
-            Read from the narration text, not from a column — banks do not label
-            the channel. “Not identified” means the narration carried no
-            recognisable marker; the transaction is still counted.
-          </p>
+          <div className="mt-1">
+            <CaveatNote summary="Channel is read from narration text, not a column">
+              Banks do not label the channel, so it is inferred from the narration.
+              “Not identified” means the narration carried no recognisable marker;
+              the transaction is still counted.
+            </CaveatNote>
+          </div>
         </div>
         <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2">
           {data.channels.map((c) => (

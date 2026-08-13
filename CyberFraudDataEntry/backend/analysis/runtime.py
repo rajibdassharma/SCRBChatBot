@@ -337,7 +337,8 @@ def wait_for_memory(low_water_gb: float = LOW_WATER_GB, timeout: float = 120.0,
 
 
 def governed_map(fn, items, requested_workers: int = 0, chunk: int = 0,
-                 per_worker_gb: float = PER_WORKER_GB, log=None):
+                 per_worker_gb: float = PER_WORKER_GB, log=None,
+                 idle_timeout: float = 0.0):
     """Parallel map that yields (item, result) and keeps the box alive.
 
     Differs from ProcessPoolExecutor().map in the ways that matter here:
@@ -428,17 +429,22 @@ def governed_map(fn, items, requested_workers: int = 0, chunk: int = 0,
         try:
             futs = {ex.submit(fn, it): it for it in batch}
             pending = set(futs)
+            # 0 means "use the module default". Passed explicitly by the
+            # serial pass, whose files are the slowest in the corpus and
+            # which runs them down to a batch of one -- at which point
+            # nothing else can complete to reset the window.
+            idle = idle_timeout if idle_timeout > 0 else IDLE_TIMEOUT_S
             while pending:
                 # wait() returns as soon as anything finishes, or after
                 # the idle window with nothing done — which is the
                 # signal we actually want.
                 done, pending = cf.wait(
-                    pending, timeout=IDLE_TIMEOUT_S,
+                    pending, timeout=idle,
                     return_when=cf.FIRST_COMPLETED)
                 if not done:
                     timed_out = True
                     if log:
-                        log(f"  no file completed in {IDLE_TIMEOUT_S:.0f}s — "
+                        log(f"  no file completed in {idle:.0f}s — "
                             f"abandoning {len(pending)} file(s) and "
                             f"rebuilding the pool")
                     # Yielded as failures rather than dropped. The caller

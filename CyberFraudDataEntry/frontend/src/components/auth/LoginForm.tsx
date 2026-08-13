@@ -113,7 +113,7 @@ export function LoginForm() {
               <img src={kspLogo} alt="KSP Logo" className="w-[120px] h-[100px] object-contain" />
             </div>
           </div>
-          <h1 className="text-2xl font-bold" style={{ color: 'var(--ksp-navy)' }}>Cyber Fraud DSR</h1>
+          <h1 className="text-2xl font-bold" style={{ color: 'var(--ksp-navy)' }}>Cyber Crime DSR</h1>
           <p className="text-sm font-semibold italic" style={{ color: 'var(--ksp-red)' }}>Karnataka State Police</p>
         </div>
 

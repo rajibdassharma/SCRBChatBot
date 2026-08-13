@@ -1009,6 +1009,9 @@ export interface MuleNetworkRow {
   ps_id: number | null;
   district: string | null;
   branch_state: string | null;
+  /** Money-trail depth. 1 = paid directly by the victim; higher = further
+   *  from the crime. Null on rows predating migration 012. */
+  layer: number | null;
   connected: number;
   cross_fir: number;
   out_links: number;
@@ -1016,6 +1019,45 @@ export interface MuleNetworkRow {
   txns: number;
   amount: number;
   peers: MuleLinkPeer[];
+}
+
+/** One account recorded as Mule, connected or not.
+ *
+ *  Deliberately not MuleNetworkRow. That describes an account's place
+ *  in the link graph and only exists if the account HAS a link; this is
+ *  the roll of every mule account, which is the larger set. */
+export interface MuleAccountRow {
+  account_id: string;
+  fir_no: string | null;
+  ps_name: string | null;
+  district: string | null;
+  account_holder_name: string | null;
+  account_no: string | null;
+  bank_name: string | null;
+  branch_name: string | null;
+  branch_state: string | null;
+  ifsc_code: string | null;
+  kyc_mobile: string | null;
+  layer: number | null;
+  /** 0 is meaningful and common: most mule accounts are not in the
+   *  network because nothing they paid is on file yet. */
+  links: number;
+  cross_fir_links: number;
+  /** A file is attached. NOT the same as parsed — ~18% of the corpus is
+   *  image-only PDFs that satisfy this and yield no transactions. */
+  has_statement_file: boolean;
+  statement_parsed: boolean;
+}
+
+export interface MuleAccountList {
+  state_scope: string;
+  /** Counted without the row limit, so the client can tell it was
+   *  truncated and say so. */
+  total_mule_accounts: number;
+  accounts_without_state: number;
+  in_network: number;
+  parsed: number;
+  rows: MuleAccountRow[];
 }
 
 export interface MuleNetworkSummary {
@@ -1472,4 +1514,66 @@ export interface RepeatAccount {
   ps_count: number;
   sample_firs: string[];
   sample_ps_labels: string[];
+}
+
+/** One account with crypto-linked transactions. */
+export interface CryptoAccountRow {
+  account_id: string;
+  account_holder_name: string | null;
+  account_no: string | null;
+  bank_name: string | null;
+  fir_no: string | null;
+  account_type: string | null;
+  ps_name: string | null;
+  ps_id: number | null;
+  district: string | null;
+  /** Exchanges/assets seen on this account. */
+  exchanges: string[];
+  txns: number;
+  /** Chain-passed rows only — same rule as Money Trail. */
+  debit: number;
+  credit: number;
+  first_txn: string | null;
+  last_txn: string | null;
+  /** Excluded from the money figures. A count, never a sum. */
+  untested_txns: number;
+}
+
+export interface CryptoExchangeRow {
+  exchange: string;
+  txns: number;
+  accounts: number;
+  debit: number;
+  credit: number;
+}
+
+/** One flagged transaction WITH the narration that flagged it — the
+ *  evidence an officer needs to reject a false positive in seconds. */
+export interface CryptoEvidenceRow {
+  exchange: string;
+  account_holder_name: string | null;
+  account_no: string | null;
+  fir_no: string | null;
+  txn_date: string | null;
+  debit: number;
+  credit: number;
+  description: string | null;
+  /** 1 passed / 0 rejected / -1 untested. */
+  chain_ok: number;
+}
+
+export interface CryptoTrailSummary {
+  account_type: string;
+  total_txns: number;
+  accounts: number;
+  exchanges_seen: number;
+  total_debit: number;
+  total_credit: number;
+  untested_txns: number;
+  /** False when the scan has never run. "Not yet analysed" and "no
+   *  crypto found" are different answers and only one is reassuring. */
+  scanned: boolean;
+  by_exchange: CryptoExchangeRow[];
+  top_accounts: CryptoAccountRow[];
+  evidence: CryptoEvidenceRow[];
 }

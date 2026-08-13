@@ -97,6 +97,11 @@ LONG_WORKERS = 6
 #: without anyone noticing it was overriding the worker count.
 PER_WORKER_LONG_GB = 0.5
 
+#: Idle timeout for the serial pass ONLY -- see governed_map. These are
+#: the corpus's slowest files and the batch drains to one item, so the
+#: main pass's 300s cancels work that was progressing normally.
+LONG_IDLE_TIMEOUT_S = 1800.0
+
 
 def parse_one(path: str) -> dict:
     """Worker entry point. Module-level and picklable.
@@ -295,7 +300,9 @@ def main() -> int:
         # restarts. governed_map prints what it really granted.
         log(f"\nlong-statement pass: {len(deferred)} file(s), "
             f"up to {LONG_WORKERS} workers")
-        for path, res in R.governed_map(
+        n_long = len(deferred)
+        t_long = time.time()
+        for j, (path, res) in enumerate(R.governed_map(
                 parse_one_long, deferred, requested_workers=LONG_WORKERS,
                 # Same 0.5 GB budget the main pass uses, NOT a special
                 # larger one. The 2.0 here was set when long files were
@@ -307,10 +314,34 @@ def main() -> int:
                 # workers however high LONG_WORKERS went — the budget
                 # overrides the request by design, so a stale budget
                 # quietly nullifies the setting above it.
-                per_worker_gb=PER_WORKER_LONG_GB, chunk=8, log=log):
+                per_worker_gb=PER_WORKER_LONG_GB, chunk=8, log=log,
+                # Wider than the main pass's 300s. Measured 2026-08-13: a
+                # 191-page statement was cancelled at exactly 301s on
+                # two consecutive runs, because it was the only item
+                # left in the batch and nothing else could complete to
+                # reset the idle window. It would have failed that way
+                # on every run forever. A dead pool still trips this in
+                # one interval -- it just takes 30 minutes to say so,
+                # which is the right trade for a pass that runs a
+                # handful of files.
+                idle_timeout=LONG_IDLE_TIMEOUT_S), 1):
+            # ETA from THIS pass's own rate, never a corpus average.
+            # These files run ~28s each against ~1s in the main pass, so
+            # an average across the corpus under-predicts the tail by an
+            # order of magnitude -- which is exactly how the estimates
+            # given during earlier runs came out wrong.
+            el_long = time.time() - t_long
+            eta = (el_long / j) * (n_long - j)
+            prog = f"[{j}/{n_long}]"
+            if eta > 0:
+                prog += f" ~{int(eta // 60)}m{int(eta % 60):02d}s left"
             if res is None:
                 stats["worker-died"] += 1
                 stats["deferred"] -= 1
+                # Logged, not silent: without a line here the counter
+                # appears to skip a number and reads like a lost file.
+                log(f"    {prog} {os.path.basename(path)[:14]}... "
+                    f"WORKER DIED")
                 continue
             stats["deferred"] -= 1
             stats[res["status"]] += 1
@@ -327,8 +358,9 @@ def main() -> int:
                 if pending_rows >= FLUSH_ROWS or len(pending) >= FLUSH_FILES:
                     _flush(pending)
                     pending, pending_rows = [], 0
-            log(f"    {os.path.basename(path)[:14]}... pg={res['pages']} "
-                f"rows={len(res['rows']):,} status={res['status']} "
+            log(f"    {prog} {os.path.basename(path)[:14]}... "
+                f"pg={res['pages']} rows={len(res['rows']):,} "
+                f"status={res['status']} "
                 f"free {R.gb(R.available_bytes()):.1f} GB")
 
     if pending and not args.dry_run:

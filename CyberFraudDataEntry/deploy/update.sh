@@ -98,6 +98,7 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.021_mule_account_links
     venv/bin/python -m migrations.022_statement_chain_ok
     venv/bin/python -m migrations.023_summary_untested_totals
+venv/bin/python -m migrations.024_crypto_transactions
 "
 
 # ── 4. Build the frontend ────────────────────────────────────────────
@@ -623,6 +624,16 @@ if [ "$UNTESTED" = "3" ]; then
     echo "    ✓ account_statement_summary.untested_* present (migration 023)"
 else
     echo "    ✗ expected 3 untested_* columns, found $UNTESTED — migration 023 did not complete"
+    exit 1
+fi
+
+CRYPTO=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
+    -e "SELECT COUNT(*) FROM information_schema.tables
+        WHERE table_schema='$DB_NAME' AND table_name='crypto_txn'" 2>/dev/null || echo "ERROR")
+if [ "$CRYPTO" = "1" ]; then
+    echo "    ✓ crypto_txn present (migration 024)"
+else
+    echo "    ✗ crypto_txn missing — migration 024 did not complete"
     exit 1
 fi
 

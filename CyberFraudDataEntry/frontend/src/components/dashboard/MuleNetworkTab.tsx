@@ -36,14 +36,17 @@ import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import {
-  Waypoints, FileSpreadsheet, FileText, Info, Network,
+  Waypoints, FileSpreadsheet, FileText,  Network, Users,
 } from 'lucide-react';
 import { getMuleNetwork } from '../../lib/api/dashboard';
 import { formatNumber } from '../../lib/utils/format';
 import { Pager, paginate, PAGE_SIZE } from '../common/Pager';
 import { stateAbbr } from '../../lib/utils/geo-tile-grid';
 import { MuleNetworkGraph } from './MuleNetworkGraph';
+import { MuleNetworkFull } from './MuleNetworkFull';
+import { MuleAccountsList } from './MuleAccountsList';
 import type { MuleNetworkSummary, MuleNetworkRow, MoneyTrailScope } from '../../types';
+import CaveatNote from '../common/CaveatNote';
 
 const C_NAVY = '#0b2c4a';
 const C_RED = '#8b1919';
@@ -57,9 +60,9 @@ const cardStyle = {
 };
 
 const SCOPES: { value: MoneyTrailScope; label: string }[] = [
-  { value: 'all', label: 'All India' },
+  { value: 'all', label: 'All States' },
   { value: 'karnataka', label: 'Karnataka' },
-  { value: 'other', label: 'Other States' },
+  { value: 'other', label: 'Rest of India' },
 ];
 
 function rupees(v: number | null | undefined): string {
@@ -140,6 +143,9 @@ export function MuleNetworkTab({ onTrace }: {
   // drill-down is a diagram now, and two diagrams open at once would
   // be two claims competing for the same screen.
   const [selected, setSelected] = useState<string | null>(null);
+  // Ranking table vs whole-network diagram — the same data at two zoom
+  // levels, so a toggle rather than a second tab.
+  const [view, setView] = useState<'ranking' | 'network' | 'all'>('ranking');
 
   useEffect(() => {
     let alive = true;
@@ -218,6 +224,33 @@ export function MuleNetworkTab({ onTrace }: {
     </div>;
   }
   if (!data || data.total_links === 0) {
+    // The roll does not depend on the link job, so offer it here rather
+    // than showing a dead end. Without this, an installation that has
+    // never run build_links reports "no mule data" while holding
+    // thousands of mule accounts.
+    if (view === 'all') {
+      return (
+        <div className="space-y-4">
+          <div className="flex items-center gap-1.5">
+            {([['ranking', 'Ranking'], ['all', 'All Mule Accounts']] as const)
+              .map(([v, label]) => (
+                <button key={v} type="button" onClick={() => setView(v)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-bold transition"
+                  style={{
+                    background: view === v ? C_NAVY : '#fff',
+                    color: view === v ? 'var(--ksp-yellow)' : C_NAVY,
+                    border: `1px solid ${view === v ? C_NAVY : 'rgba(11,44,74,0.18)'}`,
+                  }}>
+                  {label}
+                </button>
+              ))}
+          </div>
+          <MuleAccountsList
+            scope={scope}
+            scopeLabel={SCOPES.find((o) => o.value === scope)?.label ?? scope} />
+        </div>
+      );
+    }
     return (
       <div className="rounded-2xl p-8" style={cardStyle}>
         <p className="text-sm font-bold mb-1" style={{ color: C_NAVY }}>
@@ -227,6 +260,11 @@ export function MuleNetworkTab({ onTrace }: {
           Links are found by a batch job, not on upload. Ask your administrator
           to run <code>python -m analysis.build_links</code>.
         </p>
+        <button type="button" onClick={() => setView('all')}
+          className="mt-3 inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-semibold"
+          style={{ background: C_NAVY, color: '#fff' }}>
+          <Users className="w-4 h-4" /> All mule accounts
+        </button>
       </div>
     );
   }
@@ -244,28 +282,72 @@ export function MuleNetworkTab({ onTrace }: {
           accent={C_GREEN} sub="the honest denominator" />
       </div>
 
-      <div className="rounded-xl px-4 py-3 flex items-start gap-2"
-        style={{ background: 'rgba(11,44,74,0.06)', border: '1px solid rgba(11,44,74,0.18)' }}>
-        <Info className="w-4 h-4 mt-0.5 shrink-0" style={{ color: C_NAVY }} />
-        <div className="text-xs" style={{ color: C_NAVY }}>
-          <b>A link means one account’s statement names the other’s account number</b>,
-          and both are recorded as Mule. Nothing is inferred from shared destinations,
-          and payment gateways are excluded from the matching — every account pays
-          BBPS and Amazon, so linking on that would connect everyone to everyone.
-          An account can only appear here if its statement has been parsed:{' '}
-          <b>{formatNumber(data.accounts_with_statements)}</b> mule accounts qualify,
-          so absence from this list is not evidence of anything.
+        <CaveatNote summary={
+          `Absence from this list is not evidence — only `
+          + `${formatNumber(data.accounts_with_statements)} mules have a parsed statement`
+        }>
+          <b>A link means one account’s statement names the other’s account
+          number</b>, and both are recorded as Mule. Nothing is inferred from shared
+          destinations, and payment gateways are excluded from the matching — every
+          account pays BBPS and Amazon, so linking on that would connect everyone to
+          everyone. An account can only appear here if its statement has been
+          parsed.
           {infraCount > 0 && (
-            <> <b className="block mt-1" style={{ color: C_ORANGE }}>
+            <b className="block mt-1" style={{ color: C_ORANGE }}>
               {infraCount} row{infraCount === 1 ? '' : 's'} on this page look like
               payment processors (PayU, Google, Razorpay…) that were classified as
               mule accounts in the source data. They are flagged, not hidden —
               overriding an officer’s classification is not this screen’s job.
-            </b></>
+            </b>
           )}
-        </div>
+        </CaveatNote>
+
+      {/* Ranking vs whole-network: the same data at two zoom levels.
+          The table answers "which account should I look at"; the graph
+          answers "what shape is this". Neither replaces the other, and
+          both hand off to the per-account view on click. */}
+      <div className="flex items-center gap-1.5">
+        {([
+          ['ranking', 'Ranking'],
+          ['network', 'Network'],
+          ['all', 'All Mule Accounts'],
+        ] as const).map(([v, label]) => (
+          <button key={v} type="button" onClick={() => setView(v)}
+            className="px-3 py-1.5 rounded-lg text-xs font-bold transition"
+            style={{
+              background: view === v ? C_NAVY : '#fff',
+              color: view === v ? 'var(--ksp-yellow)' : C_NAVY,
+              border: `1px solid ${view === v ? C_NAVY : 'rgba(11,44,74,0.18)'}`,
+            }}>
+            {label}
+          </button>
+        ))}
       </div>
 
+      {view === 'all' ? (
+        <div className="space-y-4">
+          <div className="flex items-center gap-2 justify-end">
+            <label className="text-xs font-semibold" style={{ color: C_NAVY }}>
+              State
+            </label>
+            <select value={scope}
+              onChange={(e) => setScope(e.target.value as MoneyTrailScope)}
+              aria-label="Filter mule accounts by state"
+              className="px-2 py-1.5 rounded-lg text-sm font-semibold bg-white"
+              style={{ border: `2px solid ${C_NAVY}`, color: C_NAVY }}>
+              {SCOPES.map((o) => (
+                <option key={o.value} value={o.value}>{o.label}</option>
+              ))}
+            </select>
+          </div>
+          <MuleAccountsList
+            scope={scope}
+            scopeLabel={SCOPES.find((o) => o.value === scope)?.label ?? scope} />
+        </div>
+      ) : view === 'network' && !selectedRow ? (
+        <MuleNetworkFull rows={rows} onOpenAccount={setSelected} />
+      ) : (
+      <>
       {/* The diagram REPLACES the list rather than sitting above it.
           Stacked, the table pushed the graph off-screen on any laptop
           and the officer ended up scrolling between two views of the
@@ -275,6 +357,9 @@ export function MuleNetworkTab({ onTrace }: {
           centre={selectedRow}
           allRows={rows}
           onRecentre={setSelected}
+          // Clearing the selection falls back to whichever view is
+          // active, so the label follows `view`, not a constant.
+          backTo={view === 'network' ? 'diagram' : 'list'}
           onClose={() => setSelected(null)} />
       ) : (
       <div className="rounded-2xl overflow-hidden" style={cardStyle}>
@@ -284,18 +369,21 @@ export function MuleNetworkTab({ onTrace }: {
             <h3 className="text-sm font-bold flex items-center gap-1.5" style={{ color: C_NAVY }}>
               <Waypoints className="w-4 h-4" /> Connected mule accounts
             </h3>
-            <p className="text-xs mt-1 opacity-60">
-              Ranked by how many <b>different FIRs</b> an account reaches, not by raw
-              connection count — links inside one FIR are the case file restating
-              itself. <b>Click a row to draw its network.</b>
-            </p>
+            <div className="mt-1">
+              <CaveatNote summary="Ranked by FIRs reached, not by link count">
+                Links inside one FIR are the case file restating itself, so ranking
+                on raw connection count would put the most-reported accounts on top
+                rather than the most connected ones. <b>Click a row to draw its
+                network.</b>
+              </CaveatNote>
+            </div>
             <p className="text-sm font-medium mt-1" style={{ color: C_RED }}>
               {rows.length === 0 ? 'no accounts'
                 : `showing ${formatNumber(pg.firstIdx + 1)}–${formatNumber(pg.lastIdx)}`
                   + ` of ${formatNumber(rows.length)} account${rows.length === 1 ? '' : 's'}`}
             </p>
           </div>
-          <div className="flex gap-2 items-center flex-wrap justify-end">
+          <div className="flex gap-2 items-center flex-wrap justify-end ml-auto">
             <label className="text-xs flex items-center gap-1.5 font-semibold"
               style={{ color: C_NAVY }}>
               <input type="checkbox" checked={crossOnly}
@@ -439,6 +527,8 @@ export function MuleNetworkTab({ onTrace }: {
           </>
         )}
       </div>
+      )}
+      </>
       )}
     </div>
   );

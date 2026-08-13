@@ -205,7 +205,7 @@ export function AccountsPsDetailPanel({ ps, asOfDate, onBack }: Props) {
             </p>
           </div>
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 ml-auto shrink-0">
           <button
             onClick={downloadExcel}
             disabled={loading || rows.length === 0}

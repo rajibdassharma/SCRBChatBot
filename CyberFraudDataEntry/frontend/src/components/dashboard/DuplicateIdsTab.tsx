@@ -30,11 +30,11 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 import {
-  Fingerprint, AlertTriangle, ChevronRight, ChevronDown, Info,
-} from 'lucide-react';
+  Fingerprint, AlertTriangle, ChevronRight, ChevronDown,  } from 'lucide-react';
 import { getDuplicateIds } from '../../lib/api/dashboard';
 import { formatNumber } from '../../lib/utils/format';
 import type { DuplicateIdSummary, DuplicateIdCluster } from '../../types';
+import CaveatNote from '../common/CaveatNote';
 
 const C_NAVY = '#0b2c4a';
 const C_RED = '#8b1919';
@@ -155,18 +155,14 @@ export function DuplicateIdsTab() {
 
       {/* The caveat travels with the finding, always. A shared image is
            a reason to look, never a conclusion. */}
-      <div className="rounded-xl px-4 py-3 flex items-start gap-2"
-        style={{ background: 'rgba(198,124,29,0.10)', border: '1px solid rgba(198,124,29,0.35)' }}>
-        <Info className="w-4 h-4 mt-0.5 shrink-0" style={{ color: C_ORANGE }} />
-        <div className="text-xs" style={{ color: C_NAVY }}>
-          <b>A shared ID file is a lead, not proof.</b> It can also mean one person
-          legitimately holds several accounts, or an operator attached the same file
-          to more than one record. Open each group and verify before acting.
-          Every account in a group has the <b>byte-for-byte identical file</b>
-          attached — matching is on a checksum of the file, so no name, number or
-          date of birth is read from the document.
-        </div>
-      </div>
+        <CaveatNote summary="A shared ID file is a lead, not proof">
+          It can also mean one person legitimately holds several accounts, or an
+          operator attached the same file to more than one record. Open each group
+          and verify before acting. Every account in a group has the{' '}
+          <b>byte-for-byte identical file</b> attached — matching is on a checksum
+          of the file, so no name, number or date of birth is read from the
+          document.
+        </CaveatNote>
 
       <div className="rounded-2xl overflow-hidden" style={cardStyle}>
         <div className="px-5 py-4 flex items-start justify-between gap-4 flex-wrap"
@@ -175,12 +171,14 @@ export function DuplicateIdsTab() {
             <h3 className="text-sm font-bold flex items-center gap-1.5" style={{ color: C_NAVY }}>
               <Fingerprint className="w-4 h-4" /> Accounts sharing the same ID file
             </h3>
-            <p className="text-xs mt-1 opacity-60">
-              Ranked by spread — how many distinct account numbers, police stations
-              and holder names one file reaches — not by how many uploads it covers.
-              Different names on the SAME account number is an entry-quality issue;
-              different names on DIFFERENT account numbers is identity reuse.
-            </p>
+            <div className="mt-1">
+              <CaveatNote summary="Ranked by spread, not by upload count">
+                Spread is how many distinct account numbers, police stations and
+                holder names one file reaches. Different names on the SAME account
+                number is an entry-quality issue; different names on DIFFERENT
+                account numbers is identity reuse.
+              </CaveatNote>
+            </div>
           </div>
           <label className="text-xs flex items-center gap-2 font-semibold"
             style={{ color: C_NAVY }}>

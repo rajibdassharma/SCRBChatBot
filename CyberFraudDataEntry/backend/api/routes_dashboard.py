@@ -26,6 +26,7 @@ from models.money_transfer import MoneyTransfer
 from models.atm_withdrawal import AtmWithdrawal
 from models.aeps_transaction import AepsTransaction
 from models.all_account import AllAccount, ACCOUNT_TYPES
+from models.crypto_txn import CryptoTxn
 from models.id_photo_hash import IdPhotoHash
 from models.all_account_mule_herder import AllAccountMuleHerder
 from models.victim import Victim
@@ -53,9 +54,11 @@ from schemas.dashboard import (
     MuleNetworkSummary, MuleNetworkRow, MuleLinkPeer,
     StatementCoverageSummary, StatementCoverageRow,
     MoneyTrailSummary, StatementQualityRow, StatementChannelRow,
+    MuleAccountList, MuleAccountRow,
     StatementAccountRow, SharedCounterparty,
     NcrpKpiSummary, NcrpPsReportCount, NcrpBankConcentration, NcrpAtmLocation,
     RepeatAccount, AccountFirOccurrence,
+    CryptoTrailSummary, CryptoExchangeRow, CryptoAccountRow, CryptoEvidenceRow,
 )
 from schemas.all_account import AllAccountResponse, MuleHerderOut
 from schemas.portals_dsr import PortalsDsrKpiSummary, PortalsDsrPsComparison
@@ -2064,6 +2067,12 @@ async def get_mule_network(
             AllAccount.bank_name, AllAccount.fir_no,
             PoliceStation.station_name, PoliceStation.id, Unit.name,
             func.trim(func.coalesce(AllAccount.branch_state, "")),
+            # Money-trail depth. Layer 1 is the account the victim paid;
+            # each further layer is a hop away from the crime. Carried
+            # so the network diagram can colour by it -- the shape of a
+            # ring is far easier to read when you can see which end is
+            # near the victim and which is the cash-out.
+            AllAccount.layer,
          )
          .select_from(AllAccount)
          .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id)
@@ -2124,6 +2133,7 @@ async def get_mule_network(
             account_id=aid, account_holder_name=r[1], account_no=r[2],
             bank_name=r[3], fir_no=r[4], ps_name=r[5], ps_id=r[6],
             district=r[7], branch_state=r[8] or None,
+            layer=r[9],
             connected=connected, cross_fir=cross,
             out_links=b["out"], in_links=b["in"],
             txns=b["txns"], amount=b["amt"], peers=peers))
@@ -3961,3 +3971,296 @@ async def get_account_fir_history(
         )
         for fir_no, ps_name, district, layer, account_type, holder, bank_name, branch_state, created_at in rows
     ]
+
+
+@router.get("/crypto-trail", response_model=CryptoTrailSummary)
+async def get_crypto_trail(
+    account_type: str = Query("All", description="All | Mule | Non-Mule | Victim"),
+    evidence_limit: int = Query(60, ge=0, le=500,
+        description="Sample narrations returned so a finding can be eyeballed"),
+    account_limit: int = Query(500, ge=1, le=5000),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Accounts whose statements name a crypto exchange or asset.
+
+    super_admin only, like the other cross-PS analysis tabs.
+
+    Reads crypto_txn, rebuilt by analysis/build_crypto.py. Detection is
+    NOT done here: matching narration patterns across 19M rows behind a
+    page load would be both slow and untestable. See migration 024.
+
+    WHY THE EVIDENCE SAMPLE EXISTS
+    ------------------------------
+    Because this detector has been wrong twice, convincingly:
+
+      LIKE '%okx%'   168 hits -- "ASHOKX009328", "ZOaazcokX010373";
+                     reference codes and a common Indian name.
+      \beth\b        58 hits, which would have been the LARGEST
+                     category on this screen -- every one the same
+                     bank header, "JOINT HOLDERS : Cust ID : ... ETH".
+
+    Word boundaries fixed the first and did nothing for the second.
+    Three-letter tickers are gone entirely as a result. What remains
+    is exchange names and four-character-plus assets, but the class of
+    error is not closed -- a new bank's narration format could
+    reintroduce it tomorrow. So every response carries real narrations
+    with the match visible, and an officer can reject the finding in
+    seconds rather than opening an inquiry on it.
+
+    MONEY FOLLOWS THE SAME RULE AS MONEY TRAIL
+    ------------------------------------------
+    Only chain_ok = 1 rows are summed. Untested rows are counted and
+    reported apart, never added in.
+    """
+    if admin.role != "super_admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Crypto analysis is available to SCRB HQ accounts only.")
+    if account_type != "All" and account_type not in ACCOUNT_TYPES:
+        raise HTTPException(
+            status_code=422,
+            detail=f"account_type must be 'All' or one of: {', '.join(sorted(ACCOUNT_TYPES))}")
+
+    C = CryptoTxn
+
+    def scoped(q):
+        q = (q.select_from(C)
+              .join(AllAccount, AllAccount.id == C.account_id)
+              .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id))
+        q = where_not_test(q, admin,
+                           exclude_test_unit(AllAccount.unit_id),
+                           exclude_test_ps(AllAccount.ps_id))
+        if account_type != "All":
+            q = q.where(AllAccount.account_type == account_type)
+        return q
+
+    # "Never scanned" and "scanned, found nothing" are different answers.
+    # An empty table with no scan behind it must not read as "no crypto
+    # in this corpus" -- that is a reassuring statement about data that
+    # was never looked at.
+    ever = int((await db.execute(
+        select(func.count()).select_from(C))).scalar() or 0)
+
+    head = (await db.execute(scoped(select(
+        func.count(),
+        func.count(func.distinct(C.account_id)),
+        func.count(func.distinct(C.exchange)),
+        func.coalesce(func.sum(case((C.chain_ok == 1, C.debit), else_=0)), 0),
+        func.coalesce(func.sum(case((C.chain_ok == 1, C.credit), else_=0)), 0),
+        func.coalesce(func.sum(case((C.chain_ok == -1, 1), else_=0)), 0),
+    )))).first()
+
+    by_exchange = [
+        CryptoExchangeRow(exchange=r[0], txns=int(r[1]),
+                          accounts=int(r[2]), debit=float(r[3] or 0),
+                          credit=float(r[4] or 0))
+        for r in (await db.execute(scoped(select(
+            C.exchange,
+            func.count(),
+            func.count(func.distinct(C.account_id)),
+            func.coalesce(func.sum(case((C.chain_ok == 1, C.debit), else_=0)), 0),
+            func.coalesce(func.sum(case((C.chain_ok == 1, C.credit), else_=0)), 0),
+        )).group_by(C.exchange).order_by(func.count().desc()))).all()
+    ]
+
+    top_accounts = [
+        CryptoAccountRow(
+            account_id=r[0], account_holder_name=r[1], account_no=r[2],
+            bank_name=r[3], fir_no=r[4], account_type=r[5], ps_name=r[6],
+            district=r[7], ps_id=r[8],
+            exchanges=sorted(set((r[9] or "").split(","))) if r[9] else [],
+            txns=int(r[10]), debit=float(r[11] or 0), credit=float(r[12] or 0),
+            first_txn=r[13], last_txn=r[14], untested_txns=int(r[15] or 0),
+        )
+        for r in (await db.execute(scoped(select(
+            C.account_id,
+            AllAccount.account_holder_name, AllAccount.account_no,
+            AllAccount.bank_name, AllAccount.fir_no, AllAccount.account_type,
+            PoliceStation.station_name, Unit.name, PoliceStation.id,
+            func.group_concat(C.exchange.distinct()),
+            func.count(),
+            func.coalesce(func.sum(case((C.chain_ok == 1, C.debit), else_=0)), 0),
+            func.coalesce(func.sum(case((C.chain_ok == 1, C.credit), else_=0)), 0),
+            func.min(C.txn_date), func.max(C.txn_date),
+            func.coalesce(func.sum(case((C.chain_ok == -1, 1), else_=0)), 0),
+        )).group_by(
+            C.account_id, AllAccount.account_holder_name, AllAccount.account_no,
+            AllAccount.bank_name, AllAccount.fir_no, AllAccount.account_type,
+            PoliceStation.station_name, Unit.name, PoliceStation.id,
+        ).order_by(func.count().desc()).limit(account_limit))).all()
+    ]
+
+    evidence = [
+        CryptoEvidenceRow(
+            exchange=r[0], account_holder_name=r[1], account_no=r[2],
+            fir_no=r[3], txn_date=r[4], debit=float(r[5] or 0),
+            credit=float(r[6] or 0), description=r[7], chain_ok=int(r[8]),
+        )
+        for r in (await db.execute(scoped(select(
+            C.exchange, AllAccount.account_holder_name, AllAccount.account_no,
+            AllAccount.fir_no, C.txn_date, C.debit, C.credit,
+            C.description, C.chain_ok,
+        )).order_by(C.txn_date.desc()).limit(evidence_limit))).all()
+    ] if evidence_limit else []
+
+    return CryptoTrailSummary(
+        account_type=account_type,
+        scanned=ever > 0,
+        total_txns=int(head[0] or 0) if head else 0,
+        accounts=int(head[1] or 0) if head else 0,
+        exchanges_seen=int(head[2] or 0) if head else 0,
+        total_debit=float(head[3] or 0) if head else 0,
+        total_credit=float(head[4] or 0) if head else 0,
+        untested_txns=int(head[5] or 0) if head else 0,
+        by_exchange=by_exchange,
+        top_accounts=top_accounts,
+        evidence=evidence,
+    )
+
+
+@router.get("/mule-accounts", response_model=MuleAccountList)
+async def get_mule_accounts(
+    state_scope: str = Query("all",
+        description="all | karnataka | other — on all_accounts.branch_state, "
+                    "i.e. where the BANK BRANCH is, not the police district"),
+    limit: int = Query(30000, ge=1, le=40000,
+        description="Max rows. The client paginates and exports these, so it "
+                    "needs the whole set, not one page of it."),
+    admin: CurrentUser = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """Every account recorded as Mule, connected or not.
+
+    super_admin only, on the same reasoning as the rest of this file:
+    the list crosses police station boundaries, and a station-level
+    admin reading another district's accounts would breach the VAPT
+    7.7/7.8 scoping rule.
+
+    WHY THIS IS NOT THE MULE NETWORK LIST
+    -------------------------------------
+    /mule-network answers "who is connected to whom" and can only
+    contain an account that HAS a link — which requires that account's
+    statement to have been parsed AND someone it paid to also be on
+    file. That is a minority of mule accounts. Reading the network list
+    as the roll of mule accounts therefore undercounts badly, and the
+    gap is invisible unless both numbers are on screen.
+
+    This endpoint is the roll. `links` is carried on each row so the
+    two questions stay visibly distinct: a row with 0 links is not a
+    cleared account, it is an account with nothing on file yet.
+
+    ATTACHED IS NOT PARSED
+    ----------------------
+    `has_statement_file` means a file is attached to the record.
+    `statement_parsed` means it yielded transactions. Roughly 18% of
+    the corpus is image-only PDFs that satisfy the first and fail the
+    second, so collapsing them into one flag would report a chasing job
+    as finished.
+    """
+    if admin.role != "super_admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Mule account listing is available to SCRB HQ accounts only.")
+    if state_scope not in _MT_SCOPES:
+        raise HTTPException(status_code=422,
+            detail=f"state_scope must be one of: {', '.join(sorted(_MT_SCOPES))}")
+
+    st = func.lower(func.trim(func.coalesce(AllAccount.branch_state, "")))
+
+    def scoped(q):
+        if state_scope == "karnataka":
+            return q.where(st == "karnataka")
+        if state_scope == "other":
+            # Blank state is NOT swept in here. An unrecorded branch
+            # state is not evidence of a branch outside Karnataka, and
+            # counting it as one would inflate "Rest of India" with
+            # data-entry gaps.
+            return q.where(st != "karnataka").where(st != "")
+        return q
+
+    total = (await db.execute(
+        scoped(select(func.count()).select_from(AllAccount)
+               .where(AllAccount.account_type == "Mule")))).scalar() or 0
+
+    # Counted only under "All States": under a scope filter the number
+    # would either be zero or the whole set, and mean nothing either way.
+    blank_state = 0
+    if state_scope == "all":
+        blank_state = (await db.execute(
+            select(func.count()).select_from(AllAccount)
+            .where(AllAccount.account_type == "Mule")
+            .where(st == ""))).scalar() or 0
+
+    q = (scoped(
+            select(
+                AllAccount.id, AllAccount.fir_no,
+                PoliceStation.station_name, Unit.name,
+                # Trimmed on the way out, not in the table. A fair
+                # number of holder names carry leading tabs and spaces
+                # from the source upload, which sorts them above "A"
+                # and renders the column ragged. Cleaning the stored
+                # value is a data-quality job with its own audit
+                # trail; presenting it readably is this endpoint's.
+                func.trim(AllAccount.account_holder_name),
+                AllAccount.account_no,
+                AllAccount.bank_name, AllAccount.branch_name,
+                func.trim(func.coalesce(AllAccount.branch_state, "")),
+                AllAccount.ifsc_code, AllAccount.kyc_mobile, AllAccount.layer,
+                AllAccount.account_statement_path,
+            )
+            .select_from(AllAccount)
+            .where(AllAccount.account_type == "Mule"))
+         # OUTER joins on both. An account whose PS or unit row is
+         # missing is still a mule account, and an inner join would
+         # drop it from the roll without saying so.
+         .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+         .outerjoin(Unit, Unit.id == AllAccount.unit_id)
+         .order_by(func.trim(AllAccount.account_holder_name))
+         .limit(limit))
+    rows = (await db.execute(q)).all()
+    ids = {str(r[0]) for r in rows}
+
+    # Link counts, merged in Python rather than joined. mule_account_link
+    # is ~1,700 rows and a link counts for BOTH ends, which as SQL would
+    # be two correlated subqueries per account across ~14,000 accounts.
+    link_n: dict[str, int] = {}
+    link_x: dict[str, int] = {}
+    for src, dst, xf in (await db.execute(text(
+            "SELECT src_account_id, dst_account_id, cross_fir "
+            "FROM mule_account_link"))).all():
+        for side in (str(src), str(dst)):
+            if side not in ids:
+                continue
+            link_n[side] = link_n.get(side, 0) + 1
+            if xf:
+                link_x[side] = link_x.get(side, 0) + 1
+
+    parsed_ids = {
+        str(r[0]) for r in (await db.execute(
+            select(AccountStatementSummary.account_id)
+            .where(AccountStatementSummary.txns > 0)
+            .distinct())).all()
+    } & ids
+
+    out = [
+        MuleAccountRow(
+            account_id=str(r[0]), fir_no=r[1], ps_name=r[2], district=r[3],
+            account_holder_name=r[4], account_no=r[5], bank_name=r[6],
+            branch_name=r[7], branch_state=r[8] or None, ifsc_code=r[9],
+            kyc_mobile=r[10], layer=r[11],
+            links=link_n.get(str(r[0]), 0),
+            cross_fir_links=link_x.get(str(r[0]), 0),
+            has_statement_file=bool(r[12]),
+            statement_parsed=str(r[0]) in parsed_ids,
+        )
+        for r in rows
+    ]
+    return MuleAccountList(
+        state_scope=state_scope,
+        total_mule_accounts=int(total),
+        accounts_without_state=int(blank_state),
+        in_network=sum(1 for r in out if r.links > 0),
+        parsed=sum(1 for r in out if r.statement_parsed),
+        rows=out,
+    )

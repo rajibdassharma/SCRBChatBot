@@ -68,11 +68,18 @@ function rupeesShort(v: number): string {
   return `₹${Math.round(v)}`;
 }
 
-export function MuleNetworkGraph({ centre, allRows, onRecentre, onClose }: {
+export function MuleNetworkGraph({
+  centre, allRows, onRecentre, onClose, backTo = 'list',
+}: {
   centre: MuleNetworkRow;
   allRows: MuleNetworkRow[];
   onRecentre: (accountId: string) => void;
   onClose: () => void;
+  /** Where onClose actually lands. This view is reachable from the
+   *  ranking table AND from the whole-network diagram, and onClose
+   *  returns to whichever one you came from -- so the label has to be
+   *  told which, or it promises a destination it does not go to. */
+  backTo?: 'list' | 'diagram';
 }) {
   const [hover, setHover] = useState<{ p: MuleLinkPeer; x: number; y: number } | null>(null);
   const [history, setHistory] = useState<string[]>([]);
@@ -159,12 +166,14 @@ export function MuleNetworkGraph({ centre, allRows, onRecentre, onClose }: {
               <ArrowLeft className="w-4 h-4" /> Back
             </button>
           )}
-          {/* The only way back to the list, so it is a primary button
-              and it says where it goes rather than just "Close". */}
+          {/* The only way out, so it is a primary button and it names
+              its destination rather than just saying "Close". */}
           <button type="button" onClick={onClose}
             className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-semibold"
             style={{ background: C_NAVY, color: '#fff' }}>
-            <List className="w-4 h-4" /> Back to list
+            {backTo === 'diagram'
+              ? <><Waypoints className="w-4 h-4" /> Back to diagram</>
+              : <><List className="w-4 h-4" /> Back to list</>}
           </button>
         </div>
       </div>

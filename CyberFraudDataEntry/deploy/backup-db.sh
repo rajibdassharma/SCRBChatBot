@@ -92,6 +92,7 @@ DERIVED_TABLES=(
     account_statement_summary  # per (account, channel) rollup
     id_photo_hashes            # SHA-256 + perceptual hash per photo
     mule_account_link          # direct mule -> mule transfers
+    crypto_txn                 # statement rows naming a crypto exchange
 )
 IGNORE_ARGS=()
 for t in "${DERIVED_TABLES[@]}"; do

@@ -18,6 +18,8 @@ import type {
   RepeatAccount, AccountFirOccurrence,
   MoneyTrailSummary, MoneyTrailScope,
   StatementCoverageSummary, CoverageStatus, MuleNetworkSummary,
+  CryptoTrailSummary,
+  MuleAccountList,
 } from '../../types';
 
 /** All Accounts dashboard — KPI cards + per-PS comparison. */
@@ -75,6 +77,19 @@ export async function getMuleNetwork(
     limit: String(limit),
   });
   return apiFetch<MuleNetworkSummary>(`/api/v1/dashboard/mule-network?${qs.toString()}`);
+}
+
+/** Every account recorded as Mule, connected or not (F4).
+ *  super_admin only. Not a page of results — the client paginates and
+ *  exports the whole set, so one round trip carries all of it. */
+export async function getMuleAccounts(
+  stateScope: MoneyTrailScope = 'all', limit = 30000,
+): Promise<MuleAccountList> {
+  const qs = new URLSearchParams({
+    state_scope: stateScope,
+    limit: String(limit),
+  });
+  return apiFetch<MuleAccountList>(`/api/v1/dashboard/mule-accounts?${qs.toString()}`);
 }
 
 /** Statement coverage work list (F2). super_admin only; 403 otherwise. */
@@ -334,4 +349,18 @@ export function getAccountFirHistory(accountNo: string): Promise<AccountFirOccur
   return apiFetch<AccountFirOccurrence[]>(
     `/api/v1/dashboard/account-fir-history?account_no=${encodeURIComponent(accountNo)}`,
   );
+}
+
+/** Crypto exchange / asset transactions found in parsed statements.
+ *  super_admin only; 403 otherwise. Reads the crypto_txn table built by
+ *  analysis/build_crypto.py — detection is never done at request time. */
+export async function getCryptoTrail(
+  accountType = 'All', evidenceLimit = 60, accountLimit = 500,
+): Promise<CryptoTrailSummary> {
+  const qs = new URLSearchParams({
+    account_type: accountType,
+    evidence_limit: String(evidenceLimit),
+    account_limit: String(accountLimit),
+  });
+  return apiFetch<CryptoTrailSummary>(`/api/v1/dashboard/crypto-trail?${qs.toString()}`);
 }

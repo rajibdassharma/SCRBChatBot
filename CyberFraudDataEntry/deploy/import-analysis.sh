@@ -77,7 +77,8 @@ q()  { my --skip-column-names --batch "$DB_NAME" -e "$1"; }
 TABLES="account_statement_summary:account_id
 upload_ledger:account_id
 id_photo_hashes:account_id
-mule_account_link:src_account_id"
+mule_account_link:src_account_id
+crypto_txn:account_id"
 
 echo "============================================================"
 echo "  Import analysis results  ->  $DB_NAME"

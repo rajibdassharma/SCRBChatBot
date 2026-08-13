@@ -36,7 +36,7 @@ import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import {
-  FileWarning, FileSpreadsheet, FileText, Info, Clock, ScanLine,
+  FileWarning, FileSpreadsheet, FileText,  Clock, ScanLine,
   CheckCircle2, Hourglass,
 } from 'lucide-react';
 import { getStatementCoverage } from '../../lib/api/dashboard';
@@ -46,6 +46,7 @@ import { stateAbbr } from '../../lib/utils/geo-tile-grid';
 import type {
   StatementCoverageSummary, StatementCoverageRow, MoneyTrailScope, CoverageStatus,
 } from '../../types';
+import CaveatNote from '../common/CaveatNote';
 
 const C_NAVY = '#0b2c4a';
 const C_RED = '#8b1919';
@@ -327,11 +328,7 @@ export function StatementCoverageTab() {
         </div>
       )}
 
-      <div className="rounded-xl px-4 py-3 flex items-start gap-2"
-        style={{ background: 'rgba(11,44,74,0.06)', border: '1px solid rgba(11,44,74,0.18)' }}>
-        <Info className="w-4 h-4 mt-0.5 shrink-0" style={{ color: C_NAVY }} />
-        <div className="text-xs" style={{ color: C_NAVY }}>
-          <b>Only two of these four need anyone’s attention.</b>{' '}
+        <CaveatNote summary="Only two of these four need anyone’s attention">
           <b>No statement</b> means nothing was ever attached — that is a records
           request to the bank. <b>Unreadable</b> means a file exists but is a scanned
           image or a layout the parser does not know, so it needs OCR.{' '}
@@ -340,10 +337,9 @@ export function StatementCoverageTab() {
           {data.accounts_without_state > 0 && scope !== 'all' && (
             <> {formatNumber(data.accounts_without_state)} account
               {data.accounts_without_state === 1 ? ' has' : 's have'} no branch state
-              recorded and appear only under “All India”.</>
+              recorded and appear only under “All States”.</>
           )}
-        </div>
-      </div>
+        </CaveatNote>
 
       <div className="rounded-2xl overflow-hidden" style={cardStyle}>
         <div className="px-5 py-4 flex items-start justify-between gap-4 flex-wrap"
@@ -352,10 +348,14 @@ export function StatementCoverageTab() {
             <h3 className="text-sm font-bold flex items-center gap-1.5" style={{ color: C_NAVY }}>
               <Clock className="w-4 h-4" /> Work list — oldest gap first
             </h3>
-            <p className="text-xs mt-1 opacity-60">
-              Aged from the FIR registration date, not from when the row was created.
-              Accounts whose FIR has no usable date show “—” and sort last.
-            </p>
+            <div className="mt-1">
+              <CaveatNote summary="Aged from the FIR date, not the row date">
+                Ageing runs from FIR registration rather than from when the row was
+                created, so a gap is measured against the investigation, not against
+                data entry. Accounts whose FIR has no usable date show “—” and sort
+                last.
+              </CaveatNote>
+            </div>
             <p className="text-sm font-medium mt-1" style={{ color: C_RED }}>
               {rows.length === 0
                 ? 'no accounts match'
@@ -367,7 +367,7 @@ export function StatementCoverageTab() {
               even when the three filters wrap onto their own line on a
               narrow screen; without it the buttons drift left under the
               dropdowns. */}
-          <div className="flex gap-2 items-center flex-wrap justify-end">
+          <div className="flex gap-2 items-center flex-wrap justify-end ml-auto">
             <select value={scope} onChange={(e) => setScope(e.target.value as MoneyTrailScope)}
               aria-label="Filter by state"
               className="px-2 py-1.5 rounded-lg text-sm font-semibold bg-white"

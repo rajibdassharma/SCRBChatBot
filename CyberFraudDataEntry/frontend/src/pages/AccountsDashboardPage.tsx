@@ -3,8 +3,12 @@ import {
   BarChart3, Users, ShieldAlert, HelpCircle, MapPin, Camera,
   Trophy, FileDown, FileSpreadsheet, Search, Network, Waypoints, Repeat,
   // Aliased: an unqualified `Map` would shadow the global Map constructor.
-  Map as MapIcon, Fingerprint, Banknote, FileWarning, ArrowLeft} from 'lucide-react';
+  Map as MapIcon, Fingerprint, Banknote, FileWarning, ArrowLeft,
+  LayoutDashboard, Bitcoin} from 'lucide-react';
 import { toast } from 'sonner';
+import * as XLSX from 'xlsx';
+import jsPDF from 'jspdf';
+import autoTable from 'jspdf-autotable';
 import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
   LineChart, Line, ResponsiveContainer,
@@ -19,6 +23,8 @@ import { AccountsGeoMap } from '../components/dashboard/AccountsGeoMap';
 import { DuplicateIdsTab } from '../components/dashboard/DuplicateIdsTab';
 import { MoneyTrailTab } from '../components/dashboard/MoneyTrailTab';
 import { Pager, paginate, PAGE_SIZE } from '../components/common/Pager';
+import TabBar, { type TabDef } from '../components/common/TabBar';
+import { CryptoTrailTab } from '../components/dashboard/CryptoTrailTab';
 import { StatementCoverageTab } from '../components/dashboard/StatementCoverageTab';
 import { MuleNetworkTab } from '../components/dashboard/MuleNetworkTab';
 import { INDIA_LAYOUT, KARNATAKA_LAYOUT, KARNATAKA_REGION_ALIASES } from '../lib/utils/geo-tile-grid';
@@ -135,6 +141,35 @@ function yesterdayOf(dateISO: string): { iso: string; label: string; header: str
   };
 }
 
+type TabId =
+  | 'overview' | 'map'
+  | 'deep' | 'graph' | 'repeat' | 'dupids'
+  | 'money' | 'coverage' | 'network' | 'crypto';
+
+/**
+ * Tabs, in the order an investigation moves through them.
+ *
+ * The GROUPS are the point. "Statements" tells an officer that those
+ * four tabs are derived from parsed bank-statement uploads — so they
+ * are partial while parsing is behind, and blank on a fresh corpus,
+ * which is not true of the others. That distinction was invisible when
+ * all ten sat in one undifferentiated row.
+ */
+const TABS: TabDef<TabId>[] = [
+  { group: 'Accounts',      id: 'overview', label: 'Overview',     icon: LayoutDashboard },
+  { group: 'Accounts',      id: 'map',      label: 'Map View',     icon: MapIcon },
+
+  { group: 'Investigation', id: 'deep',     label: 'Deep Analysis',      icon: Network },
+  { group: 'Investigation', id: 'graph',    label: 'Graphical Analysis', icon: Waypoints },
+  { group: 'Investigation', id: 'repeat',   label: 'Repeat Accounts',    icon: Repeat },
+  { group: 'Investigation', id: 'dupids',   label: 'Duplicate IDs',      icon: Fingerprint },
+
+  { group: 'Bank Statements Analysis', id: 'money',    label: 'Money Trail',    icon: Banknote },
+  { group: 'Bank Statements Analysis', id: 'coverage', label: 'Coverage',       icon: FileWarning },
+  { group: 'Bank Statements Analysis', id: 'network',  label: 'Mule Network',   icon: Waypoints },
+  { group: 'Bank Statements Analysis', id: 'crypto',   label: 'Crypto Analysis', icon: Bitcoin },
+];
+
 export function AccountsDashboardPage() {
   const [date, setDate] = useState(todayISO());
   const [summary, setSummary] = useState<AccountsKpiSummary | null>(null);
@@ -223,7 +258,7 @@ export function AccountsDashboardPage() {
   // to be role-gated separately.
   const { user } = useAuthStore();
   const isSuperAdmin = user?.role === 'super_admin';
-  const [tab, setTab] = useState<'overview' | 'map' | 'deep' | 'graph' | 'repeat' | 'dupids' | 'money' | 'coverage' | 'network'>('overview');
+  const [tab, setTab] = useState<TabId>('overview');
 
   // Set when an account row in Money Trail is clicked. Carries the two
   // things a trace actually keys on -- FIR numbers repeat across
@@ -256,15 +291,18 @@ export function AccountsDashboardPage() {
 
   return (
     <div>
-      {/* Header + date picker */}
-      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
+      {/* Header + date picker.
+          The strapline that used to sit under the title ("Cumulative
+          account KPIs, top performers and bank concentration as of the
+          selected date") is gone: it described only the Overview tab,
+          was wrong on the other nine, and cost a line of vertical space
+          on every one of them. The tab group labels now say what each
+          view is, which is where that information belongs. */}
+      <div className="flex items-center justify-between mb-3 flex-wrap gap-3">
         <div>
-          <h1 className="text-[22px] font-bold mb-1 flex items-center gap-2" style={{ color: 'var(--ksp-navy)' }}>
+          <h1 className="text-[19px] font-bold flex items-center gap-2" style={{ color: 'var(--ksp-navy)' }}>
             <BarChart3 className="w-5 h-5" /> Account Details Dashboard
           </h1>
-          <p className="text-sm font-medium" style={{ color: 'var(--ksp-red)' }}>
-            Cumulative account KPIs, top performers and bank concentration as of the selected date.
-          </p>
         </div>
         <label className="text-sm flex items-center gap-2"
           // Date picker hidden on Deep Analysis tab -- that view is
@@ -283,100 +321,9 @@ export function AccountsDashboardPage() {
         </label>
       </div>
 
-      {/* Tab bar -- Deep Analysis only shown to super_admin. */}
+      {/* Tab bar -- the analysis tabs are super_admin only. */}
       {isSuperAdmin && (
-        <div className="flex gap-1 mb-5 border-b" style={{ borderColor: 'rgba(11,44,74,0.15)' }}>
-          <button type="button"
-            onClick={() => setTab('overview')}
-            className="px-4 py-2 text-sm font-bold rounded-t-lg transition"
-            style={{
-              background: tab === 'overview' ? 'var(--ksp-navy)' : 'transparent',
-              color: tab === 'overview' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
-              borderBottom: tab === 'overview' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
-            }}>
-            Overview
-          </button>
-          <button type="button"
-            onClick={() => setTab('map')}
-            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
-            style={{
-              background: tab === 'map' ? 'var(--ksp-navy)' : 'transparent',
-              color: tab === 'map' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
-              borderBottom: tab === 'map' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
-            }}>
-            <MapIcon className="w-4 h-4" /> Map View
-          </button>
-          <button type="button"
-            onClick={() => setTab('deep')}
-            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
-            style={{
-              background: tab === 'deep' ? 'var(--ksp-navy)' : 'transparent',
-              color: tab === 'deep' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
-              borderBottom: tab === 'deep' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
-            }}>
-            <Network className="w-4 h-4" /> Deep Analysis
-          </button>
-          <button type="button"
-            onClick={() => setTab('graph')}
-            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
-            style={{
-              background: tab === 'graph' ? 'var(--ksp-navy)' : 'transparent',
-              color: tab === 'graph' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
-              borderBottom: tab === 'graph' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
-            }}>
-            <Waypoints className="w-4 h-4" /> Graphical Analysis
-          </button>
-          <button type="button"
-            onClick={() => setTab('repeat')}
-            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
-            style={{
-              background: tab === 'repeat' ? 'var(--ksp-navy)' : 'transparent',
-              color: tab === 'repeat' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
-              borderBottom: tab === 'repeat' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
-            }}>
-            <Repeat className="w-4 h-4" /> Repeat Accounts
-          </button>
-          <button type="button"
-            onClick={() => setTab('dupids')}
-            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
-            style={{
-              background: tab === 'dupids' ? 'var(--ksp-navy)' : 'transparent',
-              color: tab === 'dupids' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
-              borderBottom: tab === 'dupids' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
-            }}>
-            <Fingerprint className="w-4 h-4" /> Duplicate IDs
-          </button>
-          <button type="button"
-            onClick={() => setTab('money')}
-            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
-            style={{
-              background: tab === 'money' ? 'var(--ksp-navy)' : 'transparent',
-              color: tab === 'money' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
-              borderBottom: tab === 'money' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
-            }}>
-            <Banknote className="w-4 h-4" /> Money Trail
-          </button>
-          <button type="button"
-            onClick={() => setTab('coverage')}
-            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
-            style={{
-              background: tab === 'coverage' ? 'var(--ksp-navy)' : 'transparent',
-              color: tab === 'coverage' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
-              borderBottom: tab === 'coverage' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
-            }}>
-            <FileWarning className="w-4 h-4" /> Statement Coverage
-          </button>
-          <button type="button"
-            onClick={() => setTab('network')}
-            className="px-4 py-2 text-sm font-bold rounded-t-lg transition flex items-center gap-1.5"
-            style={{
-              background: tab === 'network' ? 'var(--ksp-navy)' : 'transparent',
-              color: tab === 'network' ? 'var(--ksp-yellow)' : 'var(--ksp-navy)',
-              borderBottom: tab === 'network' ? '3px solid var(--ksp-yellow)' : '3px solid transparent',
-            }}>
-            <Waypoints className="w-4 h-4" /> Mule Network
-          </button>
-        </div>
+        <TabBar tabs={TABS} active={tab} onChange={setTab} />
       )}
 
       {(tab === 'deep' || tab === 'graph') && isSuperAdmin ? (
@@ -395,6 +342,8 @@ export function AccountsDashboardPage() {
         <StatementCoverageTab />
       ) : tab === 'network' && isSuperAdmin ? (
         <MuleNetworkTab onTrace={traceFir} />
+      ) : tab === 'crypto' && isSuperAdmin ? (
+        <CryptoTrailTab onTrace={traceFir} />
       ) : loading ? (
         <div className="text-center py-16 font-semibold" style={{ color: 'var(--ksp-navy)' }}>Loading dashboard...</div>
       ) : (
@@ -1698,19 +1647,115 @@ function RepeatAccountsTable({ title, typeLabel, accent, rows, onAccountClick }:
   const pg = paginate(rows.length, page);
   const pageRows = pg.slice(rows);
 
+  // Export columns in ONE place so Excel and PDF cannot disagree about
+  // what the table contained. sample_firs / sample_ps_labels are joined
+  // rather than dropped: they are the whole reason a row is here, and a
+  // spreadsheet with "7 FIRs" but no FIR numbers is unusable.
+  const EXPORT_COLS: { header: string; get: (r: RepeatAccount) => string | number }[] = [
+    { header: 'Account No', get: (r) => r.account_no },
+    { header: 'Holder', get: (r) => r.account_holder_name || '' },
+    { header: 'Bank', get: (r) => r.bank_name || '' },
+    { header: 'Branch State', get: (r) => r.branch_state || '' },
+    { header: 'Type', get: (r) => r.account_type },
+    { header: 'FIR Count', get: (r) => r.fir_count },
+    { header: 'PS Count', get: (r) => r.ps_count },
+    { header: 'FIRs', get: (r) => (r.sample_firs || []).join(', ') },
+    { header: 'Police Stations', get: (r) => (r.sample_ps_labels || []).join(', ') },
+  ];
+
+  function exportMatrix() {
+    return {
+      header: EXPORT_COLS.map((c) => c.header),
+      // EVERY row, not the page on screen — the same rule the other
+      // tabs follow. An export that silently gave you 25 of 699 rows
+      // would be worse than no export.
+      body: rows.map((r) => EXPORT_COLS.map((c) => c.get(r))),
+    };
+  }
+
+  const slug = `repeat-accounts_${typeLabel.toLowerCase().replace(/[^a-z]+/g, '-')}`
+    + `_${new Date().toISOString().slice(0, 10)}`;
+
+  function downloadExcel() {
+    if (!rows.length) { toast.error('Nothing to export.'); return; }
+    const { header, body } = exportMatrix();
+    const ws = XLSX.utils.aoa_to_sheet([header, ...body]);
+    ws['!cols'] = header.map((_, i) => {
+      const longest = Math.max(
+        String(header[i] ?? '').length,
+        ...body.map((r) => String(r[i] ?? '').length),
+      );
+      return { wch: Math.min(50, Math.max(10, longest + 2)) };
+    });
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, typeLabel.slice(0, 28));
+    XLSX.writeFile(wb, `${slug}.xlsx`);
+  }
+
+  function downloadPdf() {
+    if (!rows.length) { toast.error('Nothing to export.'); return; }
+    const { header, body } = exportMatrix();
+    // Landscape A3: the FIRs and Police Stations columns are long and
+    // wrapping them onto A4 makes the table unreadable.
+    const doc = new jsPDF({ orientation: 'landscape', unit: 'pt', format: 'a3' });
+    doc.setFontSize(14);
+    doc.text(title, 40, 40);
+    doc.setFontSize(10);
+    doc.text(
+      `${rows.length.toLocaleString('en-IN')} account${rows.length === 1 ? '' : 's'}`
+      + ` · ${typeLabel} · generated ${new Date().toLocaleDateString('en-IN')}`, 40, 58);
+    // The caveat goes on the page, not just the screen — a printed
+    // report is circulated long after anyone remembers how it was
+    // filtered.
+    doc.setFontSize(8);
+    doc.text(
+      'An account appears here when the SAME account number is recorded against more than one FIR, '
+      + 'anywhere in the state. That is a data observation, not a finding: the same number can be '
+      + 'legitimately recorded by two stations investigating one fraud chain.',
+      40, 74);
+    autoTable(doc, {
+      startY: 90,
+      head: [header],
+      body: body.map((r) => r.map((v) => String(v))),
+      styles: { fontSize: 7, cellPadding: 3, overflow: 'linebreak' },
+      headStyles: { fillColor: [11, 44, 74], textColor: [255, 212, 0] },
+    });
+    doc.save(`${slug}.pdf`);
+  }
+
   return (
     <div className="rounded-2xl overflow-hidden" style={cardStyle}>
-      <div className="px-5 py-3" style={{ borderTop: `4px solid ${accent}` }}>
-        <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>{title}</h3>
-        <p className="text-xs opacity-60 mt-0.5">
-          {rows.length === 0
-            ? 'no accounts'
-            : `showing ${(pg.firstIdx + 1).toLocaleString('en-IN')}–`
-              + `${pg.lastIdx.toLocaleString('en-IN')} of `
-              + `${rows.length.toLocaleString('en-IN')} account`
-              + `${rows.length === 1 ? '' : 's'}`}
-          {' '}· sorted by FIR count. Click an account number to open the FIR + layer history.
-        </p>
+      <div className="px-5 py-3 flex items-start justify-between gap-4 flex-wrap"
+        style={{ borderTop: `4px solid ${accent}` }}>
+        <div className="min-w-0">
+          <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>{title}</h3>
+          <p className="text-xs opacity-60 mt-0.5">
+            {rows.length === 0
+              ? 'no accounts'
+              : `showing ${(pg.firstIdx + 1).toLocaleString('en-IN')}–`
+                + `${pg.lastIdx.toLocaleString('en-IN')} of `
+                + `${rows.length.toLocaleString('en-IN')} account`
+                + `${rows.length === 1 ? '' : 's'}`}
+            {' '}· sorted by FIR count. Click an account number to open the FIR + layer history.
+          </p>
+        </div>
+        {/* ml-auto, not just justify-end: this is a flex ITEM whose box
+            is content-sized, so justify-end alone would right-align the
+            buttons inside a box that itself floats left of the edge. */}
+        <div className="flex gap-2 ml-auto shrink-0">
+          <button type="button" onClick={downloadExcel} disabled={rows.length === 0}
+            title={`Download all ${rows.length} ${typeLabel} rows as Excel`}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-40"
+            style={{ background: '#0a5c2a', color: '#fff' }}>
+            <FileSpreadsheet className="w-3.5 h-3.5" /> Excel
+          </button>
+          <button type="button" onClick={downloadPdf} disabled={rows.length === 0}
+            title={`Download all ${rows.length} ${typeLabel} rows as PDF`}
+            className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-bold disabled:opacity-40"
+            style={{ background: 'var(--ksp-navy)', color: 'var(--ksp-yellow)' }}>
+            <FileDown className="w-3.5 h-3.5" /> PDF
+          </button>
+        </div>
       </div>
       <div className="overflow-x-auto">
         <table className="w-full text-sm" style={{ tableLayout: 'fixed' }}>

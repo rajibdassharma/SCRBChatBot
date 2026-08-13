@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import os
 import sys
+import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BACKEND = os.path.dirname(HERE)
@@ -179,6 +180,9 @@ async def _check(conn, full: bool = False, hours: int = RECENT_HOURS) -> int:
         # Measured 2026-08-10: 1m42s to check 2% of accounts, against
         # ~7m to check all of them. Handing it a literal id list per
         # chunk lets the index do its job, the same way refresh() does.
+        n_chunks = (len(ids) + CHUNK - 1) // CHUNK
+        t_chunks = time.time()
+        print(f"  {n_chunks} chunk(s) of {CHUNK}", flush=True)
         for k in range(0, len(ids), CHUNK):
             part = ids[k:k + CHUNK]
             q = text(_AGG.format(where="WHERE t.account_id IN :ids")).bindparams(
@@ -191,6 +195,18 @@ async def _check(conn, full: bool = False, hours: int = RECENT_HOURS) -> int:
             ).bindparams(bindparam("ids", expanding=True))
             for r in (await conn.execute(cq, {"ids": part})).all():
                 cached[(r[0], r[1])] = (int(r[2]), float(r[3]), float(r[4]))
+            # Progress on every chunk, with an ETA from THIS run's own
+            # rate. Without it the only way to judge how far along a
+            # 60-minute check is, is to watch the server's process list
+            # and infer the chunk position -- which cannot be done
+            # accurately, because the scope count is fixed at startup
+            # while the 48h window it came from keeps sliding.
+            j = k // CHUNK + 1
+            el = time.time() - t_chunks
+            eta = (el / j) * (n_chunks - j)
+            print(f"  [{j}/{n_chunks}] {el:.0f}s elapsed"
+                  f" . ~{int(eta // 60)}m{int(eta % 60):02d}s left"
+                  f" . {len(live):,} live groups so far", flush=True)
     bad = 0
     for k in set(live) | set(cached):
         if live.get(k) != cached.get(k):

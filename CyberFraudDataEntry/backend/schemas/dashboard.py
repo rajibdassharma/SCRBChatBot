@@ -707,6 +707,10 @@ class MuleNetworkRow(BaseModel):
     ps_id: Optional[int] = None
     district: Optional[str] = None
     branch_state: Optional[str] = None
+    #: Money-trail depth from all_accounts. 1 = the account the victim
+    #: paid directly; higher = further from the crime. Nullable, because
+    #: it predates migration 012 and older rows never had it.
+    layer: Optional[int] = None
     connected: int = 0
     cross_fir: int = 0
     out_links: int = 0
@@ -881,3 +885,131 @@ class NcrpAtmLocation(BaseModel):
     atm_location: str
     withdrawal_count: int = 0
     total_amount: float = 0
+
+
+class CryptoAccountRow(BaseModel):
+    """One account with crypto-linked transactions."""
+    account_id: str
+    account_holder_name: Optional[str] = None
+    account_no: Optional[str] = None
+    bank_name: Optional[str] = None
+    fir_no: Optional[str] = None
+    account_type: Optional[str] = None
+    ps_name: Optional[str] = None
+    ps_id: Optional[int] = None
+    district: Optional[str] = None
+    #: Exchanges/assets seen on this account, most frequent first.
+    exchanges: List[str] = []
+    txns: int = 0
+    #: Chain-passed rows only, matching Money Trail. An account whose
+    #: crypto rows all failed the balance check shows Rs 0 with its
+    #: transaction count intact -- never a confident wrong number.
+    debit: float = 0
+    credit: float = 0
+    first_txn: Optional[date] = None
+    last_txn: Optional[date] = None
+    #: Rows excluded from the money figures because nothing could test
+    #: them. A COUNT, never a sum -- see StatementAccountRow.
+    untested_txns: int = 0
+
+
+class CryptoExchangeRow(BaseModel):
+    """Totals per exchange/asset across all accounts."""
+    exchange: str
+    txns: int = 0
+    accounts: int = 0
+    debit: float = 0
+    credit: float = 0
+
+
+class CryptoEvidenceRow(BaseModel):
+    """One flagged transaction, with the narration that flagged it.
+
+    The narration is the point. This detector has twice produced
+    findings that looked right and were not -- 168 "OKX" rows that were
+    men called Ashok, 58 "Ethereum" rows that were one bank header
+    repeated. An officer must be able to read the evidence rather than
+    trust the label, so every row carries the text it matched on.
+    """
+    exchange: str
+    account_holder_name: Optional[str] = None
+    account_no: Optional[str] = None
+    fir_no: Optional[str] = None
+    txn_date: Optional[date] = None
+    debit: float = 0
+    credit: float = 0
+    description: Optional[str] = None
+    #: 1 passed / 0 rejected / -1 untested, from the source row.
+    chain_ok: int = -1
+
+
+class CryptoTrailSummary(BaseModel):
+    """Everything the Crypto Analysis tab renders."""
+    #: Echoed: All | Mule | Non-Mule | Victim
+    account_type: str = "All"
+    total_txns: int = 0
+    accounts: int = 0
+    exchanges_seen: int = 0
+    total_debit: float = 0
+    total_credit: float = 0
+    #: Excluded from the money above; reported as a count only.
+    untested_txns: int = 0
+    #: False when the crypto scan has never been run, so the tab can say
+    #: "not yet analysed" rather than "no crypto found" -- those are
+    #: very different statements and only one of them is reassuring.
+    scanned: bool = False
+    by_exchange: List[CryptoExchangeRow] = []
+    top_accounts: List[CryptoAccountRow] = []
+    evidence: List[CryptoEvidenceRow] = []
+
+
+class MuleAccountRow(BaseModel):
+    """One mule account, connected or not.
+
+    Deliberately NOT the same row as MuleNetworkRow. That one describes
+    an account's position in the link graph and only exists if the
+    account has a link; this one is the roll of every account recorded
+    as Mule, which is the larger and more basic question — "who are
+    they" rather than "who is connected to whom"."""
+    account_id: str
+    fir_no: Optional[str] = None
+    ps_name: Optional[str] = None
+    district: Optional[str] = None
+    account_holder_name: Optional[str] = None
+    account_no: Optional[str] = None
+    bank_name: Optional[str] = None
+    branch_name: Optional[str] = None
+    branch_state: Optional[str] = None
+    ifsc_code: Optional[str] = None
+    kyc_mobile: Optional[str] = None
+    #: Money-trail depth. 1 = paid directly by the victim.
+    layer: Optional[int] = None
+    #: Links to other mule accounts. 0 is meaningful and common: most
+    #: mule accounts are NOT in the network, either because nobody they
+    #: paid is on file or because their statement was never parsed.
+    links: int = 0
+    cross_fir_links: int = 0
+    #: A statement FILE is attached to the account record.
+    has_statement_file: bool = False
+    #: The statement was parsed and produced transactions. The two
+    #: differ for ~18% of the corpus (image-only PDFs), and collapsing
+    #: them would report a chasing job as done.
+    statement_parsed: bool = False
+
+
+class MuleAccountList(BaseModel):
+    """The All Mule Accounts roll.
+
+    `total_mule_accounts` is counted WITHOUT the limit so the client can
+    always tell it received a truncated set and say so on screen. A
+    partial list that looks complete is worse than a slow one."""
+    #: Echoed back so exports are labelled from what the server applied.
+    state_scope: str = "all"
+    total_mule_accounts: int = 0
+    #: Mule accounts with a blank branch_state. Visible only under
+    #: "All States" — they are not swept into "Rest of India", because
+    #: an unrecorded state is not evidence of a state outside Karnataka.
+    accounts_without_state: int = 0
+    in_network: int = 0
+    parsed: int = 0
+    rows: List[MuleAccountRow] = []
