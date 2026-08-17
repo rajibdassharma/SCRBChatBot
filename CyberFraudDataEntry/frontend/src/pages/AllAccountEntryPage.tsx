@@ -323,6 +323,17 @@ export function AllAccountEntryPage() {
     if (acctErr) { toast.error(acctErr); return; }
     if (!f.bank_name.trim())           { toast.error('Bank Name is required'); return; }
     if (!f.account_holder_name.trim()) { toast.error('Account Holder Name is required'); return; }
+    // Create only. ~4,000 accounts already on file predate this rule
+    // and carry no IFSC; enforcing it on edit would make every one of
+    // them uneditable until somebody tracked the code down. The server
+    // draws the same line -- see AllAccountUpdate.
+    if (!isEdit) {
+      if (!f.ifsc_code?.trim()) { toast.error('IFSC Code is required'); return; }
+      if (f.branch_state === KARNATAKA && !f.branch_district?.trim()) {
+        toast.error('Branch District is required when the Branch State is Karnataka');
+        return;
+      }
+    }
     const mobErr = validateMobile(f.kyc_mobile, 'Mobile No');
     if (mobErr) { toast.error(mobErr); return; }
     if (f.account_type === 'Mule') {
@@ -476,7 +487,9 @@ export function AllAccountEntryPage() {
             }}
             options={INDIAN_STATES}
             placeholder="— Select State —" />
-          <SelectField label="Branch District"
+          <SelectField
+            label={!isEdit && f.branch_state === KARNATAKA
+              ? 'Branch District *' : 'Branch District'}
             value={f.branch_district ?? ''}
             onChange={(v) => upd('branch_district', v || null)}
             options={districts}
@@ -491,7 +504,8 @@ export function AllAccountEntryPage() {
               (!!f.branch_state && f.branch_state !== KARNATAKA)
               || districts.length === 0
             } />
-          <TextField label="IFSC Code" value={f.ifsc_code ?? ''}
+          <TextField label={isEdit ? 'IFSC Code' : 'IFSC Code *'}
+            value={f.ifsc_code ?? ''}
             onChange={(v) => upd('ifsc_code', v.toUpperCase())}
             maxLength={11} placeholder="e.g. HDFC0001234" />
           <SelectField label="Layer"

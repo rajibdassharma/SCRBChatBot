@@ -12,9 +12,9 @@ from __future__ import annotations
 
 import re
 from datetime import datetime
-from typing import List, Literal, Optional
+from typing import ClassVar, List, Literal, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 AccountType = Literal["Victim", "Mule", "Non-Mule"]
@@ -146,6 +146,12 @@ class AllAccountCreate(BaseModel):
     account_statement_path: Optional[str] = Field(default=None, max_length=500)
 
     account_type: AccountType
+
+    #: Switched off by AllAccountUpdate. A ClassVar, not a field, so it
+    #: never appears in the request body -- a caller must not be able to
+    #: turn its own validation off.
+    _REQUIRE_LOCATION: ClassVar[bool] = True
+
     # Only meaningful when account_type == 'Mule'. If [] and Victim,
     # server ignores. If populated on a Victim, server rejects with 422.
     mule_herders: List[MuleHerderIn] = []
@@ -178,9 +184,45 @@ class AllAccountCreate(BaseModel):
     def _v_layer(cls, v):
         return _validate_layer(v)
 
+    @model_validator(mode="after")
+    def _require_location_fields(self):
+        """IFSC always; district too when the branch is in Karnataka.
+
+        ENFORCED ON CREATE ONLY -- see AllAccountUpdate below.
+
+        IFSC is what makes an account locatable: it resolves to the
+        bank, branch, district and state through ifsc_branch, which is
+        why branch district coverage runs at 80% rather than the 4.6%
+        operators enter by hand. An account without one cannot be
+        placed at all.
+
+        The Karnataka rule is narrower on purpose. District is a
+        free-text field for the rest of India and a controlled list only
+        for Karnataka, so it is the one case where a required value can
+        actually be verified.
+        """
+        if not self._REQUIRE_LOCATION:
+            return self
+        if not (self.ifsc_code or "").strip():
+            raise ValueError("IFSC Code is required.")
+        state = (self.branch_state or "").strip().lower()
+        if state == "karnataka" and not (self.branch_district or "").strip():
+            raise ValueError(
+                "Branch District is required when the Branch State is "
+                "Karnataka.")
+        return self
+
 
 class AllAccountUpdate(AllAccountCreate):
-    """PUT body — same shape as create. serial_no is not editable."""
+    """PUT body — same shape as create. serial_no is not editable.
+
+    The location requirements above are NOT applied here. ~4,000
+    accounts already on file predate the rule and carry no IFSC;
+    enforcing it on update would make every one of them uneditable
+    until somebody tracked the code down, which turns a data-quality
+    improvement into a wall in front of routine corrections.
+    """
+    _REQUIRE_LOCATION: ClassVar[bool] = False
 
 
 # ── AllAccount read shapes ──────────────────────────────────────
