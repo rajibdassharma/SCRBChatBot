@@ -63,12 +63,19 @@ const COLUMNS: { header: string; get: (r: MuleAccountRow) => string | number }[]
   { header: 'Account no', get: (r) => r.account_no ?? '' },
   { header: 'Bank', get: (r) => r.bank_name ?? '' },
   { header: 'Branch', get: (r) => r.branch_name ?? '' },
+  { header: 'Branch district', get: (r) => r.branch_district ?? '' },
+  // Its OWN column, never merged into the one above. A reader has to be
+  // able to tell what an operator recorded from what a directory
+  // inferred: they disagree on 209 accounts, and in the state-level
+  // cases it is the entered value that is wrong.
+  { header: 'Branch district (IFSC)', get: (r) => r.branch_district_ifsc ?? '' },
+  { header: 'District mismatch', get: (r) => (r.district_mismatch ? 'YES' : '') },
   { header: 'Branch state', get: (r) => r.branch_state ?? '' },
   { header: 'IFSC', get: (r) => r.ifsc_code ?? '' },
   { header: 'Mobile', get: (r) => r.kyc_mobile ?? '' },
   { header: 'FIR no', get: (r) => r.fir_no ?? '' },
   { header: 'Police station', get: (r) => r.ps_name ?? '' },
-  { header: 'District', get: (r) => r.district ?? '' },
+  { header: 'PS district', get: (r) => r.district ?? '' },
   { header: 'Layer', get: (r) => (r.layer == null ? '' : r.layer) },
   { header: 'Links', get: (r) => r.links },
   { header: 'Cross-FIR links', get: (r) => r.cross_fir_links },
@@ -271,6 +278,26 @@ export function MuleAccountsList({ scope, scopeLabel }: {
                       <td className="px-3 py-2 whitespace-nowrap">{r.account_no ?? '—'}</td>
                       <td className="px-3 py-2">{r.bank_name ?? '—'}</td>
                       <td className="px-3 py-2">{r.branch_name ?? '—'}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">
+                        {r.branch_district ? (
+                          <span
+                            className={r.district_mismatch ? 'font-semibold' : ''}
+                            style={{ color: r.district_mismatch ? C_ORANGE : undefined }}
+                            title={r.district_mismatch
+                              ? `Entered value disagrees with the IFSC directory (${r.branch_district_ifsc})`
+                              : undefined}>
+                            {r.branch_district}{r.district_mismatch ? ' ⚠' : ''}
+                          </span>
+                        ) : r.branch_district_ifsc ? (
+                          // Derived: muted and marked, never presented
+                          // as though an operator recorded it.
+                          <span className="italic opacity-60"
+                            title="Resolved from the IFSC code, not entered">
+                            {r.branch_district_ifsc}
+                            <span className="not-italic"> ·ifsc</span>
+                          </span>
+                        ) : '—'}
+                      </td>
                       <td className="px-3 py-2 whitespace-nowrap">{r.branch_state ?? '—'}</td>
                       <td className="px-3 py-2 whitespace-nowrap">{r.ifsc_code ?? '—'}</td>
                       <td className="px-3 py-2 whitespace-nowrap">{r.kyc_mobile ?? '—'}</td>

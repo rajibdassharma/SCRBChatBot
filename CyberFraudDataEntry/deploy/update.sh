@@ -99,6 +99,7 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.022_statement_chain_ok
     venv/bin/python -m migrations.023_summary_untested_totals
 venv/bin/python -m migrations.024_crypto_transactions
+venv/bin/python -m migrations.025_ifsc_branch
 "
 
 # ── 4. Build the frontend ────────────────────────────────────────────
@@ -635,6 +636,21 @@ if [ "$CRYPTO" = "1" ]; then
 else
     echo "    ✗ crypto_txn missing — migration 024 did not complete"
     exit 1
+fi
+
+# ifsc_branch is MASTER data, not derived: it comes from outside and
+# production has no route to the internet to re-fetch it. The check is
+# for the table AND for rows -- an empty directory resolves nothing and
+# would look identical to a working one on every screen.
+IFSCN=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME"     -e "SELECT COUNT(*) FROM ifsc_branch" 2>/dev/null || echo "ERROR")
+if [ "$IFSCN" = "ERROR" ]; then
+    echo "    ✗ ifsc_branch missing — migration 025 did not complete"
+    exit 1
+elif [ "$IFSCN" -lt 100000 ]; then
+    echo "    ! ifsc_branch has only $IFSCN rows — load it with:"
+    echo "      python -m analysis.load_ifsc proddata/IFSC.csv --source <tag>"
+else
+    echo "    ✓ ifsc_branch loaded ($IFSCN branches)"
 fi
 
 # The RUNTIME copy of backup-db.sh must exclude the derived analysis

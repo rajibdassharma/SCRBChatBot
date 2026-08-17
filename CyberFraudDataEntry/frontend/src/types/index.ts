@@ -1035,7 +1035,18 @@ export interface MuleAccountRow {
   account_no: string | null;
   bank_name: string | null;
   branch_name: string | null;
+  /** Where the BANK BRANCH is. Distinct from `district`, which is the
+   *  police unit — both are on the row and labelled apart. */
+  branch_district: string | null;
   branch_state: string | null;
+  /** Resolved from the IFSC directory at read time. NOT written back to
+   *  the register — reported beside the entered value, because 49% of
+   *  entered branch districts are the operator's own police district. */
+  branch_district_ifsc: string | null;
+  branch_state_ifsc: string | null;
+  /** Both present and naming different places, allowing for renamings
+   *  (Bangalore/Bengaluru). A worklist, not an error. */
+  district_mismatch: boolean;
   ifsc_code: string | null;
   kyc_mobile: string | null;
   layer: number | null;

@@ -35,6 +35,8 @@ from models.accused_account import AccusedAccount
 from models.unit import Unit
 from models.user import User
 from models.police_station import PoliceStation
+from models.ifsc_branch import IfscBranch
+from utils.geo import same_place
 from schemas.dashboard import (
     KpiSummary, UnitComparison, PsComparison, TrendPoint, SubmissionStatus,
     QuietUnit, TimeToArrestRow, BankSlaRow,
@@ -4257,9 +4259,12 @@ async def get_mule_accounts(
                 func.trim(AllAccount.account_holder_name),
                 AllAccount.account_no,
                 AllAccount.bank_name, AllAccount.branch_name,
+                func.trim(func.coalesce(AllAccount.branch_district, "")),
                 func.trim(func.coalesce(AllAccount.branch_state, "")),
                 AllAccount.ifsc_code, AllAccount.kyc_mobile, AllAccount.layer,
                 AllAccount.account_statement_path,
+                IfscBranch.district, IfscBranch.state, IfscBranch.city,
+                IfscBranch.centre,
             )
             .select_from(AllAccount)
             .where(AllAccount.account_type == "Mule"))
@@ -4268,6 +4273,12 @@ async def get_mule_accounts(
          # drop it from the roll without saying so.
          .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id)
          .outerjoin(Unit, Unit.id == AllAccount.unit_id)
+         # OUTER too: an unresolvable or malformed IFSC must leave the
+         # account visible with a blank derived district, never drop it
+         # from the roll. 786 of these codes are malformed.
+         .outerjoin(IfscBranch,
+                    IfscBranch.ifsc == func.upper(func.trim(
+                        AllAccount.ifsc_code)))
          .order_by(func.trim(AllAccount.account_holder_name))
          .limit(limit))
     rows = (await db.execute(q)).all()
@@ -4299,12 +4310,22 @@ async def get_mule_accounts(
         MuleAccountRow(
             account_id=str(r[0]), fir_no=r[1], ps_name=r[2], district=r[3],
             account_holder_name=r[4], account_no=r[5], bank_name=r[6],
-            branch_name=r[7], branch_state=r[8] or None, ifsc_code=r[9],
-            kyc_mobile=r[10], layer=r[11],
+            branch_name=r[7], branch_district=r[8] or None,
+            branch_state=r[9] or None, ifsc_code=r[10],
+            kyc_mobile=r[11], layer=r[12],
             links=link_n.get(str(r[0]), 0),
             cross_fir_links=link_x.get(str(r[0]), 0),
-            has_statement_file=bool(r[12]),
+            has_statement_file=bool(r[13]),
             statement_parsed=str(r[0]) in parsed_ids,
+            branch_district_ifsc=r[14],
+            branch_state_ifsc=r[15],
+            # Compared against district, city AND centre. The directory
+            # disagrees with itself across those three often enough
+            # (district BANGALORE, city BANGALORE URBAN) that matching
+            # on district alone reported ~47% of accounts as mismatched
+            # when they name the same place.
+            district_mismatch=bool(
+                r[8] and r[14] and not same_place(r[8], r[14], r[16], r[17])),
         )
         for r in rows
     ]

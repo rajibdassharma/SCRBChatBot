@@ -48,3 +48,9 @@ CyberCrimeData/
 *BankAction*.xlsx
 DSR*formate*.xlsx
 All District*.xlsx
+
+# IFSC directory: import source for the ifsc_branch table, not code.
+# 35 MB that every clone and deploy would carry forever. Downloaded
+# from github.com/razorpay/ifsc releases and scp'd to the server once;
+# after loading it lives in the DB and travels in the nightly backup.
+proddata/IFSC.csv

@@ -1018,7 +1018,21 @@ class MuleAccountRow(BaseModel):
     account_no: Optional[str] = None
     bank_name: Optional[str] = None
     branch_name: Optional[str] = None
+    #: Where the BANK BRANCH is, not the police district. The row also
+    #: carries `district`, which is the police unit -- they are
+    #: different facts and are labelled apart on screen for that reason.
+    branch_district: Optional[str] = None
     branch_state: Optional[str] = None
+    #: Resolved from the IFSC directory at read time, NOT written back
+    #: to the register. Reported beside the entered value rather than
+    #: merged with it: 49% of entered branch districts are the
+    #: operator's own police district, so merging would bury a real
+    #: data-quality problem under a plausible-looking answer.
+    branch_district_ifsc: Optional[str] = None
+    branch_state_ifsc: Optional[str] = None
+    #: Both values present and naming different places, after allowing
+    #: for renamings (Bangalore/Bengaluru). A worklist, not an error.
+    district_mismatch: bool = False
     ifsc_code: Optional[str] = None
     kyc_mobile: Optional[str] = None
     #: Money-trail depth. 1 = paid directly by the victim.
