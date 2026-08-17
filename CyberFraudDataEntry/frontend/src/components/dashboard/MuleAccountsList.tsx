@@ -15,7 +15,7 @@
  *  corpus is image-only PDFs that are attached and yield nothing. One
  *  boolean would report a chasing job as finished.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, type ReactNode } from 'react';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
@@ -54,33 +54,120 @@ function stateColour(r: MuleAccountRow): string {
   return C_RED;
 }
 
-/** Export columns. One list drives the table, the Excel sheet and the
- *  PDF, so the three can never drift apart — a spreadsheet that does
- *  not match the screen it was exported from is a evidence problem, not
- *  a cosmetic one. */
-const COLUMNS: { header: string; get: (r: MuleAccountRow) => string | number }[] = [
-  { header: 'Account holder', get: (r) => r.account_holder_name ?? '' },
+interface Col {
+  header: string;
+  /** Plain value — drives Excel and PDF. */
+  get: (r: MuleAccountRow) => string | number;
+  /** Optional richer rendering for the table only. When absent the
+   *  table shows `get`. */
+  cell?: (r: MuleAccountRow) => ReactNode;
+  /** Present in the export but not on screen. Used where the table
+   *  merges two facts into one cell that the export must keep apart. */
+  exportOnly?: boolean;
+  align?: 'center';
+  /** Display width cap in px. Beyond it the cell ellipsises and the
+   *  full value moves to the tooltip.
+   *
+   *  Needed because this register carries whole addresses in the name
+   *  field: the longest holder name is 200 characters and 1,321 exceed
+   *  40, against an average of 21. One such row stretched its column
+   *  across the table and pushed every following column off to the
+   *  right, so a handful of bad rows decided the layout for all 19,903.
+   *
+   *  Display only. Excel and PDF read `get`, so exports keep the full
+   *  string -- truncating evidence in a file someone works from would
+   *  be a different and worse problem. */
+  maxW?: number;
+}
+
+/** Cell content clipped to `maxW`, full text on hover. */
+function clip(v: ReactNode, w: number, title?: string): ReactNode {
+  return (
+    <span className="block truncate" style={{ maxWidth: w }}
+      title={title || (typeof v === 'string' ? v : undefined)}>
+      {v}
+    </span>
+  );
+}
+
+/** ONE list drives the header, the body, the Excel sheet and the PDF.
+ *
+ *  It used to drive only the header and the exports, with the body
+ *  hand-written beside it — and adding two export columns silently
+ *  shifted every value on screen one column left of its heading,
+ *  because nothing tied the two together. A table whose headings do not
+ *  match its values is worse than no table: every figure in it is
+ *  wrong, and it looks fine.
+ *
+ *  Columns are therefore added HERE and nowhere else. `cell` covers the
+ *  cases that need formatting, `exportOnly` the cases the screen merges
+ *  and a spreadsheet must not. */
+const COLUMNS: Col[] = [
+  { header: 'Account holder', get: (r) => r.account_holder_name ?? '',
+    maxW: 260,
+    cell: (r) => clip(
+      <span className="font-semibold" style={{ color: C_NAVY }}>
+        {r.account_holder_name ?? '—'}
+      </span>, 260, r.account_holder_name ?? undefined) },
   { header: 'Account no', get: (r) => r.account_no ?? '' },
-  { header: 'Bank', get: (r) => r.bank_name ?? '' },
-  { header: 'Branch', get: (r) => r.branch_name ?? '' },
-  { header: 'Branch district', get: (r) => r.branch_district ?? '' },
-  // Its OWN column, never merged into the one above. A reader has to be
-  // able to tell what an operator recorded from what a directory
-  // inferred: they disagree on 209 accounts, and in the state-level
-  // cases it is the entered value that is wrong.
-  { header: 'Branch district (IFSC)', get: (r) => r.branch_district_ifsc ?? '' },
-  { header: 'District mismatch', get: (r) => (r.district_mismatch ? 'YES' : '') },
+  { header: 'Bank', get: (r) => r.bank_name ?? '', maxW: 170,
+    cell: (r) => clip(r.bank_name ?? '—', 170, r.bank_name ?? undefined) },
+  { header: 'Branch', get: (r) => r.branch_name ?? '', maxW: 170,
+    cell: (r) => clip(r.branch_name ?? '—', 170, r.branch_name ?? undefined) },
+  // On screen: entered value, or the IFSC-derived one muted and marked.
+  // In the export: two separate columns plus a flag, because a reader
+  // away from this screen must still be able to tell what an operator
+  // recorded from what a directory inferred.
+  { header: 'Branch district', get: (r) => r.branch_district ?? '',
+    cell: (r) => (r.branch_district ? (
+      <span
+        className={r.district_mismatch ? 'font-semibold' : ''}
+        style={{ color: r.district_mismatch ? C_ORANGE : undefined }}
+        title={r.district_mismatch
+          ? `Entered value disagrees with the IFSC directory (${r.branch_district_ifsc})`
+          : undefined}>
+        {r.branch_district}{r.district_mismatch ? ' ⚠' : ''}
+      </span>
+    ) : r.branch_district_ifsc ? (
+      <span className="italic opacity-60"
+        title="Resolved from the IFSC code, not entered by an operator">
+        {r.branch_district_ifsc}
+        <span className="not-italic"> ·ifsc</span>
+      </span>
+    ) : '—') },
+  { header: 'Branch district (IFSC)', exportOnly: true,
+    get: (r) => r.branch_district_ifsc ?? '' },
+  { header: 'District mismatch', exportOnly: true,
+    get: (r) => (r.district_mismatch ? 'YES' : '') },
   { header: 'Branch state', get: (r) => r.branch_state ?? '' },
   { header: 'IFSC', get: (r) => r.ifsc_code ?? '' },
   { header: 'Mobile', get: (r) => r.kyc_mobile ?? '' },
   { header: 'FIR no', get: (r) => r.fir_no ?? '' },
-  { header: 'Police station', get: (r) => r.ps_name ?? '' },
-  { header: 'PS district', get: (r) => r.district ?? '' },
-  { header: 'Layer', get: (r) => (r.layer == null ? '' : r.layer) },
-  { header: 'Links', get: (r) => r.links },
-  { header: 'Cross-FIR links', get: (r) => r.cross_fir_links },
-  { header: 'Statement', get: (r) => statementState(r) },
+  { header: 'Police station', get: (r) => r.ps_name ?? '', maxW: 150,
+    cell: (r) => clip(r.ps_name ?? '—', 150, r.ps_name ?? undefined) },
+  { header: 'PS district', get: (r) => r.district ?? '', maxW: 140,
+    cell: (r) => clip(r.district ?? '—', 140, r.district ?? undefined) },
+  { header: 'Layer', get: (r) => (r.layer == null ? '' : r.layer),
+    align: 'center' },
+  { header: 'Links', get: (r) => r.links, align: 'center',
+    cell: (r) => <span className="font-semibold">{formatNumber(r.links)}</span> },
+  { header: 'Cross-FIR links', get: (r) => r.cross_fir_links, align: 'center',
+    cell: (r) => (
+      <span className="font-semibold"
+        style={{ color: r.cross_fir_links > 0 ? C_RED : undefined }}>
+        {formatNumber(r.cross_fir_links)}
+      </span>
+    ) },
+  { header: 'Statement', get: (r) => statementState(r),
+    cell: (r) => (
+      <span className="font-semibold" style={{ color: stateColour(r) }}>
+        {statementState(r)}
+      </span>
+    ) },
 ];
+
+/** What the table shows. The exports use COLUMNS in full. */
+const SCREEN_COLUMNS = COLUMNS.filter((c) => !c.exportOnly);
 
 export function MuleAccountsList({ scope, scopeLabel }: {
   scope: MoneyTrailScope;
@@ -259,9 +346,10 @@ export function MuleAccountsList({ scope, scopeLabel }: {
               <table className="w-full text-sm">
                 <thead>
                   <tr style={{ background: 'rgba(11,44,74,0.05)' }}>
-                    {COLUMNS.map((c) => (
+                    {SCREEN_COLUMNS.map((c) => (
                       <th key={c.header}
-                        className="px-3 py-2 text-left text-xs font-bold whitespace-nowrap"
+                        className={`px-3 py-2 text-xs font-bold whitespace-nowrap ${
+                          c.align === 'center' ? 'text-center' : 'text-left'}`}
                         style={{ color: C_NAVY }}>
                         {c.header}
                       </th>
@@ -272,50 +360,17 @@ export function MuleAccountsList({ scope, scopeLabel }: {
                   {pageRows.map((r, i) => (
                     <tr key={r.account_id}
                       style={{ background: i % 2 ? 'rgba(0,0,0,0.02)' : '#fff' }}>
-                      <td className="px-3 py-2 font-semibold" style={{ color: C_NAVY }}>
-                        {r.account_holder_name ?? '—'}
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">{r.account_no ?? '—'}</td>
-                      <td className="px-3 py-2">{r.bank_name ?? '—'}</td>
-                      <td className="px-3 py-2">{r.branch_name ?? '—'}</td>
-                      <td className="px-3 py-2 whitespace-nowrap">
-                        {r.branch_district ? (
-                          <span
-                            className={r.district_mismatch ? 'font-semibold' : ''}
-                            style={{ color: r.district_mismatch ? C_ORANGE : undefined }}
-                            title={r.district_mismatch
-                              ? `Entered value disagrees with the IFSC directory (${r.branch_district_ifsc})`
-                              : undefined}>
-                            {r.branch_district}{r.district_mismatch ? ' ⚠' : ''}
-                          </span>
-                        ) : r.branch_district_ifsc ? (
-                          // Derived: muted and marked, never presented
-                          // as though an operator recorded it.
-                          <span className="italic opacity-60"
-                            title="Resolved from the IFSC code, not entered">
-                            {r.branch_district_ifsc}
-                            <span className="not-italic"> ·ifsc</span>
-                          </span>
-                        ) : '—'}
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap">{r.branch_state ?? '—'}</td>
-                      <td className="px-3 py-2 whitespace-nowrap">{r.ifsc_code ?? '—'}</td>
-                      <td className="px-3 py-2 whitespace-nowrap">{r.kyc_mobile ?? '—'}</td>
-                      <td className="px-3 py-2 whitespace-nowrap">{r.fir_no ?? '—'}</td>
-                      <td className="px-3 py-2">{r.ps_name ?? '—'}</td>
-                      <td className="px-3 py-2">{r.district ?? '—'}</td>
-                      <td className="px-3 py-2 text-center">{r.layer ?? '—'}</td>
-                      <td className="px-3 py-2 text-center font-semibold">
-                        {formatNumber(r.links)}
-                      </td>
-                      <td className="px-3 py-2 text-center font-semibold"
-                        style={{ color: r.cross_fir_links > 0 ? C_RED : undefined }}>
-                        {formatNumber(r.cross_fir_links)}
-                      </td>
-                      <td className="px-3 py-2 whitespace-nowrap font-semibold"
-                        style={{ color: stateColour(r) }}>
-                        {statementState(r)}
-                      </td>
+                      {SCREEN_COLUMNS.map((c) => {
+                        const v = c.cell ? c.cell(r) : c.get(r);
+                        return (
+                          <td key={c.header}
+                            className={`px-3 py-2 whitespace-nowrap ${
+                              c.align === 'center' ? 'text-center' : ''}`}
+                            style={c.maxW ? { maxWidth: c.maxW } : undefined}>
+                            {v === '' || v === null || v === undefined ? '—' : v}
+                          </td>
+                        );
+                      })}
                     </tr>
                   ))}
                 </tbody>
