@@ -68,9 +68,9 @@ echo "=== 3. Analysis dependencies ==="
 # analysis/, and pdfplumber pulls a Pillow that reportlab -- which
 # renders every operator-facing PDF -- would then be running against.
 # requirements-analysis.txt pins pillow<12 to keep that from happening.
-sudo -u cyberfraud "$RUNTIME_BASE/venv/bin/pip" install -q \
+sudo -u cyberfraud "$RUNTIME_BASE/backend/venv/bin/pip" install -q \
      -r "$SOURCE_REPO/CyberFraudDataEntry/backend/requirements-analysis.txt"
-sudo -u cyberfraud "$RUNTIME_BASE/venv/bin/python" -c \
+sudo -u cyberfraud "$RUNTIME_BASE/backend/venv/bin/python" -c \
      "import pdfplumber, xlrd, PIL, reportlab; print('    ok: pdfplumber', pdfplumber.__version__, '/ Pillow', PIL.__version__, '/ reportlab', reportlab.Version)"
 
 echo

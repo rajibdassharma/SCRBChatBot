@@ -41,10 +41,11 @@ NoNewPrivileges=true
 ProtectSystem=strict
 ProtectHome=true
 PrivateTmp=true
-# ProtectSystem=strict makes everything read-only except these. The
-# backups directory is obvious; uploads is needed because the parser
-# writes nothing there but the tar reads it, and backend/ because
-# Python writes __pycache__ on import.
+# ProtectSystem=strict makes the filesystem read-only except these two.
+# backups/ takes the dump and the tarball. backend/ is needed because
+# the venv lives there (/opt/cyberfraud/backend/venv) and Python writes
+# __pycache__ on import. uploads/ is deliberately absent: the parser
+# only reads it, and reading is allowed.
 ReadWritePaths=/opt/cyberfraud/backups /opt/cyberfraud/backend
 
 StandardOutput=journal

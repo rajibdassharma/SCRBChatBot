@@ -42,7 +42,10 @@ ANALYSIS_RC=0
   # --skip-relink: relink repairs account links broken by restoring a
   # dump onto a different database. Production IS the source, so there
   # is nothing to repair and the pass would be pure cost.
-  "$RUNTIME/venv/bin/python" -m analysis.daily --skip-relink
+  # $RUNTIME/backend/venv, not $RUNTIME/venv. update.sh reaches the
+  # venv only after a `cd $RUNTIME/backend`, so the relative path
+  # there hides where it actually is.
+  "$RUNTIME/backend/venv/bin/python" -m analysis.daily --skip-relink
 ) || ANALYSIS_RC=$?
 
 if [ "$ANALYSIS_RC" -ne 0 ]; then

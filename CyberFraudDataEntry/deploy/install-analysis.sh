@@ -35,7 +35,7 @@ SOURCE_DEPLOY=$SOURCE_REPO/CyberFraudDataEntry/deploy
 RUNTIME_BASE=/opt/cyberfraud
 RUNTIME_DEPLOY=$RUNTIME_BASE/deploy
 BACKEND=$RUNTIME_BASE/backend
-VENV_PY=$RUNTIME_BASE/venv/bin/python
+VENV_PY=$RUNTIME_BASE/backend/venv/bin/python
 SERVICE=cyberfraud-analysis.service
 TIMER=cyberfraud-analysis.timer
 

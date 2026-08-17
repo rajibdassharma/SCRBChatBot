@@ -17,7 +17,7 @@ WorkingDirectory=/opt/cyberfraud/backend
 # ids that no longer exist. Production never restores — it IS the
 # source — so there is nothing to repair, and relink is the one step
 # whose cost grows with the fact table.
-ExecStart=/opt/cyberfraud/venv/bin/python -m analysis.daily --skip-relink
+ExecStart=/opt/cyberfraud/backend/venv/bin/python -m analysis.daily --skip-relink
 
 # ── Resource budget ──────────────────────────────────────────────────
 # The 10 GB default in analysis/runtime.py describes the 32 GB
