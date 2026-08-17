@@ -268,103 +268,130 @@ the job onto the server; they are deliberately NOT installed today.
 
 ### Daily cycle — the whole procedure
 
-Nine steps. 1–6 are the pre-existing routine, unchanged. 7–9 are the
-analysis cycle. **Total hands-on time is a few minutes; the only long
-wait is step 7 at ~4 min.**
+**The analysis runs on the SERVER, nightly and unattended.** There is
+nothing to do on a data-only day. What follows is what happens by
+itself, and what you do only when you have code to ship.
+
+#### What the server does at 23:00 IST, by itself
+
+`cyberfraud-nightly.timer` fires `nightly-all.sh`, which runs two things
+in sequence:
+
+1. **`analysis.daily --skip-relink`** — migrations, parse new statements,
+   hash new ID photos, rebuild mule links, find crypto, verify the
+   summary cache.
+2. **`backup-all.sh`** — `mysqldump` then the uploads tarball.
+
+**The order is the whole point.** These used to be two timers an hour
+apart — backup at 00:00, analysis at 01:00 — which orders them by clock
+rather than by dependency. Every backup therefore carried the PREVIOUS
+day's analysis, and on a heavy upload day the analysis could still be
+running when the next backup started. Nothing errored; the dates just
+quietly lied. One unit running both in sequence is what makes "the
+backup contains today's analysis" true rather than usually true.
+
+**The backup runs even if the analysis fails.** A backup of slightly
+stale derived data is worth far more than no backup, and every case,
+account and DSR entry an operator touched today has nothing to do with
+the analysis. The failure is recorded and the unit still exits non-zero;
+what it does not do is skip the backup as a punishment.
+
+Check on it:
+
+```bash
+systemctl list-timers | grep cyberfraud
+journalctl -u cyberfraud-nightly.service -n 100
+journalctl -u cyberfraud-nightly.service --since "yesterday 23:00"
+```
+
+Run it early, by hand, any time:
+
+```bash
+sudo systemctl start cyberfraud-nightly.service
+```
+
+#### What YOU do
+
+**On a data-only day: nothing.** The dashboards are current by morning.
+
+**On a code day:**
 
 **1. Develop** on the laptop.
 
 **2. Push — ONCE.** One commit, one push, per deploy. A second push
-means a second pull, and on this setup a pull is never just a pull:
-it drags a full `update.sh`, a backend restart (~10 s of 502s for ~90
-operators) and a repo visibility flip. Walk the whole change set —
-file modes, files scripts reference, migrations registered in
-`update.sh`, docs — before the first push.
+means a second pull, and on this setup a pull is never just a pull: it
+drags a full `update.sh`, a backend restart (~10 s of 502s for ~90
+operators) and a repo visibility flip. Walk the whole change set — file
+modes, files scripts reference, migrations registered in `update.sh`,
+docs — before the first push.
 
-**3. Pull on production.** `/opt/scrb` is root-owned, so `sudo`:
+**3. Deploy on production.**
 
 ```bash
-cd /opt/scrb && sudo git pull
+cd /opt/scrb && sudo git pull && sudo bash CyberFraudDataEntry/deploy/update.sh
 ```
 
 The repo is private and the server stores no credentials, so flip
 `rajibdassharma/SCRBChatBot` to public on GitHub first and back to
-private after. (Ending this properly: `sudo git config --global
-credential.helper store`, then one pull that prompts for a PAT.)
+private after.
 
-**4. Deploy — CODE CHANGES ONLY.**
-
-```bash
-sudo bash /opt/scrb/CyberFraudDataEntry/deploy/update.sh
-```
-
-Must end with every check `✓`. **Skip this entirely on a data-only
-day** — steps 7–9 need no deploy, and running it costs a restart for
-nothing.
-
-**5. Backups fire at 00:00 IST** on the server (`cyberfraud-backup.timer`).
-Nothing to do.
-
-**6. Copy the backups to the laptop** — the `.sql.gz` into `proddata/`,
-the uploads tarball extracted into `backend/uploads/`.
-
-**7. Restore and analyse — laptop, ~4 min.**
-
-```powershell
-mysql -u root -p cyber_fraud_dsr < proddata\dbdump_<date>.sql
-cd backend
-python -m analysis.daily
-```
-
-Must end `ALL STEPS OK` and `0 mismatched`. **If it reports mismatches,
-stop** — a summary row disagrees with its source; run
-`python -m analysis.summary` before going further.
-
-**8. Export — laptop, ~1 min.**
-
-```powershell
-python -m analysis.export_for_prod
-```
-
-Writes `proddata/analysis_<date>.sql.gz` (~8 MB). It refuses to run if
-the summary is behind the parse; **do not answer `y` past that** — the
-export would carry stale totals under today's name.
-
-**9. Ship and import — production, ~10 s, no downtime, no restart.**
-
-```powershell
-scp proddata\analysis_<date>.sql.gz cyberfraud@117.200.49.38:/opt/cyberfraud/backups/
-```
+**4. If the change touched `deploy/` timers or `requirements-analysis.txt`:**
 
 ```bash
-sudo /opt/scrb/CyberFraudDataEntry/deploy/import-analysis.sh \
-     /opt/cyberfraud/backups/analysis_<date>.sql.gz
+sudo bash /opt/scrb/CyberFraudDataEntry/deploy/install-nightly.sh
 ```
 
-Must end `orphaned summary rows : 0`.
+Idempotent, and it re-checks that the two superseded timers are still
+disabled.
 
-Run it from **`/opt/scrb/...`, not `/opt/cyberfraud/deploy/`**:
-`update.sh` syncs `backend/` and `frontend/` into the runtime but NOT
-`deploy/`, so the copy there is stale or absent.
+#### Refreshing the dev laptop
 
-#### Which steps apply when
+The laptop no longer analyses anything. It restores what the server
+produced, which arrives complete because the nightly dump now carries
+the summaries.
 
-| situation | steps |
-|---|---|
-| code change, no new data | 1 → 4 |
-| new data, no code change | 5 → 9 |
-| both | 1 → 9 |
+```powershell
+mysql -u root -p cyber_fraud_dsr < dbdump_<date>.sql
+# then untar uploads_<date>.tar.gz over backend/uploads/
+```
 
-The export is a Python module, not a shell script, because it runs on
-Windows: PowerShell's `>` encodes as UTF-16 and truncates binary
-streams, so `mysqldump | gzip > file` silently produces a **corrupt
-archive** outside git-bash — discovered only at import time on the
-server. It passes `--result-file` so mysqldump writes the bytes itself.
+Then run **`python -m analysis.relink`** once. Restoring a dump onto a
+different database leaves `upload_ledger.account_id` pointing at rows
+that moved, and relink repairs it. Expect this to take **10+ minutes**
+on the current corpus, not the ~2 s this document used to claim: it
+joins the ledger to `all_accounts` on a `SUBSTRING_INDEX` of the file
+path, and because that expression sits on both sides of the join no
+index can serve it — 42,000 ledger rows against 24,000 accounts as a
+nested loop. It is the reason `--skip-relink` is passed on the server,
+where nothing has moved and the pass is pure cost.
 
-**Freshness.** The dump is taken at 00:00 IST and imported at 11:00, so
-production's analysis data is 11 h old at refresh and ~35 h old just
-before the next one. Only newly uploaded files are affected; everything
-else on the dashboards is live production data.
+You need the uploads on the laptop regardless of analysis: the ID-photo
+and statement hyperlinks on the dashboards serve files from disk.
+
+#### What is in the nightly dump, and what is not
+
+Changed when the analysis moved onto the server. It used to exclude all
+six derived tables because the laptop produced them and shipped them
+across, so production held a re-importable copy. Production now
+GENERATES them, so the summaries are the only copy that exists.
+
+| table | in the dump? | why |
+|---|---|---|
+| `statement_transactions` | **no** | 24.8 GB / 21.7M rows, and a pure function of the PDFs `backup-uploads.sh` already captures |
+| `account_statement_summary`, `upload_ledger`, `id_photo_hashes`, `mule_account_link`, `crypto_txn` | yes | ~100 MB together; cheap to carry, hours to rebuild, and the dashboards read nothing else |
+| `ifsc_branch` | yes | master data from outside; this server has no route to the internet to re-fetch it |
+
+`update.sh` asserts both halves of that — `statement_transactions`
+excluded, everything else not — by reading the array in `backup-db.sh`
+rather than grepping the file, because those names all appear in its
+comments now.
+
+#### Superseded: the laptop-analysis cycle
+
+`export_for_prod.py` and `import-analysis.sh` are **no longer part of
+the daily routine**. They are kept for one case: rebuilding production's
+derived tables from the laptop after a corruption, when re-parsing on
+the server would take longer than shipping a copy.
 
 ### Why the import cannot disturb the running app
 

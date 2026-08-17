@@ -1,0 +1,54 @@
+[Unit]
+# Replaces cyberfraud-backup.service AND cyberfraud-analysis.service.
+# Those ran on two timers an hour apart, which ordered them by clock
+# rather than by dependency: the backup fired at 00:00 and the analysis
+# at 01:00, so every backup carried the PREVIOUS day's analysis. One
+# unit running both in sequence is what makes "the backup contains
+# today's analysis" true rather than usually true.
+Description=CyberFraud Data Entry — nightly analysis then backup
+After=mysql.service network-online.target
+Requires=mysql.service
+
+[Service]
+Type=oneshot
+User=cyberfraud
+Group=cyberfraud
+WorkingDirectory=/opt/cyberfraud
+ExecStart=/opt/cyberfraud/deploy/nightly-all.sh
+
+# Memory the analysis workers must leave free. runtime.py budgets
+# workers from FREE memory rather than core count, so this is the one
+# number that decides how hard the box is pushed.
+#
+# 4 GB on a 16 GB VM: roughly 3 GB for the OS and Gunicorn, 4 GB for
+# the InnoDB buffer pool, leaving the parser the rest. It was 2.0 when
+# this box was believed to have 8 GB.
+Environment=CFDSR_ANALYSIS_RESERVE_GB=4.0
+
+# The parse can legitimately run for hours after a large upload day;
+# the ledger makes it resumable, so a kill costs a retry rather than
+# any work. 8h is a backstop against a genuinely stuck run, not a
+# target.
+TimeoutStartSec=8h
+
+# Deprioritised against the web application. 90 operators can be on
+# this box at any hour, and none of them should wait on a batch job.
+Nice=10
+IOSchedulingClass=idle
+CPUSchedulingPolicy=batch
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+# ProtectSystem=strict makes everything read-only except these. The
+# backups directory is obvious; uploads is needed because the parser
+# writes nothing there but the tar reads it, and backend/ because
+# Python writes __pycache__ on import.
+ReadWritePaths=/opt/cyberfraud/backups /opt/cyberfraud/backend
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,27 @@
+[Unit]
+Description=Nightly upload analysis then backup, at 23:00 IST
+
+[Timer]
+# 23:00 IST, an hour BEFORE the old backup slot.
+#
+# The analysis runs first now, and it is the variable-length half: a
+# quiet day settles in minutes, a heavy upload day takes hours. Starting
+# at 23:00 gives it the whole night rather than racing midnight, and the
+# backup still lands in the early hours whichever way the analysis goes.
+#
+# Explicit Asia/Kolkata so this holds whether the server's local
+# timezone is UTC or IST — it is currently UTC, which is why the old
+# 00:00 IST timer showed up as 18:33 UTC in systemctl output.
+OnCalendar=*-*-* 23:00:00 Asia/Kolkata
+
+# If the server was off at the trigger time, fire on next boot. Safe to
+# run late: the ledger makes every analysis run incremental, and the
+# backup keeps only the newest snapshot, so a missed night costs
+# freshness rather than data.
+Persistent=true
+
+RandomizedDelaySec=5min
+Unit=cyberfraud-nightly.service
+
+[Install]
+WantedBy=timers.target

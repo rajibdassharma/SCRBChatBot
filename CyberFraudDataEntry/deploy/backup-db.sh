@@ -86,13 +86,38 @@ echo "[backup-db] $(date -Iseconds) — dumping $DB_NAME → $OUTFILE"
 # yesterday's production data leaves ~14 million parsed transactions —
 # the better part of a day's compute — untouched. Adding a table here
 # without that property would silently destroy it on every restore.
+# CHANGED when the analysis moved onto this server.
+#
+# It used to exclude all six derived tables, because the laptop
+# produced them and shipped them across; production held a copy that
+# could always be re-imported. That is no longer true. Production now
+# GENERATES them, so the summaries are the only copy in existence and
+# excluding them would mean a restore comes back with every dashboard
+# empty and a full re-parse -- hours of work -- to get them back.
+#
+# So the rule is now about SIZE and rebuild COST, not about provenance:
+#
+#   statement_transactions   24.8 GB, 21.7M rows. Excluded. It is a
+#                            pure function of the PDFs under uploads/,
+#                            which backup-uploads.sh captures, and
+#                            including it would make this dump ~600x
+#                            larger.
+#
+#   the five summaries       ~100 MB together. Included. Cheap to
+#                            carry, expensive to rebuild, and the
+#                            dashboards read nothing else.
+#
+#   ifsc_branch              ~35 MB of MASTER data from outside, which
+#                            this server cannot re-fetch (no route to
+#                            the internet). Included, and it must never
+#                            be added below.
+#
+# --ignore-table drops STRUCTURE as well as rows, which is why a dump
+# that never mentions statement_transactions cannot DROP it -- the
+# property the dev laptop depends on to keep its parsed corpus across a
+# restore.
 DERIVED_TABLES=(
-    upload_ledger              # which files have been processed
-    statement_transactions     # parsed rows — the 11 GB
-    account_statement_summary  # per (account, channel) rollup
-    id_photo_hashes            # SHA-256 + perceptual hash per photo
-    mule_account_link          # direct mule -> mule transfers
-    crypto_txn                 # statement rows naming a crypto exchange
+    statement_transactions     # 24.8 GB of parsed rows — rebuildable from uploads/
 )
 IGNORE_ARGS=()
 for t in "${DERIVED_TABLES[@]}"; do

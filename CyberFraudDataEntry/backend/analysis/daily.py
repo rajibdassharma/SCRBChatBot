@@ -73,6 +73,13 @@ STEPS = [
      ["-m", "migrations.023_summary_untested_totals"]),
     ("migration 024 — crypto transactions",
      ["-m", "migrations.024_crypto_transactions"]),
+    # 025 creates the IFSC directory table but never fills it --
+    # load_ifsc.py does that, by hand, from a CSV carried to the box.
+    # The migration is here so a fresh server has somewhere to put it.
+    ("migration 025 — IFSC branch directory",
+     ["-m", "migrations.025_ifsc_branch"]),
+    ("migration 026 — widen summary money columns",
+     ["-m", "migrations.026_widen_summary_money"]),
     ("relink — repair account links after the restore",
      ["-m", "analysis.relink"]),
     ("parse statements — incremental",

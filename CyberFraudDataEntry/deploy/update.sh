@@ -100,6 +100,7 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.023_summary_untested_totals
 venv/bin/python -m migrations.024_crypto_transactions
 venv/bin/python -m migrations.025_ifsc_branch
+venv/bin/python -m migrations.026_widen_summary_money
 "
 
 # ── 4. Build the frontend ────────────────────────────────────────────
@@ -628,6 +629,23 @@ else
     exit 1
 fi
 
+# Migration 026: the summary's raw money columns must be wide enough to
+# hold a total that includes chain-REJECTED rows. 439 such rows carry
+# amounts up to Rs 1,000 trillion from a text-PDF misparse, and at
+# DECIMAL(18,2) a few of them in one account overflowed the column and
+# killed the nightly run at the summary step.
+WIDE=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME"     -e "SELECT COUNT(*) FROM information_schema.columns
+        WHERE table_schema='$DB_NAME' AND table_name='account_statement_summary'
+          AND column_name IN ('debit','credit','verified_debit',
+                              'verified_credit','untested_debit','untested_credit')
+          AND column_type = 'decimal(24,2)'" 2>/dev/null || echo "ERROR")
+if [ "$WIDE" = "6" ]; then
+    echo "    ✓ summary money columns are decimal(24,2) (migration 026)"
+else
+    echo "    ✗ expected 6 decimal(24,2) columns, found $WIDE — migration 026 did not complete"
+    exit 1
+fi
+
 CRYPTO=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME" \
     -e "SELECT COUNT(*) FROM information_schema.tables
         WHERE table_schema='$DB_NAME' AND table_name='crypto_txn'" 2>/dev/null || echo "ERROR")
@@ -661,18 +679,38 @@ fi
 # the size was watched. statement_transactions is 12.5 GB on the
 # analysis machine — if production ever carries it, an unfixed script
 # would try to dump that too.
-MISSING_EXCL=0
-for T in upload_ledger statement_transactions account_statement_summary \
-         id_photo_hashes mule_account_link crypto_txn; do
-    if ! grep -q "$T" "$RUNTIME/deploy/backup-db.sh" 2>/dev/null; then
-        echo "    ✗ $RUNTIME/deploy/backup-db.sh does not exclude $T"
-        MISSING_EXCL=1
+# The exclusion list is read from the ARRAY, not grepped out of the
+# whole file. Every one of these names now appears in that script's
+# comments explaining why it is or is not excluded, so a file-wide grep
+# would match the explanation and report success whatever the array said.
+EXCL=$(sed -n '/^DERIVED_TABLES=(/,/^)/p' "$RUNTIME/deploy/backup-db.sh" 2>/dev/null        | grep -oE '^[[:space:]]+[a-z_]+' | tr -d '[:space:]')
+EXCL_FAIL=0
+
+# Must be excluded: 24.8 GB, and a pure function of the PDFs that
+# backup-uploads.sh already captures.
+if ! echo "$EXCL" | grep -qx "statement_transactions"; then
+    echo "    ✗ backup-db.sh does not exclude statement_transactions — the"
+    echo "      nightly dump will try to carry 24.8 GB of parsed rows"
+    EXCL_FAIL=1
+fi
+
+# Must NOT be excluded. Production GENERATES these now, so they are the
+# only copy in existence: excluding one means a restore comes back with
+# empty dashboards and hours of re-parsing to recover. ifsc_branch is
+# worse still — master data from outside, and this server has no route
+# to the internet to re-fetch it.
+for T in account_statement_summary upload_ledger id_photo_hashes          mule_account_link crypto_txn ifsc_branch; do
+    if echo "$EXCL" | grep -qx "$T"; then
+        echo "    ✗ backup-db.sh EXCLUDES $T — analysis runs on this server"
+        echo "      now, so that table exists nowhere else and a restore"
+        echo "      would lose it"
+        EXCL_FAIL=1
     fi
 done
-if [ "$MISSING_EXCL" -eq 0 ]; then
-    echo "    ✓ runtime backup-db.sh excludes all 6 derived tables"
+
+if [ "$EXCL_FAIL" -eq 0 ]; then
+    echo "    ✓ backup-db.sh excludes statement_transactions only"
 else
-    echo "    ✗ the nightly dump will carry rebuildable data — step 5 did not sync deploy/"
     exit 1
 fi
 
