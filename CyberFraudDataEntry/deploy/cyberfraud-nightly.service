@@ -40,6 +40,17 @@ Environment=CFDSR_ANALYSIS_RESERVE_GB=4.0
 # slower than where the number was chosen.
 Environment=CFDSR_ANALYSIS_IDLE_TIMEOUT_S=1800
 
+# Cores held back from the worker pool. The default of 2 exists so a
+# batch job cannot make a developer's laptop unusable; this box has 2
+# vCPUs and no interactive user, so that default left exactly ONE worker
+# and the parse ran serially.
+#
+# 0 lets both cores work. Nice=10 and CPUSchedulingPolicy=batch below
+# are what keep the web application ahead of these workers in the run
+# queue -- that is the right mechanism for a server, rather than
+# withholding cores outright.
+Environment=CFDSR_ANALYSIS_RESERVE_CORES=0
+
 # LAST RESORT ONLY. This timeout kills the whole unit -- backup
 # included -- which is exactly what happened on the first night: the
 # analysis was still hashing photos at 8h, systemd terminated

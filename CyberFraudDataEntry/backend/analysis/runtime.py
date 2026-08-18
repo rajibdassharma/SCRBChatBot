@@ -59,6 +59,27 @@ def _env_float(name: str, default: float) -> float:
     return val if val > 0 else default
 
 
+def _env_int_ge0(name: str, default: int) -> int:
+    """Read a NON-NEGATIVE int from the environment, else the default.
+
+    Separate from _env_float because that one ends `val if val > 0 else
+    default`, which silently rejects zero. For a memory reserve that is
+    right -- 0 GB reserved is never what anyone means. For a COUNT of
+    cores to hold back, 0 is a legitimate and useful setting on a
+    headless box, and being quietly overridden back to 2 is how the
+    production parse stayed single-threaded after the unit had been
+    told otherwise.
+    """
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        val = int(float(raw))
+    except ValueError:
+        return default
+    return val if val >= 0 else default
+
+
 #: Held back for the OS, the desktop compositor and -- the reason this
 #: number is generous rather than token -- the Intel Arc iGPU's shared
 #: video memory. This is the reserve whose exhaustion bugchecked the
@@ -259,6 +280,24 @@ def gb(n: int | float) -> float:
 # scheduling
 # --------------------------------------------------------------------
 
+#: Cores held back from the worker pool.
+#:
+#: 2 is right on a developer laptop: somebody is using that machine, and
+#: a batch job that takes every core makes it unusable.
+#:
+#: It is WRONG on a headless server, and badly so on a small one.
+#: Production has 2 vCPUs, so `cores - 2` came out at 0, clamped to a
+#: single worker, and the nightly parse ran serially at 12.5s/file --
+#: against 1.15s/file for the same work on a laptop. Two thirds of that
+#: gap was this line, not the I/O priority I blamed first.
+#:
+#: Set CFDSR_ANALYSIS_RESERVE_CORES=0 there. Nice=10 and
+#: CPUSchedulingPolicy=batch already keep the workers behind the web
+#: application in the run queue, which is the protection that actually
+#: matters on a box with no interactive user.
+RESERVE_CORES = _env_int_ge0("CFDSR_ANALYSIS_RESERVE_CORES", 2)
+
+
 def plan_workers(requested: int = 0, per_worker_gb: float = PER_WORKER_GB,
                  reserve_gb: float = RESERVE_GB,
                  cap: int = MAX_WORKERS) -> int:
@@ -271,8 +310,9 @@ def plan_workers(requested: int = 0, per_worker_gb: float = PER_WORKER_GB,
     """
     avail = available_bytes()
     cores = os.cpu_count() or 4
-    # Leave two cores for the OS and whatever the person is doing.
-    by_cpu = max(1, cores - 2)
+    # Hold back RESERVE_CORES for the OS and, on a laptop, the person
+    # using it. Zero is legitimate on a headless box -- see the constant.
+    by_cpu = max(1, cores - RESERVE_CORES)
     by_mem = int(max(0.0, gb(avail) - reserve_gb) // per_worker_gb) if avail else 1
     n = max(1, min(by_cpu, by_mem or 1, cap))
     if requested > 0:
