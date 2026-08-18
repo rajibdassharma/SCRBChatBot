@@ -29,6 +29,20 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 RUNTIME="${CFDSR_RUNTIME:-/opt/cyberfraud}"
 START=$(date -Iseconds)
 
+# Budget for the ANALYSIS alone, comfortably inside the unit's
+# TimeoutStartSec.
+#
+# The unit timeout kills this whole script, backup included. On the
+# first night it did exactly that: the analysis was still hashing
+# photos at the 8h mark, systemd terminated the unit, and no backup was
+# taken -- defeating the "the backup always runs" guarantee below, which
+# only ever handled the analysis FAILING, not the analysis being killed
+# together with the script.
+#
+# Its own budget means an overrun ends the analysis and leaves this
+# script alive with time on the clock to still take a backup.
+ANALYSIS_TIMEOUT="${CFDSR_ANALYSIS_TIMEOUT:-6h}"
+
 echo "================================================================"
 echo "  CyberFraud nightly — started $START"
 echo "================================================================"
@@ -45,10 +59,18 @@ ANALYSIS_RC=0
   # $RUNTIME/backend/venv, not $RUNTIME/venv. update.sh reaches the
   # venv only after a `cd $RUNTIME/backend`, so the relative path
   # there hides where it actually is.
-  "$RUNTIME/backend/venv/bin/python" -m analysis.daily --skip-relink
+  # --kill-after: SIGTERM first so Python can close its worker pool,
+  # SIGKILL two minutes later if it will not go. The parse is resumable
+  # from the ledger either way, so a kill costs a retry, never work.
+  timeout --signal=TERM --kill-after=120 "$ANALYSIS_TIMEOUT" "$RUNTIME/backend/venv/bin/python" -m analysis.daily --skip-relink
 ) || ANALYSIS_RC=$?
 
-if [ "$ANALYSIS_RC" -ne 0 ]; then
+if [ "$ANALYSIS_RC" -eq 124 ]; then
+    echo
+    echo "  !! analysis hit its $ANALYSIS_TIMEOUT budget and was stopped."
+    echo "     Unfinished files are never marked settled, so the next run"
+    echo "     picks them up. Taking the backup now."
+elif [ "$ANALYSIS_RC" -ne 0 ]; then
     echo
     echo "  !! analysis exited $ANALYSIS_RC — continuing to the backup anyway."
     echo "     Today's operational data is unaffected by this and must"

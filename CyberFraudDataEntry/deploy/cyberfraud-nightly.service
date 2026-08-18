@@ -40,11 +40,16 @@ Environment=CFDSR_ANALYSIS_RESERVE_GB=4.0
 # slower than where the number was chosen.
 Environment=CFDSR_ANALYSIS_IDLE_TIMEOUT_S=1800
 
-# The parse can legitimately run for hours after a large upload day;
-# the ledger makes it resumable, so a kill costs a retry rather than
-# any work. 8h is a backstop against a genuinely stuck run, not a
-# target.
-TimeoutStartSec=8h
+# LAST RESORT ONLY. This timeout kills the whole unit -- backup
+# included -- which is exactly what happened on the first night: the
+# analysis was still hashing photos at 8h, systemd terminated
+# everything, and no backup was taken.
+#
+# nightly-all.sh now gives the analysis its own 6h budget, so an
+# overrun ends the analysis and still leaves time to back up. This
+# number only fires if the SCRIPT itself wedges, which the analysis
+# budget should make impossible.
+TimeoutStartSec=10h
 
 # Deprioritised against the web application. 90 operators can be on
 # this box at any hour, and none of them should wait on a batch job.
