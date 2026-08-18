@@ -355,9 +355,13 @@ mysql -u root -p cyber_fraud_dsr < dbdump_<date>.sql
 # then untar uploads_<date>.tar.gz over backend/uploads/
 ```
 
-Then run **`python -m analysis.relink`** once. Restoring a dump onto a
-different database leaves `upload_ledger.account_id` pointing at rows
-that moved, and relink repairs it. Expect this to take **10+ minutes**
+**`relink` is usually NOT needed any more.** It existed because the
+laptop's `upload_ledger` referenced accounts that the restore replaced
+underneath it. The ledger now travels IN the dump alongside
+`all_accounts`, so the two arrive already consistent. Run
+`python -m analysis.relink` only if account links look wrong.
+
+When it is needed, expect **10+ minutes**
 on the current corpus, not the ~2 s this document used to claim: it
 joins the ledger to `all_accounts` on a `SUBSTRING_INDEX` of the file
 path, and because that expression sits on both sides of the join no
@@ -366,7 +370,16 @@ nested loop. It is the reason `--skip-relink` is passed on the server,
 where nothing has moved and the pass is pure cost.
 
 You need the uploads on the laptop regardless of analysis: the ID-photo
-and statement hyperlinks on the dashboards serve files from disk.
+and statement hyperlinks on the dashboards serve files from disk. Two
+files come off the server and both are required —
+`cyber_fraud_dsr_<date>.sql.gz` (~60 MB, analysis results inside) and
+`uploads_<date>.tar.gz` (17 GB, the raw photos and statements).
+
+**Do NOT run `analysis.daily` or `summary --check` on the laptop.**
+`statement_transactions` is excluded from the dump, so the laptop keeps
+its own copy while the summaries now come from the server's. The check
+compares those two and reports mismatches that are not faults — just
+two fact tables describing the same PDFs.
 
 #### What is in the nightly dump, and what is not
 
