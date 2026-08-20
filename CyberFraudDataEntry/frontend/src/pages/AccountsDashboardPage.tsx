@@ -1776,9 +1776,25 @@ function GeoMapTab({ date }: { date: string }) {
  *  Was 100, which at the default min_firs=2 returned 112 of 711 real
  *  repeat accounts and said nothing — 599 accounts registered against
  *  multiple FIRs were simply absent from a screen whose entire purpose
- *  is to list them. 1,000 covers the current data with room to spare,
- *  and the banner below fires if it is ever reached anyway. */
-const ROW_CAP = 1000;
+ *  is to list them.
+ *
+ *  RAISED 1,000 -> 5,000 on 2026-08-19. 1,000 did NOT cover the data:
+ *  measured that day, 1,519 mule accounts appear in 2+ FIRs, so 519 of
+ *  them -- exactly the accounts this screen exists to surface -- were
+ *  behind the banner. The banner fired correctly; nobody read it.
+ *
+ *  5,000 is the endpoint's own ceiling (see repeat-accounts, le=5000),
+ *  so this asks for everything the server will give. It is also in
+ *  proportion with the neighbouring tabs, which already ship 20,000
+ *  (Mule Network) and 30,000 (All Mule Accounts) rows -- this was the
+ *  smallest dataset of the three and the only one being truncated.
+ *
+ *  A cap still earns its place: this endpoint has no server-side
+ *  pagination, so the browser holds every row. Without a ceiling an
+ *  unexpected result set stalls the tab with no warning. Server-side
+ *  paging is the real answer and is planned; All Mule Accounts at
+ *  19,903 rows is the better place to start it. */
+const ROW_CAP = 5000;
 
 function RepeatAccountsTab() {
   const [minFirs, setMinFirs] = useState(2);
