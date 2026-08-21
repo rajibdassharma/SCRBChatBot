@@ -360,7 +360,9 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
         const rows = data.by_exchange;
         // Wide enough that ~20 categories keep readable labels; the
         // container scrolls rather than compressing them into noise.
-        const chartW = Math.max(560, rows.length * 46);
+        // Per PANEL now, not for the pair. 44px a category keeps the
+        // rotated labels apart; the panel scrolls to reach the rest.
+        const chartW = Math.max(420, rows.length * 44);
 
         const axis = { fontSize: 10, fill: '#52514e' };
         const tick = {
@@ -377,19 +379,27 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
             <p className="text-xs mt-1 opacity-60">
               Left: <b>chain-verified money out</b>. Right: <b>transaction count</b>.
               Separate scales on purpose — the busiest counterparty and the
-              biggest one are not the same. Scroll sideways for the full list;
-              hover any column for detail.
+              biggest one are not the same. Each panel scrolls on its own, so one can be held still while the
+              other is moved. Hover any column for detail.
             </p>
           </div>
 
-          <div className="overflow-x-auto">
-            <div className="flex gap-6 p-4" style={{ minWidth: 'min-content' }}>
+          {/* TWO scrollers, not one. A single shared scroll moved both
+              charts together, so the reader could never hold one still
+              and travel the other -- which is the whole point of showing
+              them together, since the tall column is in a different
+              place on each. Each panel now owns its scrollbar and its
+              half of the width. */}
+          <div className="flex gap-4 p-4 items-start">
 
               {/* money */}
-              <div style={{ width: chartW }} className="shrink-0">
-                <div className="text-[11px] font-bold mb-1" style={{ color: C_NAVY }}>
+              <div className="flex-1 min-w-0 rounded-xl"
+                style={{ border: '1px solid rgba(11,44,74,0.10)' }}>
+                <div className="text-[11px] font-bold px-3 pt-2 pb-1" style={{ color: C_NAVY }}>
                   Money out (chain-verified)
                 </div>
+                <div className="overflow-x-auto pb-1">
+                <div style={{ width: chartW }}>
                 <ResponsiveContainer width="100%" height={260}>
                   <BarChart data={rows} margin={{ top: 6, right: 8, left: 4, bottom: 62 }}>
                     <CartesianGrid strokeDasharray="0" stroke="rgba(11,44,74,0.08)"
@@ -415,13 +425,18 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
+                </div>
+                </div>
               </div>
 
               {/* transactions */}
-              <div style={{ width: chartW }} className="shrink-0">
-                <div className="text-[11px] font-bold mb-1" style={{ color: C_NAVY }}>
+              <div className="flex-1 min-w-0 rounded-xl"
+                style={{ border: '1px solid rgba(11,44,74,0.10)' }}>
+                <div className="text-[11px] font-bold px-3 pt-2 pb-1" style={{ color: C_NAVY }}>
                   Transactions
                 </div>
+                <div className="overflow-x-auto pb-1">
+                <div style={{ width: chartW }}>
                 <ResponsiveContainer width="100%" height={260}>
                   <BarChart data={rows} margin={{ top: 6, right: 8, left: 4, bottom: 62 }}>
                     <CartesianGrid strokeDasharray="0" stroke="rgba(11,44,74,0.08)"
@@ -445,9 +460,10 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
                     </Bar>
                   </BarChart>
                 </ResponsiveContainer>
+                </div>
+                </div>
               </div>
 
-            </div>
           </div>
 
           <div className="px-5 pb-4 flex flex-wrap gap-4 text-[10px]"
