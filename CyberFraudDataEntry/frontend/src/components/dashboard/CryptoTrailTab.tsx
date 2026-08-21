@@ -742,30 +742,76 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
             </div>
           </div>
           <div className="divide-y" style={{ borderColor: 'rgba(11,44,74,0.07)' }}>
+            {/* Two columns, fixed on the left. Everything used to sit on
+                one wrapping line, so no two rows put the same fact in
+                the same place and the list could only be read one row
+                at a time. A fixed left column means exchange, amount
+                and date line up all the way down.
+
+                The narration gets a frame because it IS the evidence:
+                the reason this panel exists is so somebody can look at
+                the raw text and say "that is a reference code, not a
+                platform". It should be the most prominent thing in the
+                row, not a trailing line under the metadata. */}
             {evRows.map((e: CryptoEvidenceRow, i) => (
-              <div key={i} className="px-4 py-2 text-xs">
-                <div className="flex items-center gap-2 flex-wrap mb-0.5">
-                  <span className="px-1.5 py-px rounded text-[9px] font-bold"
-                    style={{ background: 'rgba(198,124,29,0.16)', color: C_ORANGE }}>{e.exchange}</span>
-                  <span className="font-semibold" style={{ color: C_NAVY }}>
-                    {e.account_holder_name || '—'}
-                  </span>
-                  <span className="opacity-55">{e.fir_no || ''}</span>
-                  <span className="opacity-55">{e.txn_date || ''}</span>
-                  {e.debit > 0 && <span style={{ color: C_RED }}>{rupees(e.debit)} out</span>}
-                  {e.credit > 0 && <span style={{ color: C_GREEN }}>{rupees(e.credit)} in</span>}
-                  {e.chain_ok !== 1 && (
-                    <span className="px-1 rounded text-[9px] font-bold"
-                      style={{ background: 'rgba(198,124,29,0.16)', color: C_ORANGE }}
-                      title={e.chain_ok === 0
-                        ? 'This row failed its balance check — amounts excluded'
-                        : 'Nothing to check this row against — amounts excluded'}>
-                      {e.chain_ok === 0 ? 'REJECTED' : 'UNCHECKED'}
+              <div key={i}
+                className="px-4 py-2.5 text-xs flex gap-4 items-start"
+                style={{ background: i % 2 ? 'rgba(11,44,74,0.02)' : undefined }}>
+
+                <div className="w-40 shrink-0">
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="px-1.5 py-px rounded text-[9px] font-bold"
+                      style={{ background: 'rgba(198,124,29,0.16)', color: C_ORANGE }}>
+                      {e.exchange}
                     </span>
-                  )}
+                    {e.chain_ok !== 1 && (
+                      <span className="px-1 rounded text-[9px] font-bold"
+                        style={{ background: e.chain_ok === 0
+                          ? 'rgba(179,38,30,0.14)' : 'rgba(11,44,74,0.08)',
+                          color: e.chain_ok === 0 ? C_RED : '#6b7480' }}
+                        title={e.chain_ok === 0
+                          ? 'This row failed its balance check — amounts excluded'
+                          : 'Nothing to check this row against — amounts excluded'}>
+                        {e.chain_ok === 0 ? 'REJECTED' : 'UNCHECKED'}
+                      </span>
+                    )}
+                  </div>
+                  {/* Amount on its own line and always in the same
+                      place, so a column of them can be scanned. */}
+                  <div className="mt-1 font-bold tabular-nums" style={{ fontSize: 12 }}>
+                    {e.debit > 0 ? (
+                      <span style={{ color: C_RED }}>{rupees(e.debit)} <span className="font-normal opacity-70">out</span></span>
+                    ) : e.credit > 0 ? (
+                      <span style={{ color: C_GREEN }}>{rupees(e.credit)} <span className="font-normal opacity-70">in</span></span>
+                    ) : (
+                      <span className="opacity-40 font-normal italic text-[10px]">no amount</span>
+                    )}
+                  </div>
+                  <div className="text-[10px] opacity-55 mt-0.5">{e.txn_date || '—'}</div>
                 </div>
-                <div className="font-mono text-[10px] leading-relaxed break-all">
-                  <Narration text={e.description || ''} term={e.exchange} />
+
+                <div className="flex-1 min-w-0">
+                  <div className="mb-1">
+                    <span className="font-semibold" style={{ color: C_NAVY }}>
+                      {e.account_holder_name || '—'}
+                    </span>
+                    {e.fir_no && (
+                      <span className="opacity-55"> · FIR {e.fir_no}</span>
+                    )}
+                    {e.account_no && (
+                      <span className="opacity-55"> · {e.account_no}</span>
+                    )}
+                  </div>
+                  {/* overflow-wrap:anywhere, not break-all. break-all
+                      splits every line at the exact character the box
+                      ends on, including mid-word, which turns readable
+                      narration into a block of characters. */}
+                  <div className="font-mono text-[10px] leading-relaxed px-2 py-1.5 rounded"
+                    style={{ background: 'rgba(11,44,74,0.04)',
+                             border: '1px solid rgba(11,44,74,0.08)',
+                             overflowWrap: 'anywhere' }}>
+                    <Narration text={e.description || ''} term={e.exchange} />
+                  </div>
                 </div>
               </div>
             ))}
