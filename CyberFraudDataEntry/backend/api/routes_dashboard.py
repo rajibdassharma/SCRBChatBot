@@ -4081,7 +4081,22 @@ async def get_crypto_trail(
     def scoped(q):
         q = (q.select_from(C)
               .join(AllAccount, AllAccount.id == C.account_id)
-              .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id))
+              .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+              # Unit MUST be joined here. top_accounts selects and groups
+              # by Unit.name, and without a join condition SQLAlchemy
+              # puts units in the FROM clause as a CARTESIAN PRODUCT --
+              # every account crossed with all 37 units.
+              #
+              # Measured 2026-08-21: 201 crypto accounts came back as
+              # 7,437 rows, each account repeated 37 times with only the
+              # district differing. The row limit then truncated at 500,
+              # so the export carried 14 accounts and hid 187. Nothing
+              # errored; the sheet just quietly held a 36x-inflated
+              # cross-join of a seventh of the data.
+              #
+              # Found by an external review of the exported workbook,
+              # not by us.
+              .outerjoin(Unit, Unit.id == AllAccount.unit_id))
         q = where_not_test(q, admin,
                            exclude_test_unit(AllAccount.unit_id),
                            exclude_test_ps(AllAccount.ps_id))
