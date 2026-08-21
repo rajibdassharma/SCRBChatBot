@@ -4115,7 +4115,25 @@ async def get_crypto_trail(
             func.count(func.distinct(C.account_id)),
             func.coalesce(func.sum(case((C.chain_ok == 1, C.debit), else_=0)), 0),
             func.coalesce(func.sum(case((C.chain_ok == 1, C.credit), else_=0)), 0),
-        )).group_by(C.exchange).order_by(func.count().desc()))).all()
+        )).group_by(C.exchange)
+         # BY MONEY, not by transaction count.
+         #
+         # Ranking by count buried the single largest exposure in the
+         # corpus: MAPLETWIST took Rs 636.6 lakh across 23 chain-verified
+         # transfers and sat TENTH, below Mudrex at Rs 9.9 lakh across
+         # 219. An investigator reading the top of this list was reading
+         # the busiest counterparty, not the biggest one, and nothing on
+         # screen said so.
+         #
+         # Chain-verified debit only, matching every other money figure
+         # here. Count is the tie-break so the ordering stays stable for
+         # the many rows with no trustworthy amount.
+         .order_by(
+             func.coalesce(
+                 func.sum(case((C.chain_ok == 1, C.debit), else_=0)), 0
+             ).desc(),
+             func.count().desc(),
+         ))).all()
     ]
 
     top_accounts = [

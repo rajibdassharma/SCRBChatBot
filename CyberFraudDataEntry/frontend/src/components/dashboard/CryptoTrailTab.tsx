@@ -105,6 +105,9 @@ const ACCOUNT_COLS: {
   { header: 'Police station', get: (r) => r.ps_name ?? '' },
   { header: 'District', get: (r) => r.district ?? '' },
   { header: 'Exchanges', get: (r) => (r.exchanges ?? []).join(', ') },
+  { header: 'Platforms used', get: (r) => (r.exchanges ?? []).length },
+  { header: 'Spread flag',
+    get: (r) => ((r.exchanges ?? []).length >= 3 ? 'YES' : '') },
   { header: 'Txns', get: (r) => r.txns },
   { header: 'Money out', get: (r) => r.debit },
   { header: 'Money in', get: (r) => r.credit },
@@ -402,11 +405,24 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
                         <span className="block text-[10px] opacity-55 truncate">{a.ps_name || ''}</span>
                       </td>
                       <td className="px-2 py-1.5">
-                        <div className="flex flex-wrap gap-1">
+                        <div className="flex flex-wrap gap-1 items-center">
                           {a.exchanges.map((x) => (
                             <span key={x} className="px-1.5 py-px rounded text-[9px] font-bold"
                               style={{ background: 'rgba(198,124,29,0.16)', color: C_ORANGE }}>{x}</span>
                           ))}
+                          {/* Spreading across three or more platforms is a
+                              behaviour, not a volume. 9 accounts in the
+                              corpus do it (one uses five); most use one.
+                              Worth seeing without counting chips. */}
+                          {a.exchanges.length >= 3 && (
+                            <span
+                              className="px-1.5 py-px rounded text-[9px] font-bold"
+                              style={{ background: C_RED, color: '#fff' }}
+                              title={`Uses ${a.exchanges.length} different platforms — `
+                                + `deliberate spreading, not incidental`}>
+                              {a.exchanges.length}&times; SPREAD
+                            </span>
+                          )}
                         </div>
                       </td>
                       <td className="px-2 py-1.5 text-right">
