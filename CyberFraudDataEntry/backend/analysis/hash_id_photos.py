@@ -121,7 +121,33 @@ def _hash_one(path: str):
 
 
 def hamming(a: str, b: str) -> int:
-    return bin(int(a, 16) ^ int(b, 16)).count("1")
+    """Bit distance between two hex fingerprints.
+
+    Kept for callers and tests that hold hex. The clustering path below
+    does NOT use it: it parses every fingerprint to an int once and
+    compares ints, because this function re-parses a 144-character hex
+    string twice on every call and the seed loop calls it hundreds of
+    millions of times.
+    """
+    return (int(a, 16) ^ int(b, 16)).bit_count()
+
+
+#: Bands for candidate generation. See _band_keys.
+#:
+#: PIGEONHOLE, not a heuristic. Split 576 bits into 24 bands of 24. Two
+#: fingerprints within NEAR_THRESHOLD (20) bits can differ in at most 20
+#: bands, so at least 4 bands are IDENTICAL. Bucketing by band therefore
+#: finds every genuine pair -- there are no false negatives to trade
+#: away, which is why this is safe on evidence.
+#:
+#: Requires BANDS > threshold. Asserted in cluster().
+BANDS = 24
+BAND_BITS = (HASH_SIZE * HASH_SIZE) // BANDS
+_BAND_MASK = (1 << BAND_BITS) - 1
+
+
+def _band_keys(v: int) -> tuple:
+    return tuple((v >> (i * BAND_BITS)) & _BAND_MASK for i in range(BANDS))
 
 
 def cluster(hashes: dict[str, str], threshold: int) -> list[list[str]]:
@@ -144,6 +170,26 @@ def cluster(hashes: dict[str, str], threshold: int) -> list[list[str]]:
         return [sorted(v) for v in by_hash.values() if len(v) > 1]
 
     distinct = sorted(by_hash, key=lambda h: -len(by_hash[h]))
+
+    # Parse each fingerprint ONCE. The previous version called
+    # hamming(), which re-parsed both 144-character hex strings on every
+    # comparison -- with ~20,000 distinct fingerprints that is ~400
+    # million hex parses, and it is where the four hours went.
+    ints = {h: int(h, 16) for h in distinct}
+
+    # Candidate generation by band. Without it this loop is O(d^2):
+    # 21,272 photos today, and the corpus is growing ~20,000 a month, so
+    # the all-pairs version stops fitting in a night within about two
+    # months.
+    assert BANDS > threshold, (
+        f"BANDS ({BANDS}) must exceed threshold ({threshold}) or the "
+        f"pigeonhole argument fails and pairs would be missed")
+    rank = {h: i for i, h in enumerate(distinct)}
+    buckets: dict[tuple, list[str]] = defaultdict(list)
+    for h in distinct:
+        for i, b in enumerate(_band_keys(ints[h])):
+            buckets[(i, b)].append(h)
+
     used: set[str] = set()
     out: list[list[str]] = []
     for seed in distinct:
@@ -151,10 +197,16 @@ def cluster(hashes: dict[str, str], threshold: int) -> list[list[str]]:
             continue
         members = [seed]
         used.add(seed)
-        for other in distinct:
+        seed_int = ints[seed]
+        cand: set = set()
+        for i, b in enumerate(_band_keys(seed_int)):
+            cand.update(buckets[(i, b)])
+        # Same visiting order as the old all-pairs loop, so the output
+        # is byte-identical rather than merely equivalent.
+        for other in sorted(cand, key=rank.__getitem__):
             if other in used:
                 continue
-            if hamming(seed, other) <= threshold:
+            if (seed_int ^ ints[other]).bit_count() <= threshold:
                 members.append(other)
                 used.add(other)
         files: list[str] = []
@@ -163,6 +215,76 @@ def cluster(hashes: dict[str, str], threshold: int) -> list[list[str]]:
         if len(files) > 1:
             out.append(sorted(files))
     return out
+
+
+def _self_test(trials: int = 300) -> int:
+    """Banding must find every pair brute force finds.
+
+    A banding mistake -- too few bands, a wrong shift, a threshold
+    raised past BANDS -- does not raise. It silently stops comparing
+    some pairs, and the visible result is FEWER duplicate-ID clusters,
+    which looks like good news. This checks the pigeonhole property
+    holds against brute force on data built to stress it.
+
+    Run: python -m analysis.hash_id_photos --self-test
+    """
+    import random
+    bits = HASH_SIZE * HASH_SIZE
+    rnd = random.Random(7)
+    bad = 0
+
+    for t in range(trials):
+        base = rnd.getrandbits(bits)
+        hexes = {}
+        # A base, plus neighbours at known distances either side of the
+        # threshold, plus unrelated noise.
+        for i, flips in enumerate((0, 1, NEAR_THRESHOLD - 1, NEAR_THRESHOLD,
+                                   NEAR_THRESHOLD + 1, bits // 3)):
+            v = base
+            for b in rnd.sample(range(bits), flips):
+                v ^= (1 << b)
+            hexes[f"f{t}_{i}.jpg"] = f"{v:0{bits // 4}x}"
+        for j in range(4):
+            hexes[f"n{t}_{j}.jpg"] = f"{rnd.getrandbits(bits):0{bits // 4}x}"
+
+        banded = cluster(hexes, NEAR_THRESHOLD)
+
+        # Brute force, same seed order, no banding.
+        by_hash = {}
+        for f, h in hexes.items():
+            by_hash.setdefault(h, []).append(f)
+        distinct = sorted(by_hash, key=lambda h: -len(by_hash[h]))
+        used, brute = set(), []
+        for seed in distinct:
+            if seed in used:
+                continue
+            members = [seed]
+            used.add(seed)
+            for other in distinct:
+                if other in used:
+                    continue
+                if hamming(seed, other) <= NEAR_THRESHOLD:
+                    members.append(other)
+                    used.add(other)
+            files = []
+            for h in members:
+                files.extend(by_hash[h])
+            if len(files) > 1:
+                brute.append(sorted(files))
+
+        if banded != brute:
+            bad += 1
+            if bad <= 3:
+                sb = {tuple(c) for c in brute}
+                sn = {tuple(c) for c in banded}
+                print(f"  FAIL trial {t}: missed {len(sb - sn)} cluster(s), "
+                      f"extra {len(sn - sb)}")
+
+    assert BANDS > NEAR_THRESHOLD, (
+        f"BANDS ({BANDS}) must exceed NEAR_THRESHOLD ({NEAR_THRESHOLD})")
+    print(f"  {trials - bad}/{trials} trials match brute force "
+          f"(BANDS={BANDS}, {BAND_BITS} bits each, threshold={NEAR_THRESHOLD})")
+    return bad
 
 
 def is_degenerate(h: str) -> bool:
@@ -221,6 +343,8 @@ def main() -> int:
     ap.add_argument("--dry-run", action="store_true",
                     help="hash and report only; touch no database")
     ap.add_argument("--threshold", type=int, default=NEAR_THRESHOLD)
+    ap.add_argument("--self-test", action="store_true",
+                    help="check banded clustering against brute force")
     # 0 = let the memory budget decide. An explicit value is an UPPER
     # BOUND the governor may lower, never a floor it must honour -- the
     # old default of 12 read like a promise the cap of 8 could not keep.
@@ -230,6 +354,9 @@ def main() -> int:
     ap.add_argument("--rehash", action="store_true",
                     help="re-hash every photo, ignoring stored fingerprints")
     args = ap.parse_args()
+
+    if args.self_test:
+        return 1 if _self_test() else 0
 
     files = sorted(f for f in os.listdir(PHOTO_DIR)
                    if f.lower().endswith((".jpg", ".jpeg", ".png", ".gif", ".webp")))
