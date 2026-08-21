@@ -230,12 +230,18 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
   const [loading, setLoading] = useState(true);
   const [type, setType] = useState('All');
   const [page, setPage] = useState(1);
+  // Evidence was the last panel on a long page, so the narrations that
+  // let somebody REJECT a false positive were the hardest thing on the
+  // screen to reach. Its own view, and its own page counter -- sharing
+  // `page` with the accounts table would move both at once.
+  const [section, setSection] = useState<'analysis' | 'evidence'>('analysis');
+  const [evPage, setEvPage] = useState(1);
 
   useEffect(() => {
     let alive = true;
     setLoading(true);
     getCryptoTrail(type)
-      .then((d) => { if (alive) { setData(d); setPage(1); } })
+      .then((d) => { if (alive) { setData(d); setPage(1); setEvPage(1); } })
       .catch((e) => { if (alive) toast.error(e?.message ?? 'Could not load crypto analysis'); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
@@ -390,6 +396,29 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
           </button>
         ))}
       </div>
+
+      {/* Two views rather than one long scroll. The charts and the
+          accounts table answer "what is happening"; the evidence answers
+          "is this row real", which is a different job and was buried
+          three panels below the fold. */}
+      <div className="flex items-center gap-1.5">
+        {([
+          ['analysis', `Analysis`],
+          ['evidence', `Evidence (${formatNumber(data.evidence.length)})`],
+        ] as const).map(([v, label]) => (
+          <button key={v} type="button" onClick={() => setSection(v)}
+            className="px-3 py-1.5 rounded-lg text-xs font-bold transition"
+            style={{
+              background: section === v ? C_NAVY : '#fff',
+              color: section === v ? 'var(--ksp-yellow)' : C_NAVY,
+              border: `1px solid ${section === v ? C_NAVY : 'rgba(11,44,74,0.18)'}`,
+            }}>
+            {label}
+          </button>
+        ))}
+      </div>
+
+      {section === 'analysis' && (<>
 
       {/* ---- by exchange: two column charts ----
            TWO CHARTS, NOT ONE WITH TWO AXES. Money and transaction count
@@ -693,8 +722,13 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
         )}
       </div>
 
+      </>)}
+
       {/* ---- evidence ---- */}
-      {data.evidence.length > 0 && (
+      {section === 'evidence' && data.evidence.length > 0 && (() => {
+        const ev = paginate(data.evidence.length, evPage);
+        const evRows = ev.slice(data.evidence);
+        return (
         <div className="rounded-2xl overflow-hidden" style={cardStyle}>
           <div className="px-5 py-4" style={{ borderBottom: '3px solid var(--ksp-yellow)' }}>
             <h3 className="text-sm font-bold" style={{ color: C_NAVY }}>Evidence — why these were flagged</h3>
@@ -708,7 +742,7 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
             </div>
           </div>
           <div className="divide-y" style={{ borderColor: 'rgba(11,44,74,0.07)' }}>
-            {data.evidence.map((e: CryptoEvidenceRow, i) => (
+            {evRows.map((e: CryptoEvidenceRow, i) => (
               <div key={i} className="px-4 py-2 text-xs">
                 <div className="flex items-center gap-2 flex-wrap mb-0.5">
                   <span className="px-1.5 py-px rounded text-[9px] font-bold"
@@ -736,8 +770,12 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
               </div>
             ))}
           </div>
+          <Pager total={data.evidence.length} page={ev.safePage}
+            pageCount={ev.pageCount} onPage={setEvPage}
+            noun="narrations" size={PAGE_SIZE} />
         </div>
-      )}
+        );
+      })()}
     </div>
   );
 }
