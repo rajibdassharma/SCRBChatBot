@@ -52,6 +52,20 @@ import re
 #:
 #: Value is the canonical label stored on the row.
 _EXCHANGES: list[tuple[str, re.Pattern]] = [
+    # crypto.com MUST be matched as an exchange, not left to the
+    # generic crypto asset rule below. Exchanges are tested first,
+    # so listing it here is what stops "Ecom/CRYPTO.COM DUBAI" being
+    # filed as an unnamed mention -- and an unnamed mention is one you
+    # cannot send a request to. The dot is escaped: unescaped it would
+    # also match "cryptoXcom".
+    ("CRYPTO.COM",  re.compile(r"crypto\.com", re.I)),
+    # Not an exchange -- a company. Found 2026-08-21 sitting under the
+    # generic CRYPTO label: one layer-1 account sent it Rs 438.9 lakh
+    # over 15 chain-VERIFIED RTGS transfers in 24 days, 44% of all
+    # crypto value in the corpus. It was invisible because
+    # "MAPLETWIST BLOCKCHAIN PVT LTD" matched only blockchain.
+    # Naming it is the difference between a lead and a footnote.
+    ("MAPLETWIST",  re.compile(r"mapletwist", re.I)),
     ("BINANCE",    re.compile(r"binance", re.I)),
     ("WAZIRX",     re.compile(r"wazirx", re.I)),
     ("COINDCX",    re.compile(r"coindcx", re.I)),
@@ -148,6 +162,9 @@ SQL_TOKENS: list[str] = [
     "giottus", "unocoin", "buyucoin", "suncrypto", "mudrex", "coinbase",
     "kraken", "bitfinex", "kucoin", "bybit", "flitpay", "coinsbit",
     "pi42", "vauld", "okx", "huobi",
+    # crypto.com is covered by the existing "crypto" token; mapletwist
+    # needs its own or the SQL stage never surfaces the row.
+    "mapletwist",
     # assets and generic wording
     "usdt", "tether", "bitcoin", "ethereum", "crypto", "blockchain",
     # "virtual\s+digital\s+asset" -- the first word is enough, and the
@@ -218,6 +235,16 @@ _CASES: list[tuple[str, str | None]] = [
     # genuine hits before the boundaries went on.
     ("UPIP2A425794535124ISHWAR CState Bankucoin p", None),
     ("UPI/422280593906/CR/Kart/SBIN/krakenface@axl/Payme", None),
+    # Named 2026-08-21 after both were found under the generic label.
+    ("To TRF rtgs bandhan / mapletwist blockchain CHQ DT - 037461", "MAPLETWIST"),
+    ("To TRF TO RTGS MAPLETWIST BLOCKCHAIN PVT 37407 LTD /BANDHAN BANK", "MAPLETWIST"),
+    ("04-Nov-2024 Ecom/CRYPTO.COM DUBAI ARE", "CRYPTO.COM"),
+    (r"TO ECM/244440/crypto.com \crypto.c", "CRYPTO.COM"),
+    # The escaped dot matters. None is the CORRECT answer: an
+    # unescaped "crypto.com" would match this as the exchange, and
+    # crypto does not fire either because there is no word
+    # boundary between "crypto" and "Xcom".
+    ("payment to cryptoXcom services", None),
     # ...and the ones that must still survive.
     ("UPI/022709339093/BitbnsAccount/depositbns@axis/HDF", "BITBNS"),
     ("MMT/IMPS/409114484063/OKX CFO/ANTARIKSHA/Union Ban", "OKX"),
