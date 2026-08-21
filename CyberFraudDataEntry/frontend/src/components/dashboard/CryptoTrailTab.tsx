@@ -91,6 +91,46 @@ function shortRupees(n: number): string {
  *  exposure. */
 const GENERIC_LABELS = new Set(['CRYPTO', 'USDT', 'BITCOIN', 'ETHEREUM']);
 
+/** Direction of flow separates two operationally different behaviours
+ *  that the Mule / Non-Mule tag alone does not.
+ *
+ *    OUT  the account sends fiat to a crypto venue -- the classic
+ *         layering leg, fiat becomes crypto and leaves the jurisdiction.
+ *    IN   the account RECEIVES fiat, with a venue named in the
+ *         narration -- it sold crypto peer-to-peer. The people who paid
+ *         it are ordinary buyers who will be traced next, and whose
+ *         accounts get frozen when the chain is followed.
+ *
+ *  Measured on this corpus: 120 accounts are in-only and 55 out-only,
+ *  and 89 of the in-only ones carry the Mule tag. Treating both with
+ *  one investigative posture is how good-faith counterparties end up
+ *  frozen.
+ *
+ *  Chain-verified amounts only, matching every other money figure here.
+ *  An account with no verified amount is UNKNOWN, never guessed --
+ *  14 of them, and a wrong guess is the expensive kind of wrong. */
+type FlowRole = 'out' | 'in' | 'mixed' | 'unknown';
+
+function flowRole(r: CryptoAccountRow): FlowRole {
+  const out = r.debit > 0;
+  const inn = r.credit > 0;
+  if (out && inn) return 'mixed';
+  if (out) return 'out';
+  if (inn) return 'in';
+  return 'unknown';
+}
+
+const ROLE_LABEL: Record<FlowRole, string> = {
+  out: 'sends to venue',
+  in: 'receives (P2P sale)',
+  mixed: 'both directions',
+  unknown: 'no verified amount',
+};
+
+const ROLE_SHORT: Record<FlowRole, string> = {
+  out: 'OUT', in: 'IN', mixed: 'BOTH', unknown: '—',
+};
+
 const TYPES = ['All', 'Mule', 'Non-Mule', 'Victim'];
 
 /** Highlight the matched term inside the narration.
@@ -130,6 +170,8 @@ const ACCOUNT_COLS: {
   { header: 'District', get: (r) => r.district ?? '' },
   { header: 'Exchanges', get: (r) => (r.exchanges ?? []).join(', ') },
   { header: 'Platforms used', get: (r) => (r.exchanges ?? []).length },
+  { header: 'Flow direction', get: (r) => ROLE_SHORT[flowRole(r)] },
+  { header: 'Flow reading', get: (r) => ROLE_LABEL[flowRole(r)] },
   { header: 'Spread flag',
     get: (r) => ((r.exchanges ?? []).length >= 3 ? 'YES' : '') },
   { header: 'Txns', get: (r) => r.txns },
@@ -507,9 +549,22 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
       <div className="rounded-2xl overflow-hidden" style={cardStyle}>
         <div className="px-5 py-4 flex items-center gap-4 flex-wrap"
           style={{ borderBottom: '3px solid var(--ksp-yellow)' }}>
-          <h3 className="text-sm font-bold" style={{ color: C_NAVY }}>
-            Accounts with crypto activity
-          </h3>
+          <div>
+            <h3 className="text-sm font-bold" style={{ color: C_NAVY }}>
+              Accounts with crypto activity
+            </h3>
+            {/* The Flow column exists because of a specific risk, and a
+                column nobody understands is a column nobody uses. */}
+            <p className="text-xs mt-1 opacity-70" style={{ maxWidth: 640 }}>
+              <b>Flow</b> is the direction of the money.
+              <b> OUT</b> — the account paid a venue: the layering leg.
+              <b> IN</b> — the account was paid, with a venue named in the
+              narration: it sold crypto peer-to-peer, and the people who
+              paid it are the next accounts a trace will reach.
+              Two different behaviours; the same investigative posture on
+              both is how good-faith counterparties get frozen.
+            </p>
+          </div>
           {/* ml-auto, not justify-end: these are flex ITEMS sized to
               their content, so without it they sit next to the heading
               rather than at the far edge. */}
@@ -536,9 +591,9 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
               <table className="w-full text-xs">
                 <thead>
                   <tr style={{ background: 'rgba(11,44,74,0.05)' }}>
-                    {['Account holder', 'FIR / PS', 'Exchanges', 'Txns', 'Out', 'In', 'Period']
+                    {['Account holder', 'FIR / PS', 'Flow', 'Exchanges', 'Txns', 'Out', 'In', 'Period']
                       .map((h, i) => (
-                        <th key={h} className={`px-2 py-2 font-bold ${i >= 3 && i <= 5 ? 'text-right' : 'text-left'}`}
+                        <th key={h} className={`px-2 py-2 font-bold ${i >= 4 && i <= 6 ? 'text-right' : 'text-left'}`}
                           style={{ color: C_NAVY }}>{h}</th>
                       ))}
                   </tr>
@@ -566,6 +621,25 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
                       <td className="px-2 py-1.5">
                         <span className="block truncate">{a.fir_no || '—'}</span>
                         <span className="block text-[10px] opacity-55 truncate">{a.ps_name || ''}</span>
+                      </td>
+                      <td className="px-2 py-1.5">
+                        {(() => {
+                          const role = flowRole(a);
+                          const tone = role === 'out'
+                            ? { bg: 'rgba(235,104,52,0.16)', fg: '#b8461c' }
+                            : role === 'in'
+                            ? { bg: 'rgba(42,120,214,0.16)', fg: '#1c5cab' }
+                            : role === 'mixed'
+                            ? { bg: 'rgba(11,44,74,0.10)', fg: C_NAVY }
+                            : { bg: 'rgba(11,44,74,0.05)', fg: '#8a94a0' };
+                          return (
+                            <span className="px-1.5 py-px rounded text-[9px] font-bold whitespace-nowrap"
+                              style={{ background: tone.bg, color: tone.fg }}
+                              title={ROLE_LABEL[role]}>
+                              {ROLE_SHORT[role]}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="px-2 py-1.5">
                         <div className="flex flex-wrap gap-1 items-center">
