@@ -54,3 +54,26 @@ export function isoAddDays(dateIso: string, days: number): string {
   dt.setDate(dt.getDate() + days);
   return localISO(dt);
 }
+
+/** Bank name reduced to a grouping key: whitespace collapsed, upper-cased.
+ *
+ *  Measured 2026-08-21 on 2,260 distinct stored bank names: 327 of them
+ *  differ from another only by case or by runs of spaces. "Axis Bank"
+ *  appears in 6 spellings across 3,128 accounts; State Bank of India in
+ *  9 across 1,019. Any sum or count grouped on the raw column splits
+ *  those silently, which is what an external review of the exported
+ *  workbook flagged.
+ *
+ *  DELIBERATELY CONSERVATIVE. It folds case and spacing and nothing
+ *  else -- no fuzzy matching, no abbreviation expansion, no "Ltd"
+ *  stripping. Those need a curated bank list and a human decision per
+ *  entry; guessing there merges banks that are genuinely different.
+ *  1,933 keys remain, well above India's real bank count, and the rest
+ *  is entry-quality work with an audit trail, not a display concern.
+ *
+ *  Used for the EXPORT column only. The screen keeps what the operator
+ *  typed -- see the Branch district treatment for the same rule:
+ *  entered and derived stay distinguishable. */
+export function bankKey(name: string | null | undefined): string {
+  return (name ?? '').replace(/\s+/g, ' ').trim().toUpperCase();
+}

@@ -43,7 +43,7 @@ import {
   BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
 } from 'recharts';
 
-import { formatNumber } from '../../lib/utils/format';
+import { bankKey, formatNumber } from '../../lib/utils/format';
 import type {
   CryptoTrailSummary, CryptoEvidenceRow, CryptoAccountRow,
   CryptoExchangeRow,
@@ -164,6 +164,10 @@ const ACCOUNT_COLS: {
   { header: 'Account holder', get: (r) => r.account_holder_name ?? '' },
   { header: 'Account no', get: (r) => r.account_no ?? '' },
   { header: 'Bank', get: (r) => r.bank_name ?? '' },
+  // Grouping key, exported alongside the entered spelling rather than
+  // replacing it -- 327 stored names differ from another only by case
+  // or spacing, which splits any pivot on the raw column.
+  { header: 'Bank (grouping key)', get: (r) => bankKey(r.bank_name) },
   { header: 'Account type', get: (r) => r.account_type ?? '' },
   { header: 'FIR no', get: (r) => r.fir_no ?? '' },
   { header: 'Police station', get: (r) => r.ps_name ?? '' },

@@ -23,7 +23,7 @@ import autoTable from 'jspdf-autotable';
 import { FileSpreadsheet, FileText, Users } from 'lucide-react';
 
 import { getMuleAccounts } from '../../lib/api/dashboard';
-import { formatNumber } from '../../lib/utils/format';
+import { bankKey, formatNumber } from '../../lib/utils/format';
 import { Pager, paginate, PAGE_SIZE } from '../common/Pager';
 import type {
   MuleAccountList, MuleAccountRow, MoneyTrailScope,
@@ -110,6 +110,8 @@ const COLUMNS: Col[] = [
         {r.account_holder_name ?? '—'}
       </span>, 260, r.account_holder_name ?? undefined) },
   { header: 'Account no', get: (r) => r.account_no ?? '' },
+  { header: 'Bank (grouping key)', exportOnly: true,
+    get: (r) => bankKey(r.bank_name) },
   { header: 'Bank', get: (r) => r.bank_name ?? '', maxW: 170,
     cell: (r) => clip(r.bank_name ?? '—', 170, r.bank_name ?? undefined) },
   { header: 'Branch', get: (r) => r.branch_name ?? '', maxW: 170,
