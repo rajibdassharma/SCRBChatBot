@@ -363,7 +363,7 @@ the week.
 Restore is the full, then EVERY increment after it, in order:
 
 ```bash
-cd /opt/cyberfraud/backend      # or backend\ on the laptop
+cd /opt/cyberfraud/backend      # on the laptop: the backend folder
 tar -xf uploads_full_<ts>.tar
 for f in $(ls uploads_inc_*.tar | sort); do tar -xf "$f"; done
 ```
