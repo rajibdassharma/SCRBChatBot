@@ -406,8 +406,8 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
               <div className="flex-1 min-w-0 rounded-xl"
                 style={{ border: '2px solid rgba(11,44,74,0.28)',
                          background: '#fff' }}>
-                <div className="text-[11px] font-bold px-3 py-1.5"
-                  style={{ color: C_NAVY, background: 'rgba(11,44,74,0.05)',
+                <div className="text-sm font-bold px-3 py-2 tracking-tight"
+                  style={{ color: C_NAVY, background: 'rgba(11,44,74,0.07)',
                            borderBottom: '1px solid rgba(11,44,74,0.18)' }}>
                   Money out (chain-verified)
                 </div>
@@ -446,8 +446,8 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
               <div className="flex-1 min-w-0 rounded-xl"
                 style={{ border: '2px solid rgba(11,44,74,0.28)',
                          background: '#fff' }}>
-                <div className="text-[11px] font-bold px-3 py-1.5"
-                  style={{ color: C_NAVY, background: 'rgba(11,44,74,0.05)',
+                <div className="text-sm font-bold px-3 py-2 tracking-tight"
+                  style={{ color: C_NAVY, background: 'rgba(11,44,74,0.07)',
                            borderBottom: '1px solid rgba(11,44,74,0.18)' }}>
                   Transactions
                 </div>
