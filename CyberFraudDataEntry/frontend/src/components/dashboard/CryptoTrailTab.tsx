@@ -67,6 +67,15 @@ function shortRupees(n: number): string {
   return rupees(n);
 }
 
+/** Labels that are a KEYWORD, not a counterparty.
+ *
+ *  The distinction is operational, not cosmetic. "BINANCE" or
+ *  "MAPLETWIST" name somebody a request can be sent to; "CRYPTO" or
+ *  "BITCOIN" only mean the narration used the word. Ranking them in one
+ *  undifferentiated list invites reading a keyword count as an exchange
+ *  exposure. */
+const GENERIC_LABELS = new Set(['CRYPTO', 'USDT', 'BITCOIN', 'ETHEREUM']);
+
 const TYPES = ['All', 'Mule', 'Non-Mule', 'Victim'];
 
 /** Highlight the matched term inside the narration.
@@ -321,24 +330,97 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
         ))}
       </div>
 
-      {/* ---- by exchange ---- */}
-      {data.by_exchange.length > 0 && (
+      {/* ---- by exchange ----
+           A ranked bar table rather than a grid of equal-weight text.
+           At ~20 rows this is past the point where a chart alone works,
+           so it is a table WITH bars: the bar carries the shape, the
+           number carries the detail.
+
+           Bars are LINEAR, deliberately. One counterparty holds 44% of
+           all crypto value, so a linear scale leaves most bars short --
+           and that disparity is the finding, not a rendering problem. A
+           log scale would flatten exactly the thing worth seeing. */}
+      {data.by_exchange.length > 0 && (() => {
+        // Rank by chain-verified money, matching the server's ordering
+        // and every other money figure on this screen.
+        const maxDebit = Math.max(...data.by_exchange.map((e) => e.debit), 0);
+        return (
         <div className="rounded-2xl overflow-hidden" style={cardStyle}>
           <div className="px-5 py-4" style={{ borderBottom: '3px solid var(--ksp-yellow)' }}>
-            <h3 className="text-sm font-bold" style={{ color: C_NAVY }}>By exchange / asset</h3>
+            <h3 className="text-sm font-bold" style={{ color: C_NAVY }}>
+              Where the money went
+            </h3>
+            <p className="text-xs mt-1 opacity-60">
+              Ranked by <b>chain-verified</b> money out. Bars are to scale.
+              A <b>named counterparty</b> is somebody a request can be sent to;
+              an <b>asset mention</b> only means the narration used the word.
+            </p>
           </div>
-          <div className="p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-x-6 gap-y-2">
-            {data.by_exchange.map((e) => (
-              <div key={e.exchange} className="flex justify-between text-xs">
-                <span className="font-bold" style={{ color: C_NAVY }}>{e.exchange}</span>
-                <span className="opacity-70">
-                  {formatNumber(e.txns)} txn · {formatNumber(e.accounts)} acct · {shortRupees(e.debit)} out
-                </span>
-              </div>
-            ))}
+          <div className="px-5 py-3">
+            {data.by_exchange.map((e, i) => {
+              const generic = GENERIC_LABELS.has(e.exchange);
+              // 2px floor so "small" never renders as "none". A zero-
+              // width bar beside 25 transactions reads as no activity,
+              // when it means no trustworthy amount.
+              const pct = maxDebit > 0 ? (e.debit / maxDebit) * 100 : 0;
+              const width = e.debit > 0 ? `max(2px, ${pct.toFixed(2)}%)` : '0';
+              return (
+                <div key={e.exchange}
+                  className="flex items-center gap-3 py-1.5"
+                  style={{ borderTop: i === 0 ? 'none' : '1px solid rgba(11,44,74,0.06)' }}>
+
+                  <span className="text-[10px] tabular-nums opacity-40 w-5 text-right shrink-0">
+                    {i + 1}
+                  </span>
+
+                  <div className="w-36 shrink-0">
+                    <div className="text-xs font-bold truncate" style={{ color: C_NAVY }}
+                      title={e.exchange}>
+                      {e.exchange}
+                    </div>
+                    <div className="text-[10px] opacity-55">
+                      {generic ? 'asset mention' : 'named counterparty'}
+                    </div>
+                  </div>
+
+                  {/* Bar. One hue, length is the only encoding -- shading
+                      it by magnitude too would say the same thing twice. */}
+                  <div className="flex-1 min-w-[40px]">
+                    <div style={{ height: 10, background: 'rgba(11,44,74,0.05)',
+                                  borderRadius: 5 }}>
+                      <div style={{
+                        width, height: '100%', background: C_ORANGE,
+                        borderRadius: '0 5px 5px 0',
+                      }} />
+                    </div>
+                  </div>
+
+                  <div className="w-28 shrink-0 text-right">
+                    {e.debit > 0 ? (
+                      <span className="text-xs font-bold tabular-nums" style={{ color: C_NAVY }}>
+                        {shortRupees(e.debit)}
+                      </span>
+                    ) : (
+                      // NOT "Rs 0". The rows exist; their amounts failed
+                      // the balance check or had no balance column, and
+                      // saying zero would assert something untrue.
+                      <span className="text-[10px] italic opacity-50"
+                        title="Transactions found, but no chain-verified amount to sum">
+                        no verified amount
+                      </span>
+                    )}
+                  </div>
+
+                  <div className="w-32 shrink-0 text-right text-[10px] opacity-60 tabular-nums">
+                    {formatNumber(e.txns)} txn · {formatNumber(e.accounts)} acct
+                  </div>
+                </div>
+              );
+            })}
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {/* ---- accounts ---- */}
       <div className="rounded-2xl overflow-hidden" style={cardStyle}>
