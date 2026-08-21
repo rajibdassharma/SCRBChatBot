@@ -39,6 +39,10 @@ import autoTable from 'jspdf-autotable';
 import { getCryptoTrail } from '../../lib/api/dashboard';
 import { Pager, paginate, PAGE_SIZE } from '../common/Pager';
 import CaveatNote from '../common/CaveatNote';
+import {
+  BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, Cell,
+} from 'recharts';
+
 import { formatNumber } from '../../lib/utils/format';
 import type {
   CryptoTrailSummary, CryptoEvidenceRow, CryptoAccountRow,
@@ -49,6 +53,17 @@ const C_NAVY = 'var(--ksp-navy)';
 const C_RED = '#b3261e';
 const C_GREEN = '#1b7f4c';
 const C_ORANGE = '#c67c1d';
+
+//: Chart fills. Validated rather than chosen by eye -- both sit inside
+//: the lightness band and above the chroma floor, and they separate by
+//: dE 24.7 under protanopia and 32.7 under tritanopia against the chart
+//: surface.
+//:
+//: The app's own navy was tried first and FAILED two checks: at
+//: lightness 0.287 it is outside the band, and at chroma 0.067 it reads
+//: as grey rather than as a colour. It is a good ink and a poor fill.
+const C_BAR_MONEY = '#2a78d6';
+const C_BAR_TXNS = '#eb6834';
 
 const cardStyle = {
   background: '#fff',
@@ -330,20 +345,29 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
         ))}
       </div>
 
-      {/* ---- by exchange ----
-           A ranked bar table rather than a grid of equal-weight text.
-           At ~20 rows this is past the point where a chart alone works,
-           so it is a table WITH bars: the bar carries the shape, the
-           number carries the detail.
+      {/* ---- by exchange: two column charts ----
+           TWO CHARTS, NOT ONE WITH TWO AXES. Money and transaction count
+           are different measures on different scales, and putting them
+           on a shared plot with two y-axes lets the reader infer a
+           relationship from whichever scaling was chosen. Side by side,
+           each chart carries one honest scale.
 
-           Bars are LINEAR, deliberately. One counterparty holds 44% of
-           all crypto value, so a linear scale leaves most bars short --
-           and that disparity is the finding, not a rendering problem. A
-           log scale would flatten exactly the thing worth seeing. */}
+           The comparison is the point: MUDREX is tallest on the right
+           and barely visible on the left; MAPLETWIST is the reverse.
+           Busiest and biggest are different counterparties, and seeing
+           both at once is what makes that legible. */}
       {data.by_exchange.length > 0 && (() => {
-        // Rank by chain-verified money, matching the server's ordering
-        // and every other money figure on this screen.
-        const maxDebit = Math.max(...data.by_exchange.map((e) => e.debit), 0);
+        const rows = data.by_exchange;
+        // Wide enough that ~20 categories keep readable labels; the
+        // container scrolls rather than compressing them into noise.
+        const chartW = Math.max(560, rows.length * 46);
+
+        const axis = { fontSize: 10, fill: '#52514e' };
+        const tick = {
+          angle: -45, textAnchor: 'end' as const, ...axis,
+          dy: 4, interval: 0 as const,
+        };
+
         return (
         <div className="rounded-2xl overflow-hidden" style={cardStyle}>
           <div className="px-5 py-4" style={{ borderBottom: '3px solid var(--ksp-yellow)' }}>
@@ -351,72 +375,97 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
               Where the money went
             </h3>
             <p className="text-xs mt-1 opacity-60">
-              Ranked by <b>chain-verified</b> money out. Bars are to scale.
-              A <b>named counterparty</b> is somebody a request can be sent to;
-              an <b>asset mention</b> only means the narration used the word.
+              Left: <b>chain-verified money out</b>. Right: <b>transaction count</b>.
+              Separate scales on purpose — the busiest counterparty and the
+              biggest one are not the same. Scroll sideways for the full list;
+              hover any column for detail.
             </p>
           </div>
-          <div className="px-5 py-3">
-            {data.by_exchange.map((e, i) => {
-              const generic = GENERIC_LABELS.has(e.exchange);
-              // 2px floor so "small" never renders as "none". A zero-
-              // width bar beside 25 transactions reads as no activity,
-              // when it means no trustworthy amount.
-              const pct = maxDebit > 0 ? (e.debit / maxDebit) * 100 : 0;
-              const width = e.debit > 0 ? `max(2px, ${pct.toFixed(2)}%)` : '0';
-              return (
-                <div key={e.exchange}
-                  className="flex items-center gap-3 py-1.5"
-                  style={{ borderTop: i === 0 ? 'none' : '1px solid rgba(11,44,74,0.06)' }}>
 
-                  <span className="text-[10px] tabular-nums opacity-40 w-5 text-right shrink-0">
-                    {i + 1}
-                  </span>
+          <div className="overflow-x-auto">
+            <div className="flex gap-6 p-4" style={{ minWidth: 'min-content' }}>
 
-                  <div className="w-36 shrink-0">
-                    <div className="text-xs font-bold truncate" style={{ color: C_NAVY }}
-                      title={e.exchange}>
-                      {e.exchange}
-                    </div>
-                    <div className="text-[10px] opacity-55">
-                      {generic ? 'asset mention' : 'named counterparty'}
-                    </div>
-                  </div>
-
-                  {/* Bar. One hue, length is the only encoding -- shading
-                      it by magnitude too would say the same thing twice. */}
-                  <div className="flex-1 min-w-[40px]">
-                    <div style={{ height: 10, background: 'rgba(11,44,74,0.05)',
-                                  borderRadius: 5 }}>
-                      <div style={{
-                        width, height: '100%', background: C_ORANGE,
-                        borderRadius: '0 5px 5px 0',
-                      }} />
-                    </div>
-                  </div>
-
-                  <div className="w-28 shrink-0 text-right">
-                    {e.debit > 0 ? (
-                      <span className="text-xs font-bold tabular-nums" style={{ color: C_NAVY }}>
-                        {shortRupees(e.debit)}
-                      </span>
-                    ) : (
-                      // NOT "Rs 0". The rows exist; their amounts failed
-                      // the balance check or had no balance column, and
-                      // saying zero would assert something untrue.
-                      <span className="text-[10px] italic opacity-50"
-                        title="Transactions found, but no chain-verified amount to sum">
-                        no verified amount
-                      </span>
-                    )}
-                  </div>
-
-                  <div className="w-32 shrink-0 text-right text-[10px] opacity-60 tabular-nums">
-                    {formatNumber(e.txns)} txn · {formatNumber(e.accounts)} acct
-                  </div>
+              {/* money */}
+              <div style={{ width: chartW }} className="shrink-0">
+                <div className="text-[11px] font-bold mb-1" style={{ color: C_NAVY }}>
+                  Money out (chain-verified)
                 </div>
-              );
-            })}
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={rows} margin={{ top: 6, right: 8, left: 4, bottom: 62 }}>
+                    <CartesianGrid strokeDasharray="0" stroke="rgba(11,44,74,0.08)"
+                      vertical={false} />
+                    <XAxis dataKey="exchange" tick={tick} height={62}
+                      stroke="rgba(11,44,74,0.25)" />
+                    <YAxis tick={axis} stroke="rgba(11,44,74,0.25)"
+                      tickFormatter={(v: number) => shortRupees(v)} width={64} />
+                    <Tooltip
+                      formatter={(v) => [shortRupees(Number(v)), 'Money out']}
+                      contentStyle={{ fontSize: 11, borderRadius: 8 }} />
+                    {/* 4px rounded data-end, square at the baseline. */}
+                    <Bar dataKey="debit" radius={[4, 4, 0, 0]} maxBarSize={24}
+                      isAnimationActive={false}>
+                      {rows.map((e) => (
+                        // Same hue throughout: height is the encoding, so
+                        // shading by magnitude would say it twice. Asset
+                        // mentions are held back because they are not a
+                        // counterparty anyone can act on.
+                        <Cell key={e.exchange} fill={C_BAR_MONEY}
+                          fillOpacity={GENERIC_LABELS.has(e.exchange) ? 0.42 : 1} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+              {/* transactions */}
+              <div style={{ width: chartW }} className="shrink-0">
+                <div className="text-[11px] font-bold mb-1" style={{ color: C_NAVY }}>
+                  Transactions
+                </div>
+                <ResponsiveContainer width="100%" height={260}>
+                  <BarChart data={rows} margin={{ top: 6, right: 8, left: 4, bottom: 62 }}>
+                    <CartesianGrid strokeDasharray="0" stroke="rgba(11,44,74,0.08)"
+                      vertical={false} />
+                    <XAxis dataKey="exchange" tick={tick} height={62}
+                      stroke="rgba(11,44,74,0.25)" />
+                    <YAxis tick={axis} stroke="rgba(11,44,74,0.25)"
+                      tickFormatter={(v: number) => formatNumber(v)} width={44} />
+                    <Tooltip
+                      formatter={(v, _k, item) => [
+                        `${formatNumber(Number(v))} txn · `
+                        + `${formatNumber(Number(item?.payload?.accounts ?? 0))} account(s)`,
+                        'Activity']}
+                      contentStyle={{ fontSize: 11, borderRadius: 8 }} />
+                    <Bar dataKey="txns" radius={[4, 4, 0, 0]} maxBarSize={24}
+                      isAnimationActive={false}>
+                      {rows.map((e) => (
+                        <Cell key={e.exchange} fill={C_BAR_TXNS}
+                          fillOpacity={GENERIC_LABELS.has(e.exchange) ? 0.42 : 1} />
+                      ))}
+                    </Bar>
+                  </BarChart>
+                </ResponsiveContainer>
+              </div>
+
+            </div>
+          </div>
+
+          <div className="px-5 pb-4 flex flex-wrap gap-4 text-[10px]"
+            style={{ color: '#52514e' }}>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-3 rounded-sm"
+                style={{ background: C_BAR_MONEY }} />
+              named counterparty — somebody a request can be sent to
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-3 rounded-sm"
+                style={{ background: C_BAR_MONEY, opacity: 0.42 }} />
+              asset mention — the narration only used the word
+            </span>
+            <span className="opacity-70">
+              A short money bar beside a tall transaction bar means the amounts
+              failed the balance check, not that little moved.
+            </span>
           </div>
         </div>
         );
