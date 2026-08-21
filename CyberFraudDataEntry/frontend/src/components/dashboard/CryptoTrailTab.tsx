@@ -357,7 +357,13 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
            Busiest and biggest are different counterparties, and seeing
            both at once is what makes that legible. */}
       {data.by_exchange.length > 0 && (() => {
-        const rows = data.by_exchange;
+        const rows = data.by_exchange;          // server order: money desc
+        // Each chart ranked by ITS OWN measure, so both read as a clean
+        // descending staircase. The categories therefore appear in a
+        // different order in each panel -- which is the finding, not a
+        // defect: the counterparty at the top of one is not the one at
+        // the top of the other. Copy before sorting; sort() mutates.
+        const rowsByTxns = [...rows].sort((a, b) => b.txns - a.txns);
         // Wide enough that ~20 categories keep readable labels; the
         // container scrolls rather than compressing them into noise.
         // Per PANEL now, not for the pair. 44px a category keeps the
@@ -381,7 +387,7 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
               Where the money went
             </h3>
             <p className="text-xs mt-1 opacity-60">
-              Left: <b>chain-verified money out</b>. Right: <b>transaction count</b>.
+              Left: <b>chain-verified money out</b>. Right: <b>transaction count</b>. Each ranked by its own measure, so the order differs between them — the biggest counterparty is not the busiest.
               Separate scales on purpose — the busiest counterparty and the
               biggest one are not the same. Each panel scrolls on its own, so one can be held still while the
               other is moved. Hover any column for detail.
@@ -442,7 +448,7 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
                 <div className="overflow-x-auto pb-1">
                 <div style={{ width: chartW }}>
                 <ResponsiveContainer width="100%" height={260}>
-                  <BarChart data={rows} margin={{ top: 6, right: 8, left: 4, bottom: 62 }}>
+                  <BarChart data={rowsByTxns} margin={{ top: 6, right: 8, left: 4, bottom: 62 }}>
                     <CartesianGrid strokeDasharray="0" stroke="rgba(11,44,74,0.08)"
                       vertical={false} />
                     <XAxis dataKey="exchange" tick={tick} height={62}
@@ -457,7 +463,7 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
                       contentStyle={{ fontSize: 11, borderRadius: 8 }} />
                     <Bar dataKey="txns" radius={[4, 4, 0, 0]} maxBarSize={24}
                       isAnimationActive={false}>
-                      {rows.map((e) => (
+                      {rowsByTxns.map((e) => (
                         <Cell key={e.exchange} fill={C_BAR_TXNS}
                           fillOpacity={GENERIC_LABELS.has(e.exchange) ? 0.42 : 1} />
                       ))}
