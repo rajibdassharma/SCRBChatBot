@@ -351,9 +351,30 @@ produced, which arrives complete because the nightly dump now carries
 the summaries.
 
 ```powershell
-mysql -u root -p cyber_fraud_dsr < dbdump_<date>.sql
-# then untar uploads_<date>.tar.gz over backend/uploads/
+mysql -u root -p cyber_fraud_dsr < cyber_fraud_dsr_<date>.sql
 ```
+
+**Uploads are a full plus a chain of increments** since 2026-08-21. A
+nightly full re-archived 19.5 GB to capture ~500 MB of new files, and
+gzip was saving 9% on already-compressed PDFs and JPEGs for 24 minutes
+of CPU. Now: a full every Sunday, plain `tar`, increments the rest of
+the week.
+
+Restore is the full, then EVERY increment after it, in order:
+
+```bash
+cd /opt/cyberfraud/backend      # or backend\ on the laptop
+tar -xf uploads_full_<ts>.tar
+for f in $(ls uploads_inc_*.tar | sort); do tar -xf "$f"; done
+```
+
+Sorting matters — the increments must be applied oldest first. Losing
+one loses only the files first seen in it, because uploads are
+append-only, which is why a weekly full is enough: the chain is never
+longer than seven links.
+
+Force a full at any time with `backup-uploads.sh --full`; it prunes
+every archive it supersedes.
 
 **`relink` is usually NOT needed any more.** It existed because the
 laptop's `upload_ledger` referenced accounts that the restore replaced
