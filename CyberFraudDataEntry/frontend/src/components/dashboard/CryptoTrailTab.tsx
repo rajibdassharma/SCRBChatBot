@@ -365,9 +365,13 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
         const chartW = Math.max(420, rows.length * 44);
 
         const axis = { fontSize: 10, fill: '#52514e' };
+        // `interval` is a prop of <XAxis>, NOT part of `tick`. Setting
+        // it here did nothing, so recharts kept its default of dropping
+        // labels that would collide -- which is why some columns had no
+        // name under them. Every category is nameable here, so the axis
+        // below passes interval={0} and the panel scrolls instead.
         const tick = {
-          angle: -45, textAnchor: 'end' as const, ...axis,
-          dy: 4, interval: 0 as const,
+          angle: -45, textAnchor: 'end' as const, ...axis, dy: 4,
         };
 
         return (
@@ -405,7 +409,7 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
                     <CartesianGrid strokeDasharray="0" stroke="rgba(11,44,74,0.08)"
                       vertical={false} />
                     <XAxis dataKey="exchange" tick={tick} height={62}
-                      stroke="rgba(11,44,74,0.25)" />
+                      interval={0} stroke="rgba(11,44,74,0.25)" />
                     <YAxis tick={axis} stroke="rgba(11,44,74,0.25)"
                       tickFormatter={(v: number) => shortRupees(v)} width={64} />
                     <Tooltip
@@ -442,7 +446,7 @@ export function CryptoTrailTab({ onTrace }: { onTrace?: (fir: string, psId: numb
                     <CartesianGrid strokeDasharray="0" stroke="rgba(11,44,74,0.08)"
                       vertical={false} />
                     <XAxis dataKey="exchange" tick={tick} height={62}
-                      stroke="rgba(11,44,74,0.25)" />
+                      interval={0} stroke="rgba(11,44,74,0.25)" />
                     <YAxis tick={axis} stroke="rgba(11,44,74,0.25)"
                       tickFormatter={(v: number) => formatNumber(v)} width={44} />
                     <Tooltip
