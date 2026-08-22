@@ -1,0 +1,33 @@
+# ============================================================================
+# CyberFraud Data Entry — the EVERYTHING install, for a development or
+# build machine (laptop, DGX Spark, any box where you run the app, parse
+# uploads, and execute the test suite from one virtualenv).
+#
+#     pip install -r requirements-dev.txt
+#
+# WHY THIS COMPOSES INSTEAD OF FLATTENING
+# ---------------------------------------
+# It would be easy to paste all three lists into one file. Don't. The
+# split is load-bearing:
+#
+#   requirements.txt          what PRODUCTION's web app installs, and
+#                             all it installs (deploy/update.sh)
+#   requirements-analysis.txt the parser. Installed on the analysis
+#                             machine only (deploy/install-nightly.sh),
+#                             and it PINS pillow<12 to keep pdfplumber
+#                             from upgrading Pillow underneath reportlab,
+#                             which renders every operator-facing PDF
+#   tests/requirements-test.txt  pytest. Never wanted on a server
+#
+# Flattening this file would make production's dependency set and the
+# analysis pins one editable blob, and the first person to bump
+# pdfplumber would silently change what ~90 users' PDFs render with.
+# Composing keeps each list owned by the thing that needs it.
+#
+# A machine that only serves the app still installs requirements.txt
+# alone. This file is for the machines that do everything.
+# ============================================================================
+
+-r requirements.txt
+-r requirements-analysis.txt
+-r tests/requirements-test.txt
