@@ -45,7 +45,7 @@ step() { printf "\n\033[1;36m=== %s ===\033[0m\n" "$1"; }
 while [ $# -gt 0 ]; do
     case "$1" in
         --yes|-y)  ASSUME_YES=1; shift ;;
-        --help|-h) sed -n '2,30p' "$0"; exit 0 ;;
+        --help|-h) sed -n '2,28p' "$0"; exit 0 ;;
         -*)        die "unknown option: $1  (try --help)" ;;
         *)         NEWPASS="$1"; shift ;;
     esac
