@@ -125,6 +125,73 @@ tail -50 /var/log/mysql/slow.log
 
 ---
 
+## Disaster Recovery — bare machine to running app
+
+`deploy/bootstrap.sh` is the sibling of `update.sh`, and the split is the
+point:
+
+| script | takes you from | to | run |
+|---|---|---|---|
+| `bootstrap.sh` | a bare Ubuntu box | a running app | once per machine |
+| `update.sh` | a running app | a newer running app | every deploy |
+
+`update.sh` assumes MySQL exists, the venv exists, the schema exists, the
+service user exists. On a dead server none of that is true, which is why
+recovery needed its own script rather than a longer runbook.
+
+```bash
+# On the replacement machine:
+git clone https://github.com/rajibdassharma/SCRBChatBot.git /opt/scrb
+cd /opt/scrb/CyberFraudDataEntry
+
+sudo bash deploy/bootstrap.sh --mode prod --yes      --restore-dump    /path/to/cyber_fraud_dsr-<date>.sql.gz      --restore-uploads /path/to/backups/
+```
+
+That is the whole RTO: a clone, one command, and however long the restore
+takes. It installs apt packages, MySQL (with the right collation), Node,
+both venvs, the schema, migrations 001–026, the data, the frontend build,
+the systemd units, nginx, and the nightly timer — then verifies its own
+work and exits non-zero if any check failed.
+
+### Things it deliberately refuses to do
+
+- **Overwrite `backend/.env`.** Re-running it never costs you a secret.
+- **Re-seed a database that already has tables**, unless you pass
+  `--restore-dump` — which is an explicit instruction to replace them.
+- **Restore uploads from an increment alone.** It requires a
+  `uploads_full_<ts>.tar` and applies only the increments NEWER than it,
+  by timestamp. Filename order would not do: `full` sorts before `inc`,
+  so every increment looks newer than every full, including ones from a
+  previous chain.
+
+### The check that matters most
+
+`seed.py` builds `units` and `police_stations` from
+`All District CEN_PS.xlsx` — 44 stations across 36 districts — and falls
+back to `AllDistrictPS.xlsx` if it is missing. The fallback is **1,085
+stations across 40 districts**: every police station in Karnataka, not
+the Cyber Crime ones. It seeds two users per station, so the failure
+looks like a successful run that produced 2,170 accounts.
+
+That file was gitignored until 2026-08-22, meaning a DR from a fresh
+clone would have hit the fallback silently. It is tracked now, and
+step 10 asserts `police_stations` lands between 40 and 60. A recovery is
+the worst possible moment to be reading row counts by eye.
+
+### After a restore
+
+The dump excludes `statement_transactions` by design, so the money
+screens will read zero until the fact table is rebuilt from the PDFs:
+
+```bash
+cd /opt/cyberfraud/backend && venv/bin/python -m analysis.daily
+```
+
+Everything else — summaries, photo hashes, mule links, crypto rows,
+the IFSC directory — comes back with the dump.
+
+---
+
 ## Deploying Updates
 
 **One command. Do not run the individual steps by hand.**

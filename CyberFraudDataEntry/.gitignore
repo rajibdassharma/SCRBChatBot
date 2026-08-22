@@ -26,6 +26,11 @@ backend/Passwords*.csv
 backend/Passwords*.xlsx
 backend/Production_passwords*.xlsx
 backend/Production_passwords*.csv
+# seed.py writes every seeded user's PLAINTEXT password here. It was
+# not ignored until 2026-08-22, which meant one `git add backend/`
+# after a seed would have published ~88 live credentials.
+backend/seed_credentials.csv
+backend/*credentials*.csv
 
 # XSS / pen-test payloads left over from VAPT — not for public repo.
 backend/case_xss.json
@@ -48,6 +53,12 @@ CyberCrimeData/
 *BankAction*.xlsx
 DSR*formate*.xlsx
 All District*.xlsx
+# ...EXCEPT the PS roster, which is not operator data — it is the
+# district/station master list seed.py builds units + police_stations
+# from, and a clone without it seeds from the AllDistrictPS.xlsx
+# fallback: 1,085 stations and 40 districts instead of 44 and 36.
+# That is a silent DR failure, so the roster travels with the code.
+!All District CEN_PS.xlsx
 
 # IFSC directory: import source for the ifsc_branch table, not code.
 # 35 MB that every clone and deploy would carry forever. Downloaded

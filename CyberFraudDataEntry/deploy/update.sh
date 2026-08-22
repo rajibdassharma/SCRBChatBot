@@ -65,7 +65,7 @@ echo "    Done."
 
 # ── 3. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 3. Run additive DB migrations 001 → 004, 006 → 023 (idempotent) ==="
+echo "=== 3. Run additive DB migrations 001 → 004, 006 → 026 (idempotent) ==="
 # Migration 005 (chat_messages) is deliberately skipped until the GPU box
 # is in place for the chat feature — there's no point provisioning an
 # empty audit table for an endpoint the prod app does not yet expose.
@@ -98,9 +98,9 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.021_mule_account_links
     venv/bin/python -m migrations.022_statement_chain_ok
     venv/bin/python -m migrations.023_summary_untested_totals
-venv/bin/python -m migrations.024_crypto_transactions
-venv/bin/python -m migrations.025_ifsc_branch
-venv/bin/python -m migrations.026_widen_summary_money
+    venv/bin/python -m migrations.024_crypto_transactions
+    venv/bin/python -m migrations.025_ifsc_branch
+    venv/bin/python -m migrations.026_widen_summary_money
 "
 
 # ── 4. Build the frontend ────────────────────────────────────────────
