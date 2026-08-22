@@ -53,14 +53,22 @@ CyberCrimeData/
 *BankAction*.xlsx
 DSR*formate*.xlsx
 All District*.xlsx
-# The PS roster (All District CEN_PS.xlsx) stays OUT of git with the
-# rest of the data files. seed.py needs it, so a green-field seed has to
-# be handed the file out of band -- see deploy/bootstrap.sh, which
-# refuses to seed without it rather than falling back to
-# AllDistrictPS.xlsx (1,085 stations / 40 districts instead of 44 / 36,
-# a failure that otherwise looks like a successful run).
-# A DR from a dump does not need it at all: units and police_stations
-# come back inside the dump.
+# ...EXCEPT the PS roster. It is reference master data, not case data --
+# 44 rows of district + station name, all of it public -- and seed.py
+# builds units + police_stations from it. Without it seed.py falls back
+# to AllDistrictPS.xlsx: 1,085 stations across 40 districts instead of
+# 44 across 36, two users each, a failure that looks like a successful
+# run. It travels with the code so a green-field build cannot miss it.
+!All District CEN_PS.xlsx
+
+# The BACKUP DUMPS never go in git, whatever else does. They are the
+# whole database and the whole uploads tree -- victim PII, bank
+# statements, ID photos -- and one of them is 21 GB.
+dbdump*.sql*
+dbdump*.gz
+filedump*.tar*
+filedump*.gz
+*.sql.gz
 
 # IFSC directory: import source for the ifsc_branch table, not code.
 # 35 MB that every clone and deploy would carry forever. Downloaded

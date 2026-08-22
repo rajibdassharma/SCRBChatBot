@@ -173,16 +173,21 @@ stations across 40 districts**: every police station in Karnataka, not
 the Cyber Crime ones. It seeds two users per station, so the failure
 looks like a successful run that produced 2,170 accounts.
 
-The roster is a DATA file and stays out of git, so a fresh clone will
-not have it. `bootstrap.sh` therefore **refuses to seed** without it —
+The roster was gitignored until 2026-08-22, meaning a DR from a fresh
+clone would have hit the fallback silently. It travels with the code
+now — it is 44 rows of district and station name, all public, and it is
+reference data rather than case data. The two backup dumps stay out of
+git permanently; that exclusion is what `dbdump*` / `filedump*` in
+`.gitignore` is for.
+
+`bootstrap.sh` also **refuses to seed** if the roster is somehow absent —
 a hard stop, not a prompt, since `--yes` would wave a prompt through
-unattended. Step 10 also asserts `police_stations` lands between 40 and
+unattended — and step 10 asserts `police_stations` lands between 40 and
 60. A recovery is the worst possible moment to be reading row counts by
 eye.
 
 In practice this rarely bites: a DR restores a dump, and `units` +
-`police_stations` come back inside it. The roster is only needed to
-stand up an instance with no database at all.
+`police_stations` come back inside it.
 
 ### After a restore
 

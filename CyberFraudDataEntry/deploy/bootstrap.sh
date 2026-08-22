@@ -314,17 +314,16 @@ elif [ "$TABLE_COUNT" -gt 5 ]; then
 else
     # seed.py builds units + police_stations from the roster spreadsheet and
     # creates two users per PS with unique random passwords.
-    # The roster is a DATA file and is deliberately not in git, so on a
-    # fresh clone it will not be here. Refusing is the only safe answer:
+    # The roster ships with the repo, so this normally just passes. It is
+    # still a hard stop rather than a prompt if it is missing, because
     # seed.py's fallback is AllDistrictPS.xlsx — 1,085 stations across 40
-    # districts, two users each — which produces ~2,170 accounts and looks
-    # exactly like a successful run. A hard stop, not a prompt, because
-    # --yes would otherwise wave it through unattended.
+    # districts, two users each — which looks exactly like a successful
+    # run, and --yes would wave a prompt through unattended.
     ROSTER="$SOURCE/All District CEN_PS.xlsx"
     [ -f "$ROSTER" ] || die "no database to restore and no roster to seed from.
 
-       'All District CEN_PS.xlsx' is missing from $SOURCE.
-       It is a data file, so it is not in git — copy it in by hand.
+       'All District CEN_PS.xlsx' should have come with the clone but is
+       not in $SOURCE — something removed it.
 
        Without it seed.py silently falls back to AllDistrictPS.xlsx, which
        is every police station in Karnataka (1,085 across 40 districts)
@@ -332,8 +331,7 @@ else
        each. That failure looks like success, so this script will not do it.
 
        Almost always you want --restore-dump instead: units and
-       police_stations come back inside the dump and the roster file is
-       not needed at all."
+       police_stations come back inside the dump."
     ok "roster: All District CEN_PS.xlsx (44 stations / 36 districts)"
     ./venv/bin/python seed.py || die "seed.py failed"
     ok "seeded"
