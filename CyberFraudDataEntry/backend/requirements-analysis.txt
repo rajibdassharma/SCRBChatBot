@@ -1,27 +1,35 @@
 # ============================================================================
 # CyberFraud Data Entry — dependencies for the UPLOAD ANALYSIS jobs only.
 #
-# Install on the machine that PARSES uploaded files (currently the
-# development laptop). Do NOT install on the production server.
+# Install on the machine that PARSES uploaded files. Since 2026-08-17
+# that is the PRODUCTION SERVER — `deploy/install-nightly.sh` installs
+# this file into the same venv as the web app. It is no longer
+# laptop-only.
 #
 #     pip install -r requirements.txt -r requirements-analysis.txt
 #
-# WHY THIS IS A SEPARATE FILE
-# ---------------------------
+# WHY THIS IS STILL A SEPARATE FILE
+# ---------------------------------
 # The web application never imports the `analysis` package — verified
 # across cyber_fraud.py, api/ and models/ — and pdfplumber/xlrd appear
-# nowhere outside analysis/. So the running server has no use for them.
+# nowhere outside analysis/. Nothing a user request touches needs them.
 #
-# Keeping them out of requirements.txt is not tidiness, it is risk
-# removal. pdfplumber 0.11.10+ requires Pillow>=12.2, and Pillow is what
-# reportlab renders every operator-facing PDF with — case files, mule
-# reports, the daily DSR sheets. Adding pdfplumber to production's
-# dependency set would silently upgrade Pillow underneath reportlab for
-# ~90 users, to gain a capability production does not use.
+# The separation is risk containment, and it matters MORE now that both
+# sets live in one venv. pdfplumber 0.11.10+ requires Pillow>=12.2, and
+# Pillow is what reportlab renders every operator-facing PDF with —
+# case files, mule reports, the daily DSR sheets. An unpinned
+# `pip install pdfplumber` would upgrade Pillow underneath reportlab for
+# ~90 users.
 #
-# The analysis results reach production as a ~15 MB SQL export instead
-# (deploy/export-analysis.sh → deploy/import-analysis.sh), so the server
-# gets the findings without ever running the parser.
+# The pins below are what prevent that. Do not relax them without
+# rendering a case-file PDF and a mule report and looking at the output;
+# install-nightly.sh imports both packages after installing and prints
+# their versions for exactly this reason.
+#
+# HISTORY: results used to be exported from the laptop and imported into
+# production as a SQL file. That path is retired — `import-analysis.sh`
+# survives for restoring an old export, and the matching export script
+# is gone.
 # ============================================================================
 
 # PDF statement reading. 0.11.4 pinned deliberately: later releases

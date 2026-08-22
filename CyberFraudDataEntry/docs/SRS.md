@@ -21,6 +21,8 @@ The app is organised around **five modules**, mirrored in the landing-page tile 
 | **DSR** | Daily reporting — the "New FIR" lightweight entry, per-FIR investigation activity log, and 8-portal daily counters |
 | **Admin** | User management, natural-language "Ask the Data" chat |
 
+A sixth surface — **Upload Analysis** — sits inside the All Accounts dashboard rather than on the tile grid. It is super_admin-only, and its figures are not typed by anyone: they are derived from the ID photos and bank statements already attached to All Accounts rows (§3.5).
+
 Everything is scoped to `(unit_id, ps_id)` at the DB level so an operator in Bagalkot never sees Bengaluru City's data.
 
 ---
@@ -49,6 +51,7 @@ Senior Officer at SCRB HQ — cross-PS oversight.
 - Dashboards show all 44 PSes; reports include the full roster
 - Can create + manage users at any PS
 - Only role that can use the "Ask the Data" chat feature
+- Only role that can see the Upload Analysis tabs (§3.5) — they aggregate across every PS, so there is no meaningful PS-scoped version of them
 
 ---
 
@@ -215,7 +218,45 @@ Daily reporting module — three separate entry surfaces (New FIR, Investigation
 - Landscape A4 PDF fits without overflow; downloadable as Excel
 - Defaults to yesterday
 
-### 3.5 Admin
+### 3.5 Upload Analysis (super_admin only)
+
+Eight dashboard tabs that mine the files operators have ALREADY uploaded — ID photos and bank statements attached to All Accounts rows — for patterns no single operator can see. Nothing here is entered by hand. Every figure is derived by a nightly batch job on the server and is rebuildable from the files alone.
+
+**As a super_admin, I want to find one person operating accounts under different names** so I can charge the herder rather than 30 individual mules.
+- Duplicate IDs: SHA-256 for byte-identical photos, plus a 24×24 perceptual hash for re-scans / re-compressions / crops
+- Groups are shown with every account, PS and FIR the photo appears under; cross-PS groups are what matter
+- A near-duplicate is any pair within a fixed Hamming distance — deliberately not "similar-looking", which is unfalsifiable in court
+
+**As a super_admin, I want to see how much money actually moved through the mule accounts of an FIR**, not how much was claimed.
+- Money Trail: per-FIR debit / credit / balance rollups from parsed statements
+- **Only balance-chain-verified rows are summed.** Every row is checked against `previous − debit + credit = balance`; a row that fails, or that arrives without enough context to check, is reported separately and never added to a headline figure
+- Untested and rejected money are shown as their own columns — visible, but never mixed into the verified total
+
+**As a super_admin, I want to know which accounts have no statement yet** so I can chase the bank instead of assuming the data is complete.
+- Coverage: per-PS and per-FIR counts of accounts with / without a parsed statement, and files that parsed to zero rows with the reason
+
+**As a super_admin, I want to see mule-to-mule transfers as a network** so layering structure is visible instead of inferred.
+- Mule Network: nodes are mule accounts, edges are direct transfers found by matching counterparty numbers in statement narrations
+- Layer colour code — Layer 1 red, 2 blue, 3 black, 4 yellow; a halo marks an account appearing in more than one FIR
+- Hovering an edge shows the amount transferred; node size is constant under zoom
+- All Mule Accounts view: every mule account in the state with an All States / Karnataka / Rest of India filter, paginated, downloadable as PDF or Excel
+
+**As a super_admin, I want to see where stolen money left the banking system for crypto.**
+- Crypto Analysis: statement rows whose narration names a crypto exchange or asset, grouped by exchange and by asset
+- Off-ramp direction is classified per counterparty (money out / money in / both) — a payout is not a purchase
+- Evidence view: the underlying narrations, paginated, so every aggregate can be traced to the statement line it came from
+
+**As a super_admin, I want an account that appears in several FIRs surfaced automatically.**
+- Repeat Accounts: accounts recorded by more than one PS or against more than one FIR, paginated server-side
+- Deep Analysis / Graphical Analysis: per-FIR account tables and the same relationships drawn as a graph
+
+**Non-functional expectations for this module:**
+- **No dashboard query touches the 26 M-row fact table.** Every screen reads pre-computed summary tables (~150 MB), so page load stays flat as the statement corpus grows
+- Analysis runs nightly on the server (23:00 IST), before the backup, so each night's backup contains that night's analysis
+- Figures are as of the last nightly run, not live — the tabs are investigative, not transactional
+- Derived tables are rebuildable end-to-end from `backend/uploads/`; losing them costs time, not evidence
+
+### 3.6 Admin
 
 **As a station admin, I want to create + manage unit_user accounts at my PS.**
 - Create user: system generates a random secure password + emails/prints it once
@@ -265,10 +306,13 @@ Daily reporting module — three separate entry surfaces (New FIR, Investigation
 - Async SQLAlchemy 2.0 + asyncmy driver; every DB session is async
 - Eager loading (`selectinload`) on parent-with-children reads — no N+1
 - List views paginate at 50 default, max 500
+- Analysis dashboards read pre-aggregated summary tables, never the 26 M-row fact table; the batch job that fills them runs off-peak under `Nice=10` so it cannot outrank the web app for CPU
 
 ### Reliability
-- Systemd manages the backend (`cyberfraud-backend.service`) and nightly backup timer
-- Nightly `mysqldump` + uploads tarball; retention keeps only the newest snapshot
+- Systemd manages the backend (`cyberfraud-backend.service`) and the nightly chain (`cyberfraud-nightly.timer`)
+- One nightly unit at 23:00 IST runs the upload analysis and THEN the backup, so each backup contains the analysis of the same night. Ordering by dependency rather than by clock is deliberate — two independent timers made every backup carry the previous day's analysis
+- Nightly `mysqldump`, excluding only the rebuildable 27 GB fact table; uploads archived as a weekly full + nightly incremental (`tar --listed-incremental`)
+- Derived analysis tables are recoverable without a backup by re-running the analysis over `backend/uploads/`; operator-entered data is not, and is never excluded from the dump
 - All 44 PSes concurrent-access tested during VAPT
 
 ### Compliance
@@ -280,7 +324,7 @@ Daily reporting module — three separate entry surfaces (New FIR, Investigation
 
 ## 5. Constraints & Assumptions
 
-- **Single-tenant, on-premise** — one Ubuntu VM at SCRB HQ, no multi-tenancy
+- **Single-tenant, on-premise** — one Ubuntu VM at SCRB HQ (2 vCPU / 16 GB / 300 GB), no multi-tenancy. Storage is the constraint that will bind first: the uploads corpus and the derived fact table both grow with every statement received
 - **MySQL 8+** — required for `REGEXP_REPLACE` (migration 018) and other SQL-8 features
 - **Offline-tolerant** — the app runs entirely on KSWAN; only the optional chat feature reaches outside
 - **Fixed roster** — 44 PSes, 36 districts, ~90 users. Adding a district is a manual DB update (seed table)
@@ -293,7 +337,7 @@ Daily reporting module — three separate entry surfaces (New FIR, Investigation
 
 - **REST API** at `/api/v1/*` — JSON in, JSON or file (PDF / XLSX) out. See [Architecture.md](./Architecture.md) for the route map.
 - **MySQL** — every operator query and admin dashboard runs against `cyber_fraud_dsr` on localhost:3306.
-- **File storage** — accused photos + account statements under `backend/uploads/`.
+- **File storage** — accused photos + account statements under `backend/uploads/`. Also the INPUT to the upload-analysis module (§3.5) and therefore the one artefact that must survive: every derived table can be rebuilt from it, and nothing can rebuild it.
 - **LLM API** (optional, super_admin chat only) — external HTTP call from the backend; disabled by default via feature flag.
 
 ---

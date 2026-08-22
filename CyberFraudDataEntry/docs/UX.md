@@ -178,6 +178,11 @@ Pager below with First / Prev / 5 numbered pages / Next / Last.
 - **Exports are never paginated.** The download is the whole dataset,
   not the page being viewed
 - Reset to page 1 when the underlying query changes
+- **Client-side pagination needs the whole result set in the browser,
+  so it needs a cap, and a cap silently truncates.** Once a view can
+  exceed a few thousand rows, page on the SERVER (`limit`/`offset` +
+  a `total`) rather than raising the cap. Repeat Accounts showed the
+  first 1,000 of 6,000 with nothing on screen saying so
 
 ---
 
@@ -338,3 +343,31 @@ compares two populations side by side.
 Exports must honour the on-screen filter. A filtered table with an
 unfiltered download is the kind of mismatch that gets noticed in a
 briefing.
+
+### 10.1 Unverified is a third state, not a small kind of verified
+
+Money parsed out of a bank statement is either checked against the
+running balance, failed that check, or arrived without enough context
+to check at all. Each of the three gets its own column; only the
+verified one is ever summed into a headline.
+
+Rolling "untested" into "verified" is how ₹6.68 quadrillion reached a
+dashboard — a handful of misparsed rows, summed because nothing
+distinguished them from real ones. The reverse (dropping untested
+rows silently) is the same failure wearing a nicer number: it reports
+less money than the case file and no reason why.
+
+So: three columns, the uncertain ones visibly labelled, and a total
+that names what it totals. **"Verified debit" is a different column
+from "debit", and the label must say which one it is.**
+
+### 10.2 Every aggregate needs a path back to its rows
+
+An analysis screen states something a court may eventually have to
+accept. Each aggregate therefore needs a reachable Evidence view — the
+underlying statement narrations, paginated, in the same units as the
+figure above them.
+
+This is not a debugging affordance. It is the difference between "the
+system says ₹40 lakh went to a crypto exchange" and "these 61
+narrations, each naming the exchange, sum to ₹40 lakh."

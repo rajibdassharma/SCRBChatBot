@@ -66,13 +66,16 @@ Old CLAUDE / SPEC docs mention only admin + unit_user — that's out of date. Su
     routes_portals_dsr.py routes_nil.py routes_dashboard.py
     routes_reports.py routes_chat.py
   /auth/security.py             # JWT + bcrypt
-  /models                       # 30 SQLAlchemy models, one per table
+  /models                       # 37 SQLAlchemy models, one per table
   /schemas                      # Pydantic per-domain
   /reports                      # PDF (reportlab) + Excel (openpyxl) renderers
     base.py                     # Shared chrome for PDFs
   /chat/schema_description.py   # LLM schema hint
   /utils/{validators,sanitize}.py
-  /migrations/001..018_*.py     # Numbered, idempotent
+  /migrations/001..026_*.py     # Numbered, idempotent
+  /analysis/                    # Upload analysis — BATCH ONLY.
+                                # The web app never imports this.
+                                # daily.py is the nightly chain.
 
 /frontend                       # React 19 + TS strict + Vite
   /src
@@ -136,7 +139,10 @@ Prereqs: MySQL 8+, Python 3.10+, Node 18+.
 ## Code style
 
 **Backend**
-- One model file per DB table under `models/`
+- One model file per DB table under `models/` — **36 of the 37 tables.**
+  The exception is `mule_account_link`, which is read by raw `text()` in
+  `routes_dashboard.py` and has no ORM model. Adding one is fine; just
+  don't assume it is already there
 - One Pydantic domain file per feature under `schemas/`
 - One route module per feature under `api/`
 - All endpoints `async def` — use `await` with `AsyncSession`
@@ -177,7 +183,7 @@ Prereqs: MySQL 8+, Python 3.10+, Node 18+.
 
 ## Database
 
-30 tables. Full list in [Architecture.md](./Architecture.md#4-database-schema). Highlights:
+37 tables. Full list in [Architecture.md](./Architecture.md#4-database-schema). Highlights:
 
 - `users`, `units`, `police_stations`, `revoked_tokens` — identity
 - `cases` + 10 child tables — Cases & Petitions
@@ -185,12 +191,45 @@ Prereqs: MySQL 8+, Python 3.10+, Node 18+.
 - `all_accounts` + `all_account_mule_herders` — All Accounts
 - `dsr_entries`, `mule_entries`, `daily_work_entries`, `portals_dsr_entries`, `daily_nil_declarations` — DSR
 - `chat_messages` — Admin (audit trail)
+- `statement_transactions`, `upload_ledger`, `account_statement_summary`,
+  `id_photo_hashes`, `mule_account_link`, `crypto_txn`, `ifsc_branch` —
+  upload analysis (migrations 019–026). **All derived and rebuildable**
 
 Key UNIQUEs: `(unit_id, ps_id, fir_no)` on cases, `acknowledgement_no`+`fir_no` on mule_reports, `(unit_id, ps_id, report_date)` on dsr, `(unit_id, ps_id, fir_no, report_date)` on daily_work, `(unit_id, ps_id, serial_no)` on all_accounts.
 
 All child tables CASCADE with parent. All `cases.id` FKs must match `VARCHAR(36) utf8mb4_unicode_ci` exactly (MySQL 3780 lurks — see [database.md](./database.md)).
 
 ---
+
+## Upload analysis (`backend/analysis/`)
+
+A batch subsystem, not part of the web app. **Nothing under `api/` imports
+it, and no endpoint reads `statement_transactions`** — dashboards read the
+~150 MB of derived summary tables, which is what keeps page loads
+independent of a 27 GB fact table.
+
+Runs on the SERVER nightly since 2026-08-17: `cyberfraud-nightly.timer`
+at 23:00 IST → `analysis.daily --skip-relink` → `backup-all.sh`. The
+laptop no longer analyses anything; it restores what the server produced.
+
+Things that have bitten, and will again:
+
+- **Never edit `analysis/*` while a run is in flight.** Windows spawns
+  re-import the module per worker; on Linux `daily.py` launches each step
+  as a subprocess. Either way a mid-run edit can take the job down
+- **The ledger and the fact table must stay on the same machine.**
+  `upload_ledger` records what has been parsed; shipping it without
+  `statement_transactions` produces a server that skips every file it
+  believes is done, and summaries describing rows that are not there
+- **`--recent` only ADDS rows.** After changing a detector pattern, run
+  the full rebuild or withdrawn matches stay on screen
+- **Tuning constants were calibrated on a 32 GB laptop.** `RESERVE_GB`,
+  `RESERVE_CORES`, `IDLE_TIMEOUT_S` all have env overrides set in
+  `deploy/cyberfraud-nightly.service`, and every one of them was wrong
+  for the 2-vCPU server until measured there
+- **Only chain-verified rows may be summed.** `chain_ok` is 1 passed /
+  0 rejected / −1 untested. Collapsing untested into passed is what let
+  ₹6.68 quadrillion onto a dashboard
 
 ## Environment variables
 

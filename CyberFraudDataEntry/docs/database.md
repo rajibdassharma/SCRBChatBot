@@ -194,11 +194,19 @@ Likely sources of drift:
 | 016 | `016_add_crime_type_expansion.py` | Widens `cases.crime_type` from `VARCHAR(30)` to `VARCHAR(200)` for the 31-entry KSP Cyber Crime classification; adds `crime_type_other VARCHAR(500) NULL` for the "Others → free text" case |
 | 017 | `017_add_victim_and_accused_accounts.py` | Creates `victim_accounts` + `accused_accounts` tables (multi-account rows on DSR → New FIR). Both CASCADE from `cases.id` |
 | 018 | `018_rename_cen_to_cyber_in_ps_names.py` | Data migration: `UPDATE police_stations SET station_name = REGEXP_REPLACE(station_name, '\bCEN\b', 'Cyber')`. Word-boundary regex protects "BANGALORE CENTRAL JAIL" etc. Requires MySQL 8+ (`REGEXP_REPLACE`) |
+| 019 | `019_add_upload_analysis_tables.py` | Creates `upload_ledger`, `statement_transactions`, `id_photo_hashes` — the upload-analysis subsystem. `statement_transactions` is the fact table and the only large object in the schema |
+| 020 | `020_account_statement_summary.py` | Creates `account_statement_summary` at (account, channel) grain — the cache every money screen reads. Aggregating the fact table per request took ~6.8 s on 190k rows and the table is now 26M |
+| 021 | `021_mule_account_links.py` | Creates `mule_account_link` — direct mule → mule transfers, built by matching counterparty numbers in parsed narrations. Not a SQL join: the normalisation cannot be expressed as one |
+| 022 | `022_statement_chain_ok.py` | Adds `statement_transactions.chain_ok TINYINT` — the PER-ROW balance-chain verdict. 1 passed / 0 rejected / −1 untested. The file-level verdict it replaced could not distinguish a bad row from a bad file |
+| 023 | `023_summary_untested_totals.py` | Adds `untested_txns` / `untested_debit` / `untested_credit` to the summary. Untested money was previously indistinguishable from verified money |
+| 024 | `024_crypto_transactions.py` | Creates `crypto_txn` — statement rows whose narration names a crypto exchange or asset. FK to `all_accounts` with CASCADE |
+| 025 | `025_ifsc_branch.py` | Creates `ifsc_branch` — the IFSC → bank/branch/district/state directory. MASTER DATA from outside; the server has no route to the internet to re-fetch it, so it must stay in the backup |
+| 026 | `026_widen_summary_money.py` | Widens the summary's six money columns `DECIMAL(18,2)` → `DECIMAL(24,2)`. The raw totals include chain-REJECTED rows, and 439 of those carry misparsed amounts up to ₹1,000 trillion — enough of them in one account overflowed the column and killed the nightly run |
 
 All migrations are idempotent — safe to re-run. Order matters only when
 later migrations depend on earlier columns / tables existing.
 
-**Deploy:** `deploy/update.sh` runs `001 → 004, 006 → 018` in sequence
+**Deploy:** `deploy/update.sh` runs `001 → 004, 006 → 026` in sequence
 (005 is deliberately skipped on prod until the chat GPU box is in place
 — no point provisioning an audit table for a feature the app doesn't
 expose). Every migration has a self-verify block in step 8 that aborts
@@ -836,10 +844,37 @@ UNIQUE `(unit_id, ps_id, nil_date)` — `uq_nil_unit_ps_date`.
 
 ---
 
-**Total: 30 tables.** Ownership chain summary:
+### 10.7 Upload analysis subsystem (7 tables)
+
+Added by migrations 019–026. **These are DERIVED**, not operator-entered:
+every row is a pure function of the files under `backend/uploads/` and
+can be rebuilt by re-running `analysis.daily`. That property is what
+lets `backup-db.sh` exclude the largest of them.
+
+| Table | Rows (2026-08-22) | Purpose |
+|---|---|---|
+| `statement_transactions` | 26.5 M / 27.6 GB | Parsed bank-statement rows. `chain_ok` carries the per-row balance verdict. **The only table excluded from the nightly dump** — it is rebuildable from the PDFs, and including it would make the dump ~600× larger |
+| `upload_ledger` | 33 k | Which uploaded file has been processed, at which `parser_version`, and why it yielded nothing. Drives the incremental parse: a file listed here as settled is skipped |
+| `account_statement_summary` | 108 k | (account, channel) rollup. Every money figure on every dashboard reads this, never the fact table |
+| `id_photo_hashes` | 21 k | SHA-256 + 24×24 perceptual hash per ID photo. Powers Duplicate IDs |
+| `mule_account_link` | 2.4 k | Direct mule → mule transfers, with a `cross_fir` flag. **The one table with no ORM model** — `routes_dashboard.py` reads it through raw `text()` |
+| `crypto_txn` | 984 | Statement rows naming a crypto exchange or asset |
+| `ifsc_branch` | 183 k | IFSC → bank / branch / district / state. Master data from outside |
+
+**The ledger and the fact table must live on the same machine.** Shipping
+`upload_ledger` without `statement_transactions` gives a server that
+CLAIMS work it never did — the parser skips every file the ledger calls
+settled, and the summaries then describe rows that are not there. This
+happened on 2026-08-18 and cost a 25 GB re-seed; see Operations.md.
+
+---
+
+**Total: 37 tables.** Ownership chain summary:
 
 - `cases` → 10 direct children (arrests → 2 grandchildren; petitions, lien_accounts, unfreeze_details, refunds, victims (1:1), victim_accounts, accused_accounts)
 - `mule_reports` → 6 direct children (all txn tables)
 - `all_accounts` → 1 direct child (all_account_mule_herders)
 - Every operator-created row carries `submitted_by`
 - Every CASCADE deletion is intentional; no orphan protection anywhere
+- The 7 analysis tables hang off `all_accounts` (or off nothing) and are
+  rebuildable; the other 30 are operator-entered and are not

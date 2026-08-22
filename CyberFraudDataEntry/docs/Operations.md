@@ -7,6 +7,12 @@
 | MySQL | 3306 (localhost) | systemd | Yes |
 | Gunicorn (Backend) | 8000 (localhost) | systemd | Yes |
 | Nginx (Reverse Proxy) | 80/443 | systemd | Yes |
+| `cyberfraud-nightly` | — | systemd timer, 23:00 IST | Yes (oneshot) |
+
+`cyberfraud-nightly` is the only scheduled job: it runs the upload
+analysis and then the backup, in that order. `cyberfraud-backup.timer`
+and `cyberfraud-analysis.timer` are retired — if `list-timers` shows
+either of them enabled, something re-installed an old unit.
 
 ---
 
@@ -137,7 +143,7 @@ script then re-pulls internally to be safe. Idempotent end-to-end
 |---|---|---|
 | 1 | `git pull` on `/opt/scrb` | Fetches the latest source. Prints the new HEAD. |
 | 2 | `pip install -r requirements.txt` | Upgrades Python deps under `cyberfraud` user's venv. Catches new packages added since last deploy. |
-| 3 | Run additive DB migrations 001 → 004, 006 → 018 | Copies `migrations/` into runtime, runs each in order under the app's venv. Every migration is idempotent (INFORMATION_SCHEMA guards); no-op if already applied. **005 is deliberately skipped** (chat feature not enabled in prod). |
+| 3 | Run additive DB migrations 001 → 004, 006 → 026 | Copies `migrations/` into runtime, runs each in order under the app's venv. Every migration is idempotent (INFORMATION_SCHEMA guards); no-op if already applied. **005 is deliberately skipped** (chat feature not enabled in prod). |
 | 4 | `npm install && npm run build` (frontend) | Runs `tsc -b && vite build` — TS strict must pass or the deploy aborts here. |
 | 5 | Sync backend + `frontend/dist/` into runtime | `sudo cp -r … /opt/cyberfraud/`, then chown to `cyberfraud:cyberfraud`. |
 | 6 | Restart `cyberfraud-backend.service` | `systemctl restart` + 2 s sleep + `is-active` check. |
@@ -161,30 +167,51 @@ hand before a risky deploy if you want the extra insurance snapshot.
 
 ## Database Backup
 
-Nightly automated backups via **systemd timer** — no cron. Two
-scripts run under the `cyberfraud` user:
+Nightly automated backups via **systemd timer** — no cron, and since
+2026-08-17 the backup is the SECOND half of one nightly chain rather
+than a timer of its own (see
+[Upload Analysis](#upload-analysis-f1--f2)).
 
 - **`deploy/backup-db.sh`** — `mysqldump --single-transaction` of
   `cyber_fraud_dsr`, gzipped, timestamped, into a backup dir.
   **Retention: keeps only the newest snapshot** (name-exclusion prune,
   deterministic — no `-mtime` guesswork).
-  **Excludes the five derived analysis tables** — see
-  [Upload Analysis](#upload-analysis-f1--f2) for why. Measured
-  2026-08-07: source tables are 30 MB, the derived ones 11.4 GB, so
-  including them would make the nightly dump **374× larger** for data
-  that can be rebuilt from the uploaded files at any time.
-- **`deploy/backup-uploads.sh`** — tarball of `backend/uploads/`,
-  same retention.
 
-Both are invoked together by `cyberfraud-backup.service`, triggered
-nightly by `cyberfraud-backup.timer`. Installed once via
-`deploy/install-backup.sh`.
+  **Excludes exactly one table: `statement_transactions`.** It is
+  26.5 M rows / 27.6 GB and is a pure function of the PDFs under
+  `backend/uploads/` — including it would make the dump roughly 600×
+  larger for something `analysis.daily` can rebuild.
+
+  It excluded *five* analysis tables until 2026-08-17. That was wrong
+  once the analysis moved to the server: the summaries, photo hashes,
+  mule links and crypto rows are now GENERATED on production, so the
+  dump was the only copy that could have existed and it was skipping
+  them. `ifsc_branch` is worse than derived — it is master data from
+  outside, and the server has no route to the internet to re-fetch it.
+  **The test for excluding a table is not "is it big" but "can this
+  machine rebuild it".**
+
+- **`deploy/backup-uploads.sh`** — `backend/uploads/`, as a **weekly
+  full plus nightly incrementals** (`tar --listed-incremental`),
+  uncompressed. A nightly full re-archived 19.5 GB to capture ~500 MB
+  of new files; gzip returned 9% on a tree of already-compressed PDFs
+  and JPEGs for 24 minutes of CPU. **A restore needs the full and every
+  increment after it, applied in order** — an increment alone is not a
+  backup.
+
+Both are invoked by `backup-all.sh`, which `nightly-all.sh` runs after
+the analysis. Installed once via `deploy/install-nightly.sh`, which
+also disables the retired `cyberfraud-backup.timer` and
+`cyberfraud-analysis.timer`.
 
 ### Check the timer is running
 
 ```bash
-sudo systemctl status cyberfraud-backup.timer
-sudo systemctl list-timers cyberfraud-backup.timer
+sudo systemctl status cyberfraud-nightly.timer
+sudo systemctl list-timers cyberfraud-nightly.timer
+
+# Last night's result -- both exit codes are printed by nightly-all.sh
+sudo journalctl -u cyberfraud-nightly.service --since yesterday --no-pager | tail -30
 ```
 
 ### Run a backup by hand (before a risky deploy)
@@ -223,48 +250,65 @@ Derives findings from the files officers upload: duplicate ID photos
 
 ### The rule that governs everything below
 
-**These tables are DERIVED and are never backed up.** They can be
-rebuilt from the uploaded files at any time, so production and the dev
-laptop each maintain their own copy rather than shipping 15 GB across
-the network every night.
+**These tables are DERIVED**: every row is a pure function of the files
+under `backend/uploads/`, and `analysis.daily` can rebuild any of them
+from scratch. That property is what licenses everything else in this
+section — the incremental parse, the exclusion from the dump, the
+willingness to drop and rebuild after a parser change.
 
-| table | what it holds |
-|---|---|
-| `upload_ledger` | one row per processed file; drives incremental runs |
-| `statement_transactions` | parsed transaction lines (~15 GB) |
-| `account_statement_summary` | per (account, channel) rollup the dashboards read |
-| `id_photo_hashes` | SHA-256 + perceptual hash per ID photo |
-| `mule_account_link` | direct mule → mule transfers |
+| table | rows (2026-08-22) | what it holds |
+|---|---|---|
+| `upload_ledger` | 33 k | one row per processed file; drives incremental runs |
+| `statement_transactions` | 26.5 M / 27.6 GB | parsed transaction lines. The fact table |
+| `account_statement_summary` | 108 k | per (account, channel) rollup the dashboards read |
+| `id_photo_hashes` | 21 k | SHA-256 + perceptual hash per ID photo |
+| `mule_account_link` | 2.4 k | direct mule → mule transfers |
+| `crypto_txn` | 984 | statement rows naming a crypto exchange or asset |
+| `ifsc_branch` | 183 k | IFSC → bank / branch / district / state |
 
-### Where the analysis actually runs — the laptop, not the server
+"Derived" is not the same as "disposable", and the distinction decides
+what gets backed up. Only `statement_transactions` is excluded from the
+dump — the rest are small, and two of them are not really rebuildable in
+practice: `ifsc_branch` is master data from outside and the server has
+no route to the internet to re-fetch it. See
+[Database Backup](#database-backup).
 
-**Production does not parse anything.** It receives finished results as
-a ~7 MB SQL import. This is deliberate, and it is a storage decision:
+### Where the analysis runs — the SERVER, since 2026-08-17
 
-| | |
-|---|---|
-| production disk | 50 GB total |
-| `uploads/` | 15 GB |
-| uploads backup tarball | ~15 GB (PDFs/JPEGs barely compress) |
-| OS, MySQL, node_modules | ~10 GB |
-| **`statement_transactions`** | **12.5 GB** |
+Production parses everything now. It runs nightly, unattended, in
+`cyberfraud-nightly.service`. The laptop analyses nothing; it restores
+what the server produced.
 
-The fact table alone would not fit. It is also unnecessary: **no API
-route reads it** — `routes_dashboard.py` imports `StatementTransaction`
-but never queries it, and every dashboard reads
-`account_statement_summary` (27 MB) instead. So the laptop keeps the
-12.5 GB and ships the 76 MB that the dashboards actually use.
+This reverses the original design, and the reasons it reversed are
+worth keeping:
 
-The second reason is dependency isolation. `pdfplumber` 0.11.10+
-requires `Pillow>=12.2`, and Pillow is what **reportlab** renders every
-operator-facing PDF with. Installing the parser on production would
-upgrade Pillow underneath reportlab for ~90 users to gain a capability
-production does not use. Hence `requirements-analysis.txt`, which the
-server never installs.
+- **The storage argument expired.** The old plan assumed a 50 GB disk
+  that a 12.5 GB fact table would not fit alongside a 15 GB uploads
+  tree. The server has 300 GB and 16 GB of RAM
+- **The hand-off was the actual cost.** Analysing on the laptop meant
+  exporting, copying, and importing every night, and every step was a
+  chance for the two machines to disagree about what had been processed
+- **The ledger and the fact table must stay together.** Shipping
+  `upload_ledger` without `statement_transactions` produces a machine
+  that SKIPS every file the ledger calls settled while its summaries
+  describe rows that do not exist. This happened on 2026-08-18 and cost
+  a 25 GB re-seed. If you ever move the analysis again, move both or
+  neither
 
-**Revisit this when production storage grows.** `deploy/install-analysis.sh`
-plus `cyberfraud-analysis.{service,timer}` are written and ready to move
-the job onto the server; they are deliberately NOT installed today.
+The dependency-isolation argument still holds, and it now matters more
+rather than less. `pdfplumber` 0.11.10+ requires `Pillow>=12.2`, and
+Pillow is what **reportlab** renders every operator-facing PDF with.
+The server installs `requirements-analysis.txt` into the SAME venv as
+the web app, so the two are no longer separated by machine — they are
+separated only by the pins in that file (`pdfplumber==0.11.4`,
+`pillow>=10,<12`). **Do not relax those pins without rendering a case
+file and a mule report and looking at the output.**
+`install-nightly.sh` imports both packages after installing and prints
+their versions for this reason.
+
+`cyberfraud-analysis.{service,timer}` and `install-analysis.sh` in
+`deploy/` are the superseded standalone-analysis units. Retired
+2026-08-17; kept only because they document the intermediate step.
 
 ### Daily cycle — the whole procedure
 
@@ -427,7 +471,12 @@ the daily routine**. They are kept for one case: rebuilding production's
 derived tables from the laptop after a corruption, when re-parsing on
 the server would take longer than shipping a copy.
 
-### Why the import cannot disturb the running app
+### Historical: why the import could not disturb the running app
+
+> Retired 2026-08-17. Production computes its own analysis now, so
+> nothing is imported nightly. `import-analysis.sh` remains for
+> restoring an old export, and the pattern below is worth keeping —
+> it is how to replace a table's contents under live readers.
 
 `import-analysis.sh` loads into **staging** tables first, then does one
 transaction per table: `DELETE` + `INSERT…SELECT`. InnoDB's MVCC means
@@ -443,33 +492,46 @@ all. An inner join silently discarded 47% of that denominator and made
 coverage look better than it was — caught by rehearsing the import
 against a scratch database before it ever touched production.
 
-### Dev laptop — after the 11:00 restore
+### Dev laptop — after the restore
 
-The midnight dump and uploads tarball contain everything through
-midnight, so the dev copy is up to a day behind production. Statement
-Coverage shows that honestly as "not yet parsed".
+The nightly chain finishes well after 23:00, so a restore taken the
+next morning is up to a day behind production. Statement Coverage
+shows that honestly as "not yet parsed".
+
+**The laptop no longer analyses anything as a matter of routine.** The
+server does the parsing and the dump carries the results, so a restore
+is usually complete on arrival. Run `analysis.daily` on the laptop only
+when you are testing a parser change against real files — and remember
+the dump does NOT contain `statement_transactions`, so the laptop's
+fact table is whatever it parsed locally.
 
 ```bash
-# 1. restore the dump (~30 MB) and extract the uploads tarball
-# 2. then:
+# 1. restore the dump and extract the uploads archives.
+#    Uploads are a WEEKLY FULL + nightly increments -- extract the full
+#    first, then every increment after it, IN ORDER. An increment on
+#    its own is not a restore.
+# 2. only if you are testing a parser change:
 cd CyberFraudDataEntry/backend
 python -m analysis.daily
 ```
 
 `analysis.daily` runs, stopping at the first failure:
 
-1. migrations 019–024 — idempotent, no-ops once applied
+1. migrations 019–026 — idempotent, no-ops once applied
 2. **relink** — repairs account links the restore broke (~2 s)
 3. **parse_statements** — incremental, only files not in the ledger
-4. **hash_id_photos** — full re-hash, ~8 min
+4. **hash_id_photos** — incremental; photos already fingerprinted at
+   the current version are loaded, not re-read. Near-duplicate
+   clustering is banded (LSH), not all-pairs — the exact same output as
+   brute force, with a self-test that proves it on random inputs
 5. **build_links** — rebuilds the mule → mule network (~35 s). After
    parsing, never before: links are found by matching counterparty
    numbers in freshly parsed rows against known mule accounts, so
    running it first would miss everything new.
 6. **build_crypto --recent 48** — finds statement rows naming a crypto
    exchange or asset. After parsing, for the same reason as build_links.
-   `--recent`, not a full rebuild: a rebuild rescans all 21M narrations
-   and takes ~7 min on its own.
+   `--recent`, not a full rebuild: a rebuild rescans all 26.5 M
+   narrations.
 
    **`--recent` only ADDS rows.** After changing a pattern in
    `analysis/parsers/crypto.py`, run a full `python -m
@@ -595,13 +657,21 @@ Tunable via the environment when the defaults do not fit the machine:
 
 | variable | default | when to change it |
 |---|---|---|
-| `CFDSR_ANALYSIS_RESERVE_GB` | 10.0 | Lower on a headless server. 10 GB describes a 32 GB laptop whose Intel Arc iGPU draws video memory from system RAM; a 4 vCPU / 8 GB VM needs ~2.0, or every plan comes out negative and pins the job at one worker. |
+| `CFDSR_ANALYSIS_RESERVE_GB` | 10.0 | **Server: 4.0.** 10 GB describes a 32 GB laptop whose Intel Arc iGPU draws video memory from system RAM. |
+| `CFDSR_ANALYSIS_RESERVE_CORES` | 2 | **Server: 0.** Cores held back from the pool. The default protects a laptop somebody is using; the server has 2 vCPUs and no interactive user, so `cores − 2` came out at 0, clamped to ONE worker, and the parse ran serially at 12.5 s/file. `Nice=10` + `CPUSchedulingPolicy=batch` are what keep the web app ahead in the run queue — the right mechanism on a server. |
+| `CFDSR_ANALYSIS_IDLE_TIMEOUT_S` | 300 | **Server: 1800.** How long `governed_map` waits with NOTHING completing before deciding the pool is dead. 300 s was fine where no file came close to it; on the server it fired 36 times in one night and abandoned 432 of 1,152 files. |
+| `CFDSR_ANALYSIS_TIMEOUT` | 6h | Budget for the analysis inside `nightly-all.sh`, well under the unit's 10 h `TimeoutStartSec`. An overrun ends the analysis and still leaves time to back up. |
 | `CFDSR_ANALYSIS_LOW_WATER_GB` | 0.6 × reserve | Derived on purpose. A low-water mark above the reserve makes the job wait for memory it was never going to be given. |
-| `CFDSR_ANALYSIS_CHUNK_TIMEOUT_S` | 60.0 | Raise only if legitimate files exceed a minute each. |
+
+**Every one of these defaults was calibrated on the 32 GB laptop and
+every one of them was wrong for the server.** The pattern is worth
+remembering before adding another: a constant tuned on the machine you
+develop on is a guess about the machine you deploy to. The server's
+values live in `deploy/cyberfraud-nightly.service`, not in code.
 
 ### The systemd timers run the RUNTIME copy of deploy/
 
-`cyberfraud-backup.service` executes `/opt/cyberfraud/deploy/backup-all.sh`
+`cyberfraud-nightly.service` executes `/opt/cyberfraud/deploy/nightly-all.sh`
 — the copy under the runtime, not the one in the git clone. Until
 2026-08-12 `update.sh` synced `backend/` and `frontend/` but not
 `deploy/`, so every fix to a backup script sat in `/opt/scrb` doing
@@ -612,11 +682,21 @@ What that cost: `backup-db.sh` gained `--ignore-table` for the five
 derived analysis tables, the server never received it, and once
 `import-analysis.sh` began populating those tables on production the
 nightly dump grew from **18 MB to 46 MB**. Nothing failed. The backups
-simply carried ~76 MB of data that exists to be rebuilt.
+simply carried data that existed to be rebuilt.
 
-`update.sh` now syncs `deploy/` too, and step 8 asserts the runtime
-`backup-db.sh` still excludes all five tables — the drift was silent,
-so it needed a check rather than a convention.
+Then the same list became wrong in the opposite direction. Once the
+analysis moved onto the server those five tables stopped being a
+duplicate of the laptop's copy and became **the only copy**, so
+excluding them meant a restore would come back with empty dashboards.
+
+`update.sh` now syncs `deploy/` too, and step 8 asserts the exclusion
+list in BOTH directions: `statement_transactions` must be excluded, and
+the other six must NOT be. A one-directional check would have passed
+happily through the second mistake. It reads the `DERIVED_TABLES` array
+specifically rather than grepping the file, because every one of those
+names also appears in that script's comments explaining why it is or is
+not excluded — a file-wide grep would match the explanation and report
+success whatever the array said.
 
 **When editing anything under `deploy/`, the change reaches the server
 only after `update.sh` runs.** A `git pull` alone updates the clone, not
@@ -640,8 +720,11 @@ pool. **This resets when MySQL restarts** — put `innodb_buffer_pool_size=4G`
 in `my.ini` (Windows) or `/etc/mysql/mysql.conf.d/mysqld.cnf` (server)
 to keep it.
 
-On the 8 GB production VM size this against what MySQL can actually
-have alongside gunicorn — 1–2 GB, not 4.
+The production VM has 16 GB, not the 8 GB this document used to claim.
+4 GB of buffer pool leaves roughly 3 GB for the OS and gunicorn and the
+rest for the nightly workers. Raised live on 2026-08-19 —
+`innodb_buffer_pool_size` is dynamic in MySQL 8, so it takes effect with
+no restart and no dropped connections.
 
 ### Editing `backend/analysis/` while a run is in flight
 
@@ -714,3 +797,8 @@ The snapshot is for people / tools that can't read Python.
 | Backend logs | `/var/log/cyberfraud/` |
 | Nginx logs | `/var/log/nginx/` |
 | Database backups | `/opt/cyberfraud/backups/` |
+| Nightly chain script | `/opt/cyberfraud/deploy/nightly-all.sh` |
+| Nightly unit + timer | `/etc/systemd/system/cyberfraud-nightly.{service,timer}` |
+| Analysis package | `/opt/cyberfraud/backend/analysis/` |
+| Analysis venv (shared with the app) | `/opt/cyberfraud/backend/venv/` |
+| Uploaded files (the ONLY irreplaceable artefact) | `/opt/cyberfraud/backend/uploads/` |

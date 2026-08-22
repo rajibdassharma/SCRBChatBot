@@ -68,8 +68,8 @@
 
 | Resource | Minimum | Recommended | Notes |
 |----------|---------|-------------|-------|
-| CPU | 4 vCPU | 8 vCPU | Handles 44 CCPS stations concurrently |
-| RAM | 8 GB | 16 GB | MySQL buffer pool + Python workers |
+| CPU | 4 vCPU | 8 vCPU | Handles 44 CCPS stations concurrently. **The live server has 2** — fine for the web app, but the nightly analysis had to be told so explicitly (`CFDSR_ANALYSIS_RESERVE_CORES=0`), or its governor reserves 2 cores for the OS and plans a single worker |
+| RAM | 8 GB | 16 GB | MySQL buffer pool + Python workers. **Live: 16 GB**, `innodb_buffer_pool_size=4G` |
 | Storage | 50 GB SSD | 100 GB SSD | Database growth, logs, backups |
 | OS | Ubuntu 22.04 LTS | Ubuntu 24.04 LTS | Or RHEL 8/9 per NIC policy |
 | Network | 1 Gbps | 1 Gbps | Internal KSWAN connectivity |
@@ -353,8 +353,10 @@ Three service units live in the repo under `deploy/`:
 | File | Purpose |
 |---|---|
 | `deploy/cyberfraud-backend.service` | Gunicorn+Uvicorn worker for the backend |
-| `deploy/cyberfraud-backup.service` | One-shot backup unit (runs `backup-db.sh` + `backup-uploads.sh`) |
-| `deploy/cyberfraud-backup.timer` | Nightly systemd timer that fires the backup service |
+| `deploy/cyberfraud-nightly.service` | One-shot nightly chain (runs `nightly-all.sh`: analysis, then `backup-all.sh`) |
+| `deploy/cyberfraud-nightly.timer` | Fires the nightly chain at 23:00 IST |
+| `deploy/cyberfraud-backup.{service,timer}` | **Retired 2026-08-17.** Backup-only, 00:00 IST. Superseded by the chain above; `install-nightly.sh` disables it |
+| `deploy/cyberfraud-analysis.{service,timer}` | **Retired 2026-08-17.** Analysis-only, 01:00 IST. Same |
 
 Install once:
 
@@ -369,11 +371,9 @@ sudo cp /opt/scrb/CyberFraudDataEntry/deploy/cyberfraud-backend.service \
 sudo systemctl daemon-reload
 sudo systemctl enable --now cyberfraud-backend
 
-# Backup timer (see deploy/install-backup.sh for the fully-automated version)
-sudo cp /opt/scrb/CyberFraudDataEntry/deploy/cyberfraud-backup.service /etc/systemd/system/
-sudo cp /opt/scrb/CyberFraudDataEntry/deploy/cyberfraud-backup.timer   /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now cyberfraud-backup.timer
+# Nightly analysis + backup chain -- installs the units, syncs the scripts
+# into the runtime, and DISABLES the two timers it replaces.
+sudo bash /opt/scrb/CyberFraudDataEntry/deploy/install-nightly.sh
 ```
 
 `update.sh` does NOT re-copy these files on every deploy. If you
@@ -507,12 +507,22 @@ Health check cron:
 
 Nightly automated via **systemd timer** — no cron.
 
-- `cyberfraud-backup.timer` (nightly) → `cyberfraud-backup.service` →
-  runs `deploy/backup-db.sh` + `deploy/backup-uploads.sh` as the
-  `cyberfraud` user
-- Both scripts: gzipped mysqldump / uploads tarball, timestamped,
-  **retention keeps only the newest snapshot** (name-exclusion prune)
-- Install once via `deploy/install-backup.sh`
+- `cyberfraud-nightly.timer` (23:00 IST) → `cyberfraud-nightly.service`
+  → `nightly-all.sh`, which runs the upload analysis and THEN
+  `backup-all.sh` (`backup-db.sh` + `backup-uploads.sh`), as root
+- The order is the whole point: the backup captures the analysis of the
+  SAME night. The two independent timers this replaced ordered by clock
+  instead of by dependency, so every backup carried yesterday's analysis
+- `backup-db.sh`: gzipped mysqldump, timestamped, **excluding only
+  `statement_transactions`** (27.6 GB, rebuildable from the PDFs).
+  Retention keeps the newest snapshot
+- `backup-uploads.sh`: **weekly full + nightly incremental** via
+  `tar --listed-incremental`, uncompressed. A restore needs the full
+  plus every increment after it, applied in order. Nightly fulls
+  re-archived 19.5 GB to capture ~500 MB of new files; gzip returned 9%
+  on already-compressed PDFs for 24 minutes of CPU
+- Install once via `deploy/install-nightly.sh` (which retires
+  `install-backup.sh`'s timer)
 
 See [Operations.md § Database Backup](./Operations.md#database-backup)
 for the check / restore commands. A schema-only snapshot for audit /
@@ -532,7 +542,7 @@ cd /opt/scrb && git pull && sudo bash CyberFraudDataEntry/deploy/update.sh
 
 1. `git pull` (again, in case the script itself changed)
 2. Upgrade pip deps under the `cyberfraud` venv
-3. Run additive DB migrations 001 → 004, 006 → 018 (idempotent; 005 skipped until chat lands)
+3. Run additive DB migrations 001 → 004, 006 → 026 (idempotent; 005 skipped until chat lands)
 4. Frontend `npm install && npm run build` — TS strict must pass
 5. rsync backend + `frontend/dist/` into `/opt/cyberfraud/`
 6. `systemctl restart cyberfraud-backend`

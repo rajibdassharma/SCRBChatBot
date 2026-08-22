@@ -117,7 +117,22 @@ CyberFraudDataEntry/
 │   ├── utils/
 │   │   ├── validators.py       # amount cap, FIR No format
 │   │   └── sanitize.py         # strip_html for all free text
-│   └── migrations/             # 001–018, idempotent, hand-rolled
+│   ├── migrations/             # 001–026, idempotent, hand-rolled
+│   └── analysis/               # Upload analysis — BATCH ONLY, never
+│       │                       # imported by the web app
+│       ├── daily.py            # The nightly chain: migrations → parse →
+│       │                       # photos → links → crypto → verify
+│       ├── runtime.py          # Memory/CPU governor — workers are
+│       │                       # budgeted from FREE RAM, not core count
+│       ├── parse_statements.py # PDF/XLSX → statement_transactions
+│       ├── hash_id_photos.py   # SHA-256 + perceptual hash, banded
+│       ├── build_links.py      # mule → mule transfer graph
+│       ├── build_crypto.py     # narration → crypto_txn
+│       ├── summary.py          # Rebuild / verify the money cache
+│       ├── relink.py           # Repair account links after a restore
+│       ├── progress.py         # Read-only progress probe
+│       ├── load_ifsc.py        # Load the IFSC directory
+│       └── parsers/            # Per-format readers + crypto detector
 ├── frontend/                   # React 19 SPA (Vite + TypeScript strict)
 │   ├── src/
 │   │   ├── App.tsx             # React Router routes
@@ -220,7 +235,20 @@ MySQL 8+ / InnoDB / `utf8mb4` / `utf8mb4_unicode_ci`. `cases.id` is `VARCHAR(36)
 |---|---|
 | `chat_messages` | Every question + answer + SQL for audit (migration 005) |
 
-Total: ~30 tables. Every child table CASCADE-deletes with its parent; every operator-created row carries `submitted_by`.
+### Upload analysis (7 tables, migrations 019–026)
+
+`statement_transactions` (26.5 M rows / 27.6 GB), `upload_ledger`,
+`account_statement_summary`, `id_photo_hashes`, `mule_account_link`,
+`crypto_txn`, `ifsc_branch`.
+
+**All DERIVED.** Every row is a function of the files under
+`backend/uploads/` and is rebuildable by re-running `analysis.daily`.
+**No web endpoint reads `statement_transactions`** — dashboards read the
+~150 MB of summary tables instead, which is what keeps page loads
+independent of a fact table heading for 200 GB. See
+[database.md](./database.md#107-upload-analysis-subsystem-7-tables).
+
+Total: 37 tables. Every child table CASCADE-deletes with its parent; every operator-created row carries `submitted_by`.
 
 ### Migration discipline
 
@@ -228,7 +256,7 @@ Total: ~30 tables. Every child table CASCADE-deletes with its parent; every oper
 - Each migration guards changes with INFORMATION_SCHEMA checks — safe to re-run
 - Applied automatically by `deploy/update.sh` on every deploy
 - No `reset_db.py` anymore — post-VAPT the app is production and dropping tables is banned. Every schema change goes via a new migration
-- 001–018 currently in the pipeline (001–004 initial + fixups; 005 chat; 006 financial; 007 NIL; 008 ps_id on DSR; 009–012 All Accounts; 013 Portals DSR; 014 Daily Work; 015 sections; 016 crime types; 017 victim + accused accounts; 018 CEN → Cyber rename)
+- 001–026 currently in the pipeline (001–004 initial + fixups; 005 chat; 006 financial; 007 NIL; 008 ps_id on DSR; 009–012 All Accounts; 013 Portals DSR; 014 Daily Work; 015 sections; 016 crime types; 017 victim + accused accounts; 018 CEN → Cyber rename; 019–023 upload analysis; 024 crypto; 025 IFSC directory; 026 widen summary money)
 
 ---
 
@@ -322,6 +350,20 @@ Everything under `/api/v1/`. Each route module scopes writes to `(unit_id, ps_id
 | GET | `/dashboard/accounts-summary?date=` | Accounts KPIs |
 | GET | `/dashboard/accounts-comparison?date=` | Per-PS accounts (with yesterday col) |
 | GET | `/dashboard/accounts-daily-growth` | Line chart data |
+| GET | `/dashboard/accounts-geo?scope=` | Map view — state / district / reporting |
+| GET | `/dashboard/accounts-fir-trace?fir_no=&ps_id=` | Graphical Analysis — one FIR across 5 source tables, plus statement-derived flows and crypto |
+| GET | `/dashboard/repeat-accounts` | Accounts appearing in 2+ FIRs |
+| GET | `/dashboard/duplicate-ids` | F1 — accounts sharing a byte-identical ID photo |
+| GET | `/dashboard/money-trail` | F2 — parsed-statement money movement |
+| GET | `/dashboard/statement-coverage` | F2 — which accounts still have no usable statement |
+| GET | `/dashboard/mule-network` | F4 — direct mule → mule transfers |
+| GET | `/dashboard/mule-accounts` | The full mule roll, connected or not |
+| GET | `/dashboard/crypto-trail` | Crypto Analysis — venues, accounts, evidence |
+
+**All super_admin only.** Each crosses police-station boundaries, so a
+station-scoped view would be meaningless and would breach the VAPT
+7.7/7.8 scoping rule. They read the derived analysis tables, never
+`statement_transactions`.
 
 ### Reports (admin+)
 
@@ -440,17 +482,27 @@ Every daily report has a `.json` sibling that returns the same aggregated rows t
 
 ### Production stack
 
-- Ubuntu 24.04 VM (4 vCPU / 8 GB / 50 GB SSD)
+- Ubuntu 24.04 VM (**2 vCPU / 16 GB / 300 GB**)
+  - Corrected 2026-08-19. The earlier "4 vCPU / 8 GB / 50 GB" was wrong
+    in every field, and the CPU figure mattered: the analysis governor
+    holds back two cores for the OS, so on a 2-vCPU box it planned
+    exactly ONE worker and the nightly parse ran serially at 12.5 s/file
+    against 1.15 s/file on a laptop. `CFDSR_ANALYSIS_RESERVE_CORES=0` in
+    the unit file is the fix, not a bigger number elsewhere
+  - `innodb_buffer_pool_size` raised 128 MB → 4 GB (2026-08-19)
 - MySQL 8.0 on localhost
 - Backend: Gunicorn (4 workers) + Uvicorn, systemd unit `cyberfraud-backend`
 - Nginx TLS termination (self-signed), reverse proxy `/api/*` and `/health`, static `dist/`
-- Nightly systemd timer runs `deploy/backup-db.sh` + `backup-uploads.sh`
+- `cyberfraud-nightly.timer` at 23:00 IST runs the analysis-then-backup
+  chain (see Backups below). It REPLACED `cyberfraud-backup.timer` and
+  `cyberfraud-analysis.timer`; leaving either enabled would fire a
+  backup between the chain's two halves
 
 ### update.sh flow
 
 1. `git pull` on `/opt/scrb`
 2. pip install
-3. Run migrations 001 → 018 (idempotent — each is a no-op when already applied)
+3. Run migrations 001 → 004, 006 → 026 (idempotent — each is a no-op when already applied; 005 is skipped on prod)
 4. `npm install && npm run build` (frontend)
 5. rsync backend + frontend/dist into runtime
 6. Restart `cyberfraud-backend.service`
@@ -461,9 +513,31 @@ Self-verify aborts the deploy if any check fails, so you don't ship a half-migra
 
 ### Backups
 
-- `backup-db.sh` → nightly mysqldump, keeps only the newest snapshot (retention pruned by name-exclusion)
-- `backup-uploads.sh` → nightly tarball, same retention
-- Both scripts are safe to run mid-day (the mysqldump uses `--single-transaction`)
+**One nightly chain, not two timers.** `cyberfraud-nightly.timer` fires
+at 23:00 IST and runs `nightly-all.sh`:
+
+1. `analysis.daily --skip-relink` — the full analysis pass
+2. `backup-all.sh` — `backup-db.sh` then `backup-uploads.sh`
+
+The ORDER is the point. It was previously two timers an hour apart —
+backup at 00:00, analysis at 01:00 — which orders by clock rather than
+by dependency, so every backup carried the PREVIOUS day's analysis.
+Sequential in one unit is what makes "the backup contains today's
+analysis" true rather than usually true.
+
+The analysis gets its own 6 h budget inside a 10 h unit timeout, so an
+overrun ends the analysis and still leaves time to back up. The backup
+runs even when the analysis fails; the unit still exits non-zero.
+
+- `backup-db.sh` → nightly mysqldump. Excludes **only**
+  `statement_transactions` (27.6 GB, rebuildable from the PDFs). The
+  summaries ARE included — production generates them now, so they are
+  the only copy that exists
+- `backup-uploads.sh` → **weekly full + nightly incremental** via
+  `tar --listed-incremental`, uncompressed. A nightly full re-archived
+  19.5 GB to capture ~500 MB of new files, and gzip saves 9% on
+  already-compressed PDFs and JPEGs for 24 minutes of CPU
+- Both are safe to run mid-day (the mysqldump uses `--single-transaction`)
 
 ---
 

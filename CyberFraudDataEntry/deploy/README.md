@@ -9,9 +9,12 @@ Canonical copies of all the server-side config files used in production.
 | File | Purpose | Server path |
 |---|---|---|
 | `cyberfraud-backend.service` | systemd unit for the FastAPI backend | `/etc/systemd/system/cyberfraud-backend.service` |
-| `cyberfraud-backup.service` | systemd unit for the nightly MySQL backup | `/etc/systemd/system/cyberfraud-backup.service` |
-| `cyberfraud-backup.timer` | timer that fires the backup at 02:00 IST daily | `/etc/systemd/system/cyberfraud-backup.timer` |
-| `backup-db.sh` | the backup script itself | `/opt/cyberfraud/deploy/backup-db.sh` |
+| `cyberfraud-nightly.service` | **CURRENT.** One-shot unit: analysis, then backup | `/etc/systemd/system/cyberfraud-nightly.service` |
+| `cyberfraud-nightly.timer` | fires the chain at 23:00 IST daily | `/etc/systemd/system/cyberfraud-nightly.timer` |
+| `nightly-all.sh` | the chain: `analysis.daily` then `backup-all.sh` | `/opt/cyberfraud/deploy/nightly-all.sh` |
+| `backup-db.sh` | mysqldump, excluding the rebuildable fact table | `/opt/cyberfraud/deploy/backup-db.sh` |
+| `backup-uploads.sh` | weekly full + nightly incremental tar | `/opt/cyberfraud/deploy/backup-uploads.sh` |
+| `cyberfraud-backup.{service,timer}` | **RETIRED 2026-08-17** — backup without the analysis in front of it | disabled by `install-nightly.sh` |
 | `nginx.conf` | nginx site config: TLS, security headers, API proxy | `/etc/nginx/sites-available/cyberfraud` |
 
 ## One-time server install
@@ -40,7 +43,18 @@ sudo systemctl enable mysql nginx cyberfraud-backend
 systemctl is-enabled mysql nginx cyberfraud-backend    # all should print: enabled
 ```
 
-## One-time backup install (cron-style, runs nightly at 02:00 IST)
+## One-time install of the nightly chain (runs at 23:00 IST)
+
+> **Use `install-nightly.sh`.** The `install-backup.sh` walkthrough
+> below is kept for reference to the pieces it installs, but the timer
+> it enables is retired — running it re-enables a backup that fires
+> without the analysis in front of it.
+
+```bash
+sudo bash /opt/cyberfraud/deploy/install-nightly.sh
+```
+
+### Superseded: backup-only install
 
 One command — wraps git pull, deploy sync, dir setup, systemd install,
 enable timer, and a manual smoke test:

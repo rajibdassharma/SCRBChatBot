@@ -142,7 +142,7 @@ cd /opt/scrb && git pull && sudo bash CyberFraudDataEntry/deploy/update.sh
 ```
 
 `deploy/update.sh` handles everything — pip deps, migrations 001 →
-018 (idempotent), frontend build, sync into runtime, backend restart,
+026 (idempotent), frontend build, sync into runtime, backend restart,
 nginx `/uploads/` proxy fixup, and a self-verify panel that aborts on
 the first schema / route regression. See
 [Operations.md § Deploying Updates](./Operations.md#deploying-updates)
