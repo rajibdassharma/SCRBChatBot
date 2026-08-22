@@ -21,6 +21,9 @@
 #      half-failure.
 #
 # USAGE
+#   # environment only -- you load the data yourself afterwards
+#   sudo bash deploy/bootstrap.sh --mode prod --skip-data
+#
 #   sudo bash deploy/bootstrap.sh --mode dev
 #   sudo bash deploy/bootstrap.sh --mode prod \
 #        --restore-dump    /path/to/cyber_fraud_dsr-2026-08-22.sql.gz \
@@ -37,6 +40,11 @@
 #                         then every increment newer than it, in order.
 #   --skip-apt            Don't touch apt. For re-runs and air-gapped boxes.
 #   --skip-frontend       Don't build the frontend.
+#   --skip-data           Build the environment and stop at the data: no
+#                         seed, no restore, and no migrations against an
+#                         empty schema. For when you load the dump and the
+#                         uploads yourself. Re-run afterwards with
+#                         --skip-apt to apply migrations and verify.
 #   --yes                 No prompts. Implied when stdin is not a terminal.
 #   --help
 #
@@ -63,6 +71,7 @@ RESTORE_DUMP=""
 RESTORE_UPLOADS=""
 SKIP_APT=0
 SKIP_FRONTEND=0
+SKIP_DATA=0
 ASSUME_YES=0
 [ -t 0 ] || ASSUME_YES=1
 
@@ -90,8 +99,9 @@ while [ $# -gt 0 ]; do
         --restore-uploads)  RESTORE_UPLOADS="${2:-}"; shift 2 ;;
         --skip-apt)         SKIP_APT=1; shift ;;
         --skip-frontend)    SKIP_FRONTEND=1; shift ;;
+        --skip-data)        SKIP_DATA=1; shift ;;
         --yes|-y)           ASSUME_YES=1; shift ;;
-        --help|-h)          sed -n '2,46p' "$0"; exit 0 ;;
+        --help|-h)          sed -n '2,53p' "$0"; exit 0 ;;
         *)                  die "unknown argument: $1  (try --help)" ;;
     esac
 done
@@ -141,7 +151,11 @@ if [ "$ASSUME_YES" -eq 0 ]; then
     echo "  mode          $MODE"
     echo "  source        $SOURCE"
     echo "  buffer pool   ${POOL_GB}G"
-    echo "  restore dump  ${RESTORE_DUMP:-<none — will seed a fresh roster>}"
+    if [ "$SKIP_DATA" -eq 1 ]; then
+        echo "  data          --skip-data: none loaded, you restore it yourself"
+    else
+        echo "  restore dump  ${RESTORE_DUMP:-<none — will seed a fresh roster>}"
+    fi
     echo
     read -r -p "  Proceed? [y/N] " reply
     case "$reply" in y|Y) ;; *) die "aborted" ;; esac
@@ -298,7 +312,10 @@ step "5. Schema and data"
 TABLE_COUNT=$(mysql "${MYSQL_ARGS[@]}" -N -B -e \
     "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='cyber_fraud_dsr';" 2>/dev/null || echo 0)
 
-if [ -n "$RESTORE_DUMP" ]; then
+if [ "$SKIP_DATA" -eq 1 ] && [ -z "$RESTORE_DUMP" ]; then
+    ok "--skip-data: database left empty for you to restore into"
+    note "cyber_fraud_dsr exists with utf8mb4_unicode_ci; nothing else touched"
+elif [ -n "$RESTORE_DUMP" ]; then
     [ -f "$RESTORE_DUMP" ] || die "--restore-dump: no such file: $RESTORE_DUMP"
     note "restoring $(basename "$RESTORE_DUMP") — this replaces the current contents"
     if [ "${RESTORE_DUMP##*.}" = gz ]; then
@@ -349,8 +366,23 @@ step "6. Migrations"
 # Always, in order, whichever path got us here: they are idempotent, so on a
 # restored dump they confirm rather than change. 005 (chat_messages) is dev
 # only — production does not expose the chat endpoint.
-MIGS=$(find migrations -maxdepth 1 -name '[0-9][0-9][0-9]_*.py' -printf '%f\n' 2>/dev/null | sort)
-[ -n "$MIGS" ] || die "no migrations found in $BACKEND/migrations/"
+#
+# Gated on what is actually IN the database, not on which flags were passed.
+# Migrations 001+ ALTER tables that a dump or seed.py creates; against a
+# genuinely empty schema the first one fails, which on an unattended run
+# reads as the whole bootstrap having failed.
+NOW_TABLES=$(mysql "${MYSQL_ARGS[@]}" -N -B -e \
+    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='cyber_fraud_dsr';" 2>/dev/null || echo 0)
+if [ "$NOW_TABLES" -lt 5 ]; then
+    MIGS=""
+    warn "database is empty — skipping migrations"
+    note "They alter tables that a restore or a seed creates, so there is"
+    note "nothing to alter yet. Load your data, then re-run:"
+    note "  sudo bash $0 --mode $MODE --skip-apt --skip-frontend"
+else
+    MIGS=$(find migrations -maxdepth 1 -name '[0-9][0-9][0-9]_*.py' -printf '%f\n' 2>/dev/null | sort)
+    [ -n "$MIGS" ] || die "no migrations found in $BACKEND/migrations/"
+fi
 APPLIED=0
 while IFS= read -r f; do
     [ -n "$f" ] || continue
@@ -363,13 +395,15 @@ while IFS= read -r f; do
        cd $BACKEND && venv/bin/python -m migrations.$m"
     APPLIED=$((APPLIED + 1))
 done <<< "$MIGS"
-ok "$APPLIED migrations applied (idempotent — no-ops when already present)"
+[ -n "$MIGS" ] && ok "$APPLIED migrations applied (idempotent — no-ops when already present)"
 
 # ============================================================================
 step "7. Uploads"
 # ============================================================================
 mkdir -p "$BACKEND/uploads"
-if [ -n "$RESTORE_UPLOADS" ] && [ -f "$RESTORE_UPLOADS" ]; then
+if [ "$SKIP_DATA" -eq 1 ] && [ -z "$RESTORE_UPLOADS" ]; then
+    ok "--skip-data: uploads/ created and left empty for you to fill"
+elif [ -n "$RESTORE_UPLOADS" ] && [ -f "$RESTORE_UPLOADS" ]; then
     # A SINGLE archive — a hand-made tarball rather than the server's
     # full+increment chain. tar -xf auto-detects gzip, so .tar and .tar.gz
     # are both fine.
@@ -533,19 +567,30 @@ step "10. Self-verify"
 
 verify "database reachable" mysql "${MYSQL_ARGS[@]}" -e "USE cyber_fraud_dsr"
 
+# With --skip-data the schema checks below are meaningless: the database is
+# empty ON PURPOSE. Printing eight FAILs for that trains you to ignore FAIL
+# lines, which is the opposite of what a DR self-check is for.
+EMPTY_BY_DESIGN=0
+[ "$SKIP_DATA" -eq 1 ] && [ "${NOW_TABLES:-0}" -lt 5 ] && EMPTY_BY_DESIGN=1
+
 TABLES=$(mysql "${MYSQL_ARGS[@]}" -N -B -e \
     "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='cyber_fraud_dsr';")
-if [ "$TABLES" -ge 36 ]; then
+if [ "$EMPTY_BY_DESIGN" -eq 1 ]; then
+    warn "schema checks skipped — database empty by request (--skip-data)"
+elif [ "$TABLES" -ge 36 ]; then
     pass_ "$TABLES tables present"
 else
     fail_ "only $TABLES tables — expected 36 or more"
 fi
 
+if [ "$EMPTY_BY_DESIGN" -eq 0 ]; then
 for T in units police_stations users cases all_accounts upload_ledger crypto_txn ifsc_branch; do
     verify "table $T" mysql "${MYSQL_ARGS[@]}" cyber_fraud_dsr -e "SELECT 1 FROM $T LIMIT 1"
 done
+fi
 
 # The check that catches the silent wrong-roster failure.
+if [ "$EMPTY_BY_DESIGN" -eq 0 ]; then
 PS_COUNT=$(mysql "${MYSQL_ARGS[@]}" -N -B cyber_fraud_dsr \
     -e "SELECT COUNT(*) FROM police_stations;" 2>/dev/null || echo 0)
 if [ "$PS_COUNT" -ge 40 ] && [ "$PS_COUNT" -le 60 ]; then
@@ -556,6 +601,9 @@ else
     printf "  \033[33mWARN\033[0m  %s\n" "police_stations = $PS_COUNT — empty or partial"
 fi
 
+fi
+
+if [ "$EMPTY_BY_DESIGN" -eq 0 ]; then
 verify "migration 023 landed (summary untested columns)" \
     mysql "${MYSQL_ARGS[@]}" -N -B -e \
     "SELECT 1 FROM information_schema.columns
@@ -566,6 +614,8 @@ verify "migration 026 landed (summary money widened)" \
     "SELECT 1 FROM information_schema.columns
      WHERE table_schema='cyber_fraud_dsr' AND table_name='account_statement_summary'
        AND column_name='total_debit' AND numeric_precision >= 24;"
+
+fi
 
 verify "backend imports" env -C "$BACKEND" "$BACKEND/venv/bin/python" -c "import cyber_fraud"
 verify ".env is chmod 600" bash -c "[ \"\$(stat -c %a '$BACKEND/.env')\" = 600 ]"
