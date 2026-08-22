@@ -363,8 +363,41 @@ ok "$APPLIED migrations applied (idempotent — no-ops when already present)"
 step "7. Uploads"
 # ============================================================================
 mkdir -p "$BACKEND/uploads"
-if [ -n "$RESTORE_UPLOADS" ]; then
-    [ -d "$RESTORE_UPLOADS" ] || die "--restore-uploads: no such directory: $RESTORE_UPLOADS"
+if [ -n "$RESTORE_UPLOADS" ] && [ -f "$RESTORE_UPLOADS" ]; then
+    # A SINGLE archive — a hand-made tarball rather than the server's
+    # full+increment chain. tar -xf auto-detects gzip, so .tar and .tar.gz
+    # are both fine.
+    #
+    # Where it extracts to depends on how it was rolled up, and getting
+    # this wrong silently produces uploads/uploads/... which every path in
+    # the database then misses. Peek at the first member instead of
+    # guessing: an archive of "uploads/" unpacks into backend/, an archive
+    # of the directory's CONTENTS unpacks into backend/uploads/.
+    FIRST=$(tar -tf "$RESTORE_UPLOADS" 2>/dev/null | head -1)
+    [ -n "$FIRST" ] || die "cannot read $RESTORE_UPLOADS — truncated download?
+       Check it with: tar -tzf '$RESTORE_UPLOADS' | head"
+    case "$FIRST" in
+        backend/*|./backend/*) DEST="$SOURCE"         ; note "archive contains backend/ — unpacking into the source root" ;;
+        uploads/*|./uploads/*) DEST="$BACKEND"        ; note "archive contains uploads/ — unpacking into backend/" ;;
+        *)                     DEST="$BACKEND/uploads"; note "archive contains bare files — unpacking into backend/uploads/" ;;
+    esac
+    note "archive: $(basename "$RESTORE_UPLOADS") ($(du -h "$RESTORE_UPLOADS" | cut -f1))"
+    tar -xf "$RESTORE_UPLOADS" -C "$DEST" || die "extracting $RESTORE_UPLOADS failed"
+
+    # A misplaced extraction is silent: the files exist, but every path
+    # stored in the database points somewhere else, so the app shows
+    # "no statement" for everything. Check the shape before moving on.
+    for BAD in "$BACKEND/uploads/uploads" "$BACKEND/uploads/backend"; do
+        [ -d "$BAD" ] && warn "unexpected nesting at $BAD — the archive layout was
+        not what the peek suggested. Move its contents up one level, or the
+        app will find none of these files."
+    done
+    UP_FILES=$(find "$BACKEND/uploads" -type f | wc -l)
+    [ "$UP_FILES" -eq 0 ] && warn "0 files under backend/uploads/ after extracting — check the layout"
+    ok "uploads restored: $UP_FILES files"
+
+elif [ -n "$RESTORE_UPLOADS" ]; then
+    [ -d "$RESTORE_UPLOADS" ] || die "--restore-uploads: no such file or directory: $RESTORE_UPLOADS"
 
     # Names are uploads_full_<ts>.tar / uploads_inc_<ts>.tar, where <ts> is
     # %Y-%m-%d_%H%M%S — see deploy/backup-uploads.sh. Underscores, not
