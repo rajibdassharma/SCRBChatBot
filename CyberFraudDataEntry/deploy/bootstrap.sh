@@ -33,7 +33,10 @@
 #   --mode dev|prod       dev: localhost, you start the servers yourself.
 #                         prod: gunicorn + nginx + systemd, brought up now.
 #                         Default: dev
-#   --db-password PASS    MySQL root password. Generated if omitted.
+#   --db-password PASS    MySQL root password to SET on a fresh MySQL, or
+#                         the existing one. Prompted for if omitted. Never
+#                         generated: on a recovery you want the credential
+#                         you already know, not one you have to go and find.
 #   --restore-dump FILE   .sql or .sql.gz to load INSTEAD of seeding.
 #   --restore-uploads DIR Directory holding uploads_full_<ts>.tar and any
 #                         uploads_inc_<ts>.tar. The newest full is chosen,
@@ -151,6 +154,7 @@ if [ "$ASSUME_YES" -eq 0 ]; then
     echo "  mode          $MODE"
     echo "  source        $SOURCE"
     echo "  buffer pool   ${POOL_GB}G"
+    echo "  db password   ${DB_PASSWORD:+<given>}${DB_PASSWORD:-<will prompt if MySQL is fresh>}"
     if [ "$SKIP_DATA" -eq 1 ]; then
         echo "  data          --skip-data: none loaded, you restore it yourself"
     else
@@ -206,10 +210,42 @@ systemctl enable --now mysql >/dev/null 2>&1 || die "mysql failed to start"
 # assuming — this script has to be re-runnable.
 if mysql --protocol=socket -uroot -e "SELECT 1" >/dev/null 2>&1; then
     ok "root reachable over the unix socket (fresh install)"
+    # ASK, never invent.
+    #
+    # This used to generate a random 24-character password. That is the
+    # better default for a server nobody logs into, and the wrong one for
+    # a script whose whole job is recovery: it hands you a secret you then
+    # have to find, keep two .env copies agreeing on, and reconcile with
+    # the password you actually wanted. Debugging a credential is not what
+    # anyone should be doing while restoring a dead server.
+    #
+    # So: --db-password for unattended runs, a prompt otherwise, and a
+    # hard stop if it can neither ask nor be told.
     if [ -z "$DB_PASSWORD" ]; then
-        DB_PASSWORD="$(openssl rand -base64 24 | tr -dc 'A-Za-z0-9' | head -c 24)"
-        note "generated a MySQL root password; it goes into backend/.env"
+        if [ "$ASSUME_YES" -eq 1 ] || [ ! -t 0 ]; then
+            die "no MySQL root password to set.
+       This is a fresh MySQL, so one has to be chosen, and an unattended
+       run cannot ask. Pass it explicitly:
+
+           --db-password 'YourPassword'"
+        fi
+        echo
+        note "MySQL has no root password yet. Choose one — it goes into"
+        note "backend/.env and everything reads it from there."
+        while [ -z "$DB_PASSWORD" ]; do
+            printf "  MySQL root password: "; read -rs DB_PASSWORD; printf "\n"
+            printf "  Again to confirm:    "; read -rs _CONFIRM;    printf "\n"
+            if [ "$DB_PASSWORD" != "$_CONFIRM" ]; then
+                warn "the two entries did not match — try again"; DB_PASSWORD=""
+            elif [ "${#DB_PASSWORD}" -lt 8 ]; then
+                warn "at least 8 characters please"; DB_PASSWORD=""
+            fi
+        done
+        unset _CONFIRM
     fi
+    case "$DB_PASSWORD" in
+        *\'*|*\\*) die "avoid single quotes and backslashes in the DB password" ;;
+    esac
     # mysql_native_password first: widest compatibility for asyncmy over
     # TCP. Ubuntu 24.04 ships MySQL 8.0 where it still exists; if a newer
     # server has dropped the plugin, fall back to the default.
@@ -616,6 +652,27 @@ verify "migration 026 landed (summary money widened)" \
        AND column_name='total_debit' AND numeric_precision >= 24;"
 
 fi
+
+# THE credential check. Everything else here proves the script's own
+# connection works; this proves the one the APP will use works, read from
+# .env exactly as the app reads it — no shell sourcing, which mangles a
+# password containing # or &.
+#
+# Its absence is why a wrong password surfaced later as "Access denied"
+# during a restore instead of here, as one red line, at the point where
+# it was still cheap to fix.
+for F in "$BACKEND/.env" "$RUNTIME/backend/.env"; do
+    [ -f "$F" ] || continue
+    ENVPASS=$(grep -m1 '^DB_PASSWORD=' "$F" | cut -d= -f2-)
+    if MYSQL_PWD="$ENVPASS" mysql -uroot -e "USE cyber_fraud_dsr" >/dev/null 2>&1; then
+        pass_ "DB_PASSWORD in $F authenticates"
+    else
+        fail_ "DB_PASSWORD in $F does NOT authenticate against MySQL — the app
+        cannot reach its own database. Fix with:
+            sudo bash $SCRIPT_DIR/set-db-password.sh 'YourPassword'"
+    fi
+done
+unset ENVPASS
 
 verify "backend imports" env -C "$BACKEND" "$BACKEND/venv/bin/python" -c "import cyber_fraud"
 verify ".env is chmod 600" bash -c "[ \"\$(stat -c %a '$BACKEND/.env')\" = 600 ]"
