@@ -314,19 +314,27 @@ elif [ "$TABLE_COUNT" -gt 5 ]; then
 else
     # seed.py builds units + police_stations from the roster spreadsheet and
     # creates two users per PS with unique random passwords.
+    # The roster is a DATA file and is deliberately not in git, so on a
+    # fresh clone it will not be here. Refusing is the only safe answer:
+    # seed.py's fallback is AllDistrictPS.xlsx — 1,085 stations across 40
+    # districts, two users each — which produces ~2,170 accounts and looks
+    # exactly like a successful run. A hard stop, not a prompt, because
+    # --yes would otherwise wave it through unattended.
     ROSTER="$SOURCE/All District CEN_PS.xlsx"
-    if [ -f "$ROSTER" ]; then
-        ok "roster: All District CEN_PS.xlsx (44 stations / 36 districts)"
-    else
-        warn "All District CEN_PS.xlsx is MISSING. seed.py falls back to"
-        warn "AllDistrictPS.xlsx — 1,085 stations across 40 districts, and"
-        warn "two users each. That is the wrong roster and it fails SILENTLY."
-        warn "Restore the file first, or pass --restore-dump instead."
-        if [ "$ASSUME_YES" -eq 0 ]; then
-            read -r -p "  Seed from the fallback anyway? [y/N] " reply
-            case "$reply" in y|Y) ;; *) die "aborted" ;; esac
-        fi
-    fi
+    [ -f "$ROSTER" ] || die "no database to restore and no roster to seed from.
+
+       'All District CEN_PS.xlsx' is missing from $SOURCE.
+       It is a data file, so it is not in git — copy it in by hand.
+
+       Without it seed.py silently falls back to AllDistrictPS.xlsx, which
+       is every police station in Karnataka (1,085 across 40 districts)
+       rather than the 44 Cyber Crime stations, and seeds two users for
+       each. That failure looks like success, so this script will not do it.
+
+       Almost always you want --restore-dump instead: units and
+       police_stations come back inside the dump and the roster file is
+       not needed at all."
+    ok "roster: All District CEN_PS.xlsx (44 stations / 36 districts)"
     ./venv/bin/python seed.py || die "seed.py failed"
     ok "seeded"
     if [ -f seed_credentials.csv ]; then

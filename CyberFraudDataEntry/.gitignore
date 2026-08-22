@@ -53,12 +53,14 @@ CyberCrimeData/
 *BankAction*.xlsx
 DSR*formate*.xlsx
 All District*.xlsx
-# ...EXCEPT the PS roster, which is not operator data — it is the
-# district/station master list seed.py builds units + police_stations
-# from, and a clone without it seeds from the AllDistrictPS.xlsx
-# fallback: 1,085 stations and 40 districts instead of 44 and 36.
-# That is a silent DR failure, so the roster travels with the code.
-!All District CEN_PS.xlsx
+# The PS roster (All District CEN_PS.xlsx) stays OUT of git with the
+# rest of the data files. seed.py needs it, so a green-field seed has to
+# be handed the file out of band -- see deploy/bootstrap.sh, which
+# refuses to seed without it rather than falling back to
+# AllDistrictPS.xlsx (1,085 stations / 40 districts instead of 44 / 36,
+# a failure that otherwise looks like a successful run).
+# A DR from a dump does not need it at all: units and police_stations
+# come back inside the dump.
 
 # IFSC directory: import source for the ifsc_branch table, not code.
 # 35 MB that every clone and deploy would carry forever. Downloaded
