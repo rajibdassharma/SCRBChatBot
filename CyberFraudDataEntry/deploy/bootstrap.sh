@@ -524,7 +524,22 @@ if [ -n "$RESTORE_DUMP" ]; then
     else
         MYSQL_PWD="$DB_PASSWORD" mysql -uroot "$DB_NAME" < "$RESTORE_DUMP" || die "restore failed"
     fi
-    ok "dump restored — $(TABLES_NOW) tables"
+    # CHECK the count, do not merely print it. `gunzip -c f | mysql db`
+    # succeeds with zero tables when the dump is empty or truncated: both
+    # commands exit 0, so pipefail sees nothing wrong, and the run went on
+    # to report DEPLOY COMPLETE over an empty database.
+    RESTORED=$(TABLES_NOW)
+    [ "$RESTORED" -ge 10 ] || die "the restore produced $RESTORED tables — it did not work.
+
+       $RESTORE_DUMP
+       $(ls -la "$RESTORE_DUMP" 2>/dev/null | awk '{print $5" bytes, "$6" "$7" "$8}')
+
+       A dump that is empty or truncated pipes cleanly into mysql and
+       exits 0, so nothing upstream catches it. Check the file itself:
+           gunzip -t '$RESTORE_DUMP' && echo gzip-ok
+           gunzip -c '$RESTORE_DUMP' | head -5
+           gunzip -c '$RESTORE_DUMP' | grep -c 'CREATE TABLE'"
+    ok "dump restored — $RESTORED tables"
     # Say what this DOES mean, not just what is absent. The earlier
     # wording ("rebuild with analysis.daily") read as an instruction and
     # sent someone off to run a job that is unnecessary here and
@@ -723,6 +738,11 @@ done
 
 T=$(TABLES_NOW)
 if [ "$T" -ge 36 ]; then pass_ "$T tables present"
+elif [ "$T" -eq 0 ] && [ -n "$RESTORE_DUMP" ]; then
+    # Empty is a legitimate outcome of --skip-data. It is never a
+    # legitimate outcome of an explicit restore, and reporting it as a
+    # warning let a run finish with DEPLOY COMPLETE over nothing.
+    fail_ "database is EMPTY after a restore was requested — the restore did not work"
 elif [ "$T" -eq 0 ]; then warn "database empty — restore a dump, then re-run this script"
 else fail_ "only $T tables — expected 36+ or 0"; fi
 
