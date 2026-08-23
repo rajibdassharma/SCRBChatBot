@@ -360,13 +360,27 @@ step "6. backend/.env"
 # JWT_SECRET is generated once and never touched again — regenerating it
 # would log out every user. DB_PASSWORD is reconciled on EVERY run, which
 # is what keeps MySQL and .env from drifting apart.
+# A .env written before 2026-08-23 has UNPREFIXED keys (DB_HOST rather
+# than CFDSR_DB_HOST). config.py sets env_prefix=CFDSR_, so pydantic
+# matches none of them and refuses to construct Settings at all — the app
+# will not start and every migration dies on import. Preserving such a
+# file is worse than replacing it, so detect and rewrite, carrying the
+# JWT secret across: regenerating that would log out every user.
+if [ -f "$BACKEND/.env" ] && ! grep -q '^CFDSR_' "$BACKEND/.env" 2>/dev/null; then
+    OLD_JWT=$(get_env_var "$BACKEND/.env" JWT_SECRET || true)
+    mv -f "$BACKEND/.env" "$BACKEND/.env.unprefixed.bak"
+    warn "backend/.env had no CFDSR_ keys — config.py could never have read it"
+    note "moved aside to .env.unprefixed.bak; rebuilding with the right names"
+    [ -n "$OLD_JWT" ] && note "carrying the existing JWT_SECRET across"
+fi
+
 if [ ! -f "$BACKEND/.env" ]; then
     install -m 600 /dev/null "$BACKEND/.env"
     set_env_var "$BACKEND/.env" CFDSR_DB_HOST localhost
     set_env_var "$BACKEND/.env" CFDSR_DB_PORT 3306
     set_env_var "$BACKEND/.env" CFDSR_DB_USER root
     set_env_var "$BACKEND/.env" CFDSR_DB_NAME "$DB_NAME"
-    set_env_var "$BACKEND/.env" CFDSR_JWT_SECRET "$(openssl rand -hex 32)"
+    set_env_var "$BACKEND/.env" CFDSR_JWT_SECRET "${OLD_JWT:-$(openssl rand -hex 32)}"
     set_env_var "$BACKEND/.env" CFDSR_JWT_ALGORITHM HS256
     set_env_var "$BACKEND/.env" CFDSR_JWT_EXPIRE_MINUTES 60
     set_env_var "$BACKEND/.env" CFDSR_CORS_ORIGINS http://localhost:5175
@@ -379,6 +393,13 @@ else
     ok ".env exists — only CFDSR_DB_PASSWORD is reconciled"
 fi
 set_env_var "$BACKEND/.env" CFDSR_DB_PASSWORD "$DB_PASSWORD"
+# The runtime copy is regenerated from source by the rsync in step 11, but
+# only in prod mode and only if we get that far. Clear a legacy one now so
+# a failure in between cannot leave the service reading unprefixed keys.
+if [ -f "$RUNTIME/backend/.env" ] && ! grep -q '^CFDSR_' "$RUNTIME/backend/.env" 2>/dev/null; then
+    mv -f "$RUNTIME/backend/.env" "$RUNTIME/backend/.env.unprefixed.bak"
+    warn "runtime .env also had no CFDSR_ keys — moved aside"
+fi
 chmod 600 "$BACKEND/.env"
 [ "$MODE" = dev ] && [ "$REAL_USER" != root ] && chown "$REAL_USER":"$REAL_USER" "$BACKEND/.env"
 ok "CFDSR_DB_PASSWORD in backend/.env matches MySQL"
