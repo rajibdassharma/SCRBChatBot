@@ -306,8 +306,20 @@ if [ -z "$DB_PASSWORD" ]; then
     ok "using the password already in backend/.env"
 fi
 
-if MYSQL_PWD="$DB_PASSWORD" mysql -uroot -e "SELECT 1" >/dev/null 2>&1; then
-    ok "root already authenticates with this password"
+# Tested over TCP, exactly the way the application connects.
+#
+# `mysql -uroot` uses the unix socket, and this script runs as OS root.
+# If root is on the auth_socket plugin that succeeds WHATEVER password is
+# supplied — so the old check reported "already authenticates", skipped
+# ALTER USER entirely, and left the app unable to connect. asyncmy speaks
+# TCP, where auth_socket cannot work, and the failure surfaced much later
+# as an OperationalError inside the first migration.
+#
+# Forcing --protocol=TCP means a pass here proves the thing that matters.
+mysql_tcp() { MYSQL_PWD="$1" mysql --protocol=TCP -h 127.0.0.1 -uroot "${@:2}"; }
+
+if mysql_tcp "$DB_PASSWORD" -e "SELECT 1" >/dev/null 2>&1; then
+    ok "root authenticates over TCP with this password"
 elif mysql --protocol=socket -uroot -e "SELECT 1" >/dev/null 2>&1; then
     # Fresh install: root is auth_socket, no password yet.
     mysql --protocol=socket -uroot -e \
@@ -333,8 +345,10 @@ else
        does not work either. Re-run with --reset to reinstall MySQL clean."
 fi
 
-MYSQL_PWD="$DB_PASSWORD" mysql -uroot -e "SELECT 1" >/dev/null 2>&1 \
-    || die "root still does not authenticate after being set — stopping here"
+mysql_tcp "$DB_PASSWORD" -e "SELECT 1" >/dev/null 2>&1 \
+    || die "root still does not authenticate over TCP after being set.
+       If the plugin is auth_socket the app can never connect. Check:
+         sudo mysql -e \"SELECT user,host,plugin FROM mysql.user WHERE user='root'\""
 
 # utf8mb4_unicode_ci is NOT optional. Ubuntu's MySQL 8 defaults new
 # databases to utf8mb4_0900_ai_ci, and every foreign key in the schema then
@@ -664,7 +678,7 @@ fi
 # ============================================================================
 step "12. Verify"
 # ============================================================================
-verify "MySQL reachable" env MYSQL_PWD="$DB_PASSWORD" mysql -uroot -e "USE $DB_NAME"
+verify "MySQL reachable over TCP (as the app connects)" env MYSQL_PWD="$DB_PASSWORD" mysql --protocol=TCP -h 127.0.0.1 -uroot -e "USE $DB_NAME"
 
 # THE check. Everything else proves this script's connection works; this
 # proves the one the APP uses works, read from .env the way the app reads
@@ -673,7 +687,7 @@ verify "MySQL reachable" env MYSQL_PWD="$DB_PASSWORD" mysql -uroot -e "USE $DB_N
 for F in "$BACKEND/.env" "$RUNTIME/backend/.env"; do
     [ -f "$F" ] || continue
     P=$(get_env_var "$F" CFDSR_DB_PASSWORD)
-    if MYSQL_PWD="$P" mysql -uroot -e "USE $DB_NAME" >/dev/null 2>&1; then
+    if MYSQL_PWD="$P" mysql --protocol=TCP -h 127.0.0.1 -uroot -e "USE $DB_NAME" >/dev/null 2>&1; then
         pass_ "CFDSR_DB_PASSWORD in $F authenticates"
     else
         fail_ "CFDSR_DB_PASSWORD in $F does NOT authenticate"
