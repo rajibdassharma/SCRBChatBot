@@ -68,21 +68,21 @@ step "1. Current state"
 for F in "${ENV_FILES[@]}"; do ok "found $F"; done
 
 # The current password comes from .env, so you never have to remember it.
-OLDPASS=$(grep -h '^DB_PASSWORD=' "${ENV_FILES[0]}" | head -1 | cut -d= -f2-)
-[ -n "$OLDPASS" ] || die "${ENV_FILES[0]} has no DB_PASSWORD line"
+OLDPASS=$(grep -h '^CFDSR_DB_PASSWORD=' "${ENV_FILES[0]}" | head -1 | cut -d= -f2-)
+[ -n "$OLDPASS" ] || die "${ENV_FILES[0]} has no CFDSR_DB_PASSWORD line"
 
 # If the .env copies already disagree, fix that first: this script would
 # otherwise "succeed" while leaving one of them pointing at a dead password.
 for F in "${ENV_FILES[@]}"; do
-    THIS=$(grep -h '^DB_PASSWORD=' "$F" | head -1 | cut -d= -f2-)
-    [ "$THIS" = "$OLDPASS" ] || die "the .env files disagree about DB_PASSWORD.
+    THIS=$(grep -h '^CFDSR_DB_PASSWORD=' "$F" | head -1 | cut -d= -f2-)
+    [ "$THIS" = "$OLDPASS" ] || die "the .env files disagree about CFDSR_DB_PASSWORD.
        ${ENV_FILES[0]} and $F hold different values. Decide which is correct,
        make them match, then run this again."
 done
 ok ".env copies agree"
 
 MYSQL_PWD="$OLDPASS" mysql -uroot -e "SELECT 1" >/dev/null 2>&1 \
-    || die "the DB_PASSWORD in .env does not actually work against MySQL.
+    || die "the CFDSR_DB_PASSWORD in .env does not actually work against MySQL.
        Fix that first — this script needs it to authenticate the change."
 ok "current password authenticates"
 
@@ -156,15 +156,15 @@ for F in "${ENV_FILES[@]}"; do
     : > "$TMP"
     while IFS= read -r line || [ -n "$line" ]; do
         case "$line" in
-            DB_PASSWORD=*) printf '%s\n' "DB_PASSWORD=$NEWPASS" >> "$TMP" ;;
-            *)             printf '%s\n' "$line"                >> "$TMP" ;;
+            CFDSR_DB_PASSWORD=*) printf '%s\n' "CFDSR_DB_PASSWORD=$NEWPASS" >> "$TMP" ;;
+            *)                   printf '%s\n' "$line"                      >> "$TMP" ;;
         esac
     done < "$F"
 
     # Compared as strings, not with grep: a password containing . * [ or ?
     # would be a regex there, and could report a match the file does not
     # actually contain.
-    WROTE=$(grep -m1 '^DB_PASSWORD=' "$TMP" | cut -d= -f2-)
+    WROTE=$(grep -m1 '^CFDSR_DB_PASSWORD=' "$TMP" | cut -d= -f2-)
     [ "$WROTE" = "$NEWPASS" ] \
         || { rm -f "$TMP"; rollback; die "rewrite of $F did not take"; }
 
@@ -212,6 +212,6 @@ cat <<DONEEOF
 
     sudo bash -c 'set -a; . $RUNTIME/backend/.env; set +a;
       gunzip -c /path/to/dbdump.sql.gz |
-      MYSQL_PWD="\$DB_PASSWORD" mysql -uroot cyber_fraud_dsr'
+      MYSQL_PWD="$CFDSR_DB_PASSWORD" mysql -uroot cyber_fraud_dsr'
 
 DONEEOF

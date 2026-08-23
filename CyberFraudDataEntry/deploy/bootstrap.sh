@@ -276,11 +276,13 @@ systemctl enable --now mysql >/dev/null 2>&1 || die "mysql failed to start"
 # make MySQL and .env agree. This is the step whose absence turned a
 # one-command deploy into a debugging session: the password lived in three
 # places and nothing reconciled them.
-ENV_PASS=$(get_env_var "$BACKEND/.env" DB_PASSWORD || true)
+ENV_PASS=$(get_env_var "$BACKEND/.env" CFDSR_DB_PASSWORD || true)
 
 if [ -z "$DB_PASSWORD" ]; then
     [ -n "$ENV_PASS" ] || die "no --db-password given and no DB_PASSWORD in
-       $BACKEND/.env. On a new machine pass it explicitly:
+       $BACKEND/.env (key CFDSR_DB_PASSWORD — config.py sets
+       env_prefix=CFDSR_, so an unprefixed key is ignored). On a new
+       machine pass it explicitly:
 
            sudo bash $0 --db-password 'YourPassword'"
     DB_PASSWORD="$ENV_PASS"
@@ -360,26 +362,26 @@ step "6. backend/.env"
 # is what keeps MySQL and .env from drifting apart.
 if [ ! -f "$BACKEND/.env" ]; then
     install -m 600 /dev/null "$BACKEND/.env"
-    set_env_var "$BACKEND/.env" DB_HOST localhost
-    set_env_var "$BACKEND/.env" DB_PORT 3306
-    set_env_var "$BACKEND/.env" DB_USER root
-    set_env_var "$BACKEND/.env" DB_NAME "$DB_NAME"
-    set_env_var "$BACKEND/.env" JWT_SECRET "$(openssl rand -hex 32)"
-    set_env_var "$BACKEND/.env" JWT_ALGORITHM HS256
-    set_env_var "$BACKEND/.env" JWT_EXPIRE_MINUTES 60
-    set_env_var "$BACKEND/.env" CORS_ORIGINS http://localhost:5175
-    set_env_var "$BACKEND/.env" DISABLE_DOCS "$([ "$MODE" = prod ] && echo true || echo false)"
-    set_env_var "$BACKEND/.env" CHAT_ENABLED false
-    set_env_var "$BACKEND/.env" OLLAMA_BASE_URL http://localhost:11434
-    set_env_var "$BACKEND/.env" OLLAMA_MODEL qwen2.5-coder:32b
+    set_env_var "$BACKEND/.env" CFDSR_DB_HOST localhost
+    set_env_var "$BACKEND/.env" CFDSR_DB_PORT 3306
+    set_env_var "$BACKEND/.env" CFDSR_DB_USER root
+    set_env_var "$BACKEND/.env" CFDSR_DB_NAME "$DB_NAME"
+    set_env_var "$BACKEND/.env" CFDSR_JWT_SECRET "$(openssl rand -hex 32)"
+    set_env_var "$BACKEND/.env" CFDSR_JWT_ALGORITHM HS256
+    set_env_var "$BACKEND/.env" CFDSR_JWT_EXPIRE_MINUTES 60
+    set_env_var "$BACKEND/.env" CFDSR_CORS_ORIGINS http://localhost:5175
+    set_env_var "$BACKEND/.env" CFDSR_DISABLE_DOCS "$([ "$MODE" = prod ] && echo true || echo false)"
+    set_env_var "$BACKEND/.env" CFDSR_CHAT_ENABLED false
+    set_env_var "$BACKEND/.env" CFDSR_OLLAMA_BASE_URL http://localhost:11434
+    set_env_var "$BACKEND/.env" CFDSR_OLLAMA_MODEL qwen2.5-coder:32b
     ok ".env created"
 else
-    ok ".env exists — only DB_PASSWORD is reconciled"
+    ok ".env exists — only CFDSR_DB_PASSWORD is reconciled"
 fi
-set_env_var "$BACKEND/.env" DB_PASSWORD "$DB_PASSWORD"
+set_env_var "$BACKEND/.env" CFDSR_DB_PASSWORD "$DB_PASSWORD"
 chmod 600 "$BACKEND/.env"
 [ "$MODE" = dev ] && [ "$REAL_USER" != root ] && chown "$REAL_USER":"$REAL_USER" "$BACKEND/.env"
-ok "DB_PASSWORD in backend/.env matches MySQL"
+ok "CFDSR_DB_PASSWORD in backend/.env matches MySQL"
 
 # ============================================================================
 # --restore-latest: work out WHICH files, before touching anything.
@@ -618,11 +620,11 @@ verify "MySQL reachable" env MYSQL_PWD="$DB_PASSWORD" mysql -uroot -e "USE $DB_N
 # during a restore instead of here, as one red line, while still cheap.
 for F in "$BACKEND/.env" "$RUNTIME/backend/.env"; do
     [ -f "$F" ] || continue
-    P=$(get_env_var "$F" DB_PASSWORD)
+    P=$(get_env_var "$F" CFDSR_DB_PASSWORD)
     if MYSQL_PWD="$P" mysql -uroot -e "USE $DB_NAME" >/dev/null 2>&1; then
-        pass_ "DB_PASSWORD in $F authenticates"
+        pass_ "CFDSR_DB_PASSWORD in $F authenticates"
     else
-        fail_ "DB_PASSWORD in $F does NOT authenticate"
+        fail_ "CFDSR_DB_PASSWORD in $F does NOT authenticate"
     fi
 done
 
