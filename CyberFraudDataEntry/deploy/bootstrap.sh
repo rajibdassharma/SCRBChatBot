@@ -440,8 +440,15 @@ if [ -n "$RESTORE_DUMP" ]; then
         MYSQL_PWD="$DB_PASSWORD" mysql -uroot "$DB_NAME" < "$RESTORE_DUMP" || die "restore failed"
     fi
     ok "dump restored — $(TABLES_NOW) tables"
-    note "the dump excludes statement_transactions by design; rebuild with"
-    note "  cd $RUNTIME/backend && venv/bin/python -m analysis.daily"
+    # Say what this DOES mean, not just what is absent. The earlier
+    # wording ("rebuild with analysis.daily") read as an instruction and
+    # sent someone off to run a job that is unnecessary here and
+    # destructive against a restored database.
+    note "the dump excludes statement_transactions (27 GB of raw parsed"
+    note "rows). Every ANALYSIS RESULT is present — summaries, mule links,"
+    note "crypto rows, photo hashes, the IFSC directory — and no API route"
+    note "reads the fact table, so every dashboard works as-is."
+    note "You only need it if THIS machine will parse new uploads."
 elif [ "$(TABLES_NOW)" -gt 5 ]; then
     ok "database already has $(TABLES_NOW) tables — left alone"
 else
