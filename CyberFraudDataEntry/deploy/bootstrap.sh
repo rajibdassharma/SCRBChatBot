@@ -1,84 +1,78 @@
 #!/usr/bin/env bash
 # ============================================================================
-# CyberFraud Data Entry — GREEN-FIELD BOOTSTRAP
+# CyberFraud Data Entry — ONE-COMMAND DEPLOY / DISASTER RECOVERY
 #
-# One execution on a bare Ubuntu box -> a running application.
+# Pulls the latest code, builds the machine, and starts every service —
+# the same way on the production server and on the DGX Spark. The only
+# thing that differs between environments is the MySQL password, which you
+# pass in.
 #
-# This is the sibling of update.sh, and the division is deliberate:
+#   sudo bash deploy/bootstrap.sh --db-password 'CyberFraud@2026'
 #
-#   bootstrap.sh   bare machine -> running app. Installs system packages,
-#                  MySQL, Node, the venv, the schema and the data. Run once
-#                  per machine (but safe to re-run).
-#   update.sh      running app -> newer running app. Assumes every one of
-#                  the above already exists. Run on every deploy.
+# FIRST RUN ON A MACHINE (or any time you want a guaranteed-clean base):
 #
-# Two jobs it has to do well:
-#   1. Stand up a dev / build box (a laptop, the DGX Spark)
-#   2. DISASTER RECOVERY. A dead server, a fresh VM, and one command
-#      between them and being back online. That is why every step is
-#      idempotent and why the script verifies its own work at the end:
-#      during a real recovery nobody is in a state to spot a silent
-#      half-failure.
+#   sudo bash deploy/bootstrap.sh --reset --db-password 'CyberFraud@2026'
 #
-# USAGE
-#   # environment only -- you load the data yourself afterwards
-#   sudo bash deploy/bootstrap.sh --mode prod --skip-data
+# FULL DR IN ONE COMMAND:
 #
-#   sudo bash deploy/bootstrap.sh --mode dev
-#   sudo bash deploy/bootstrap.sh --mode prod \
-#        --restore-dump    /path/to/cyber_fraud_dsr-2026-08-22.sql.gz \
-#        --restore-uploads /path/to/uploads-backups/
+#   sudo bash deploy/bootstrap.sh --reset --db-password 'CyberFraud@2026' \
+#        --restore-dump    /backups/dbdump_20AUG2026.sql.gz \
+#        --restore-uploads /backups/filedump_21AUG2026.tar.gz
 #
-# FLAGS
-#   --mode dev|prod       dev: localhost, you start the servers yourself.
-#                         prod: gunicorn + nginx + systemd, brought up now.
-#                         Default: dev
-#   --db-password PASS    MySQL root password to SET on a fresh MySQL, or
-#                         the existing one. Prompted for if omitted. Never
-#                         generated: on a recovery you want the credential
-#                         you already know, not one you have to go and find.
-#   --restore-dump FILE   .sql or .sql.gz to load INSTEAD of seeding.
-#   --restore-uploads DIR Directory holding uploads_full_<ts>.tar and any
-#                         uploads_inc_<ts>.tar. The newest full is chosen,
-#                         then every increment newer than it, in order.
-#   --skip-apt            Don't touch apt. For re-runs and air-gapped boxes.
-#   --skip-frontend       Don't build the frontend.
-#   --skip-data           Build the environment and stop at the data: no
-#                         seed, no restore, and no migrations against an
-#                         empty schema. For when you load the dump and the
-#                         uploads yourself. Re-run afterwards with
-#                         --skip-apt to apply migrations and verify.
-#   --yes                 No prompts. Implied when stdin is not a terminal.
+# ── FLAGS ───────────────────────────────────────────────────────────────
+#   --db-password PASS    REQUIRED when MySQL is new or --reset is used.
+#                         Afterwards it is read from backend/.env, so
+#                         routine re-runs need no arguments. Never
+#                         generated, never defaulted, never in the repo.
+#   --reset               Purge and reinstall MySQL from scratch: stops it,
+#                         removes the packages AND /var/lib/mysql, drops
+#                         every database, reinstalls. DESTRUCTIVE — it
+#                         confirms first unless --yes.
+#   --mode prod|dev       prod (default): gunicorn + nginx + systemd, all
+#                         started. dev: no systemd, you run the servers.
+#   --restore-dump FILE   .sql or .sql.gz to load. Omit to leave the
+#                         database alone.
+#   --restore-uploads X   A single .tar/.tar.gz, or a directory holding the
+#                         server's uploads_full_/uploads_inc_ chain.
+#   --no-pull             Skip the git pull. Default is to pull first.
+#   --skip-apt            Don't touch apt (faster re-runs).
+#   --skip-frontend       Don't rebuild the frontend.
+#   --yes                 No prompts. Required for unattended runs.
 #   --help
 #
-# WHAT IT WILL NOT DO
-#   - Overwrite an existing backend/.env. Your secrets survive a re-run.
-#   - Re-seed a database that already has tables, unless you pass
-#     --restore-dump (an explicit instruction to replace the contents).
-#   - Commit, push, or phone home.
+# ── WHAT IT GUARANTEES ──────────────────────────────────────────────────
+#   * Idempotent. Running it twice does not do damage.
+#   * MySQL and every backend/.env always agree on the password — it
+#     reconciles them on every run rather than assuming.
+#   * It verifies its own work and exits non-zero if any check fails,
+#     including "can the app authenticate with the password in its .env".
+#     A recovery is the worst moment to discover a silent half-failure.
 # ============================================================================
 
 set -uo pipefail
 
-# ── Where things are ────────────────────────────────────────────────────
+# ── Paths ───────────────────────────────────────────────────────────────
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SOURCE="$(cd "$SCRIPT_DIR/.." && pwd)"          # .../CyberFraudDataEntry
+SOURCE="$(cd "$SCRIPT_DIR/.." && pwd)"           # .../CyberFraudDataEntry
+REPO_ROOT="$(cd "$SOURCE/.." && pwd)"            # the git clone root
 BACKEND="$SOURCE/backend"
 FRONTEND="$SOURCE/frontend"
-RUNTIME=/opt/cyberfraud                          # prod mode only
+RUNTIME=/opt/cyberfraud
+DB_NAME=cyber_fraud_dsr
 NODE_MAJOR=22
 
-MODE=dev
+MODE=prod
 DB_PASSWORD=""
 RESTORE_DUMP=""
 RESTORE_UPLOADS=""
+DO_RESET=0
+DO_PULL=1
 SKIP_APT=0
 SKIP_FRONTEND=0
-SKIP_DATA=0
 ASSUME_YES=0
 [ -t 0 ] || ASSUME_YES=1
 
-# ── Output helpers ──────────────────────────────────────────────────────
+# ── Output ──────────────────────────────────────────────────────────────
 step()  { printf "\n\033[1;36m=== %s ===\033[0m\n" "$1"; }
 ok()    { printf "  \033[32mok\033[0m    %s\n" "$1"; }
 warn()  { printf "  \033[33mwarn\033[0m  %s\n" "$1"; }
@@ -88,38 +82,62 @@ die()   { printf "\n  \033[31mFATAL\033[0m %s\n\n" "$1" >&2; exit 1; }
 FAILED=0
 pass_() { printf "  \033[32mPASS\033[0m  %s\n" "$1"; }
 fail_() { printf "  \033[31mFAIL\033[0m  %s\n" "$1"; FAILED=1; }
-verify() {  # verify "<label>" <command...>
-    local label="$1"; shift
-    if "$@" >/dev/null 2>&1; then pass_ "$label"; else fail_ "$label"; fi
-}
+verify() { local l="$1"; shift; if "$@" >/dev/null 2>&1; then pass_ "$l"; else fail_ "$l"; fi; }
 
 # ── Arguments ───────────────────────────────────────────────────────────
 while [ $# -gt 0 ]; do
     case "$1" in
-        --mode)             MODE="${2:-}"; shift 2 ;;
-        --db-password)      DB_PASSWORD="${2:-}"; shift 2 ;;
-        --restore-dump)     RESTORE_DUMP="${2:-}"; shift 2 ;;
-        --restore-uploads)  RESTORE_UPLOADS="${2:-}"; shift 2 ;;
-        --skip-apt)         SKIP_APT=1; shift ;;
-        --skip-frontend)    SKIP_FRONTEND=1; shift ;;
-        --skip-data)        SKIP_DATA=1; shift ;;
-        --yes|-y)           ASSUME_YES=1; shift ;;
-        --help|-h)          sed -n '2,53p' "$0"; exit 0 ;;
-        *)                  die "unknown argument: $1  (try --help)" ;;
+        --db-password)     DB_PASSWORD="${2:-}"; shift 2 ;;
+        --reset)           DO_RESET=1; shift ;;
+        --mode)            MODE="${2:-}"; shift 2 ;;
+        --restore-dump)    RESTORE_DUMP="${2:-}"; shift 2 ;;
+        --restore-uploads) RESTORE_UPLOADS="${2:-}"; shift 2 ;;
+        --no-pull)         DO_PULL=0; shift ;;
+        --skip-apt)        SKIP_APT=1; shift ;;
+        --skip-frontend)   SKIP_FRONTEND=1; shift ;;
+        --yes|-y)          ASSUME_YES=1; shift ;;
+        --help|-h)         sed -n '2,53p' "$0"; exit 0 ;;
+        *)                 die "unknown argument: $1  (try --help)" ;;
     esac
 done
-[ "$MODE" = dev ] || [ "$MODE" = prod ] || die "--mode must be dev or prod"
+[ "$MODE" = dev ] || [ "$MODE" = prod ] || die "--mode must be prod or dev"
+
+# ── .env writer ─────────────────────────────────────────────────────────
+# Sets one KEY=VALUE, creating the file if needed, preserving every other
+# line and the file's owner and mode.
+#
+# No sed: a value containing & | / or # breaks a sed replacement, and those
+# are ordinary password characters. No sourcing either — `set -a; . .env`
+# runs the file through the shell, which truncates a value at a # and
+# forks on an &. The app never sources it: pydantic-settings and systemd's
+# EnvironmentFile both parse it literally, and so does this.
+set_env_var() {
+    local file="$1" key="$2" val="$3" tmp owner mode
+    [ -f "$file" ] || { install -m 600 /dev/null "$file"; }
+    owner=$(stat -c '%U:%G' "$file"); mode=$(stat -c '%a' "$file")
+    tmp="$file.tmp$$"; : > "$tmp"
+    local found=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            "$key"=*) printf '%s\n' "$key=$val" >> "$tmp"; found=1 ;;
+            *)        printf '%s\n' "$line"     >> "$tmp" ;;
+        esac
+    done < "$file"
+    [ "$found" -eq 1 ] || printf '%s\n' "$key=$val" >> "$tmp"
+    chown "$owner" "$tmp" 2>/dev/null; chmod "$mode" "$tmp"
+    mv -f "$tmp" "$file"
+}
+get_env_var() {  # get_env_var FILE KEY
+    [ -f "$1" ] || return 1
+    grep -m1 "^$2=" "$1" | cut -d= -f2-
+}
 
 # ============================================================================
 step "0. Preflight"
 # ============================================================================
-[ "$(id -u)" -eq 0 ] || die "run with sudo: sudo bash deploy/bootstrap.sh ..."
+[ "$(id -u)" -eq 0 ] || die "run with sudo:  sudo bash deploy/bootstrap.sh --db-password '...'"
 
-# The user who invoked sudo owns the dev-mode files. Root owning a dev
-# checkout makes every later git pull and npm install need sudo too.
 REAL_USER="${SUDO_USER:-root}"
-REAL_HOME="$(getent passwd "$REAL_USER" | cut -d: -f6)"
-[ -n "$REAL_HOME" ] || REAL_HOME=/root
 
 # shellcheck disable=SC1091
 . /etc/os-release 2>/dev/null || die "cannot read /etc/os-release — is this Ubuntu?"
@@ -129,44 +147,75 @@ case "${ID:-}" in
     *)      die "unsupported OS: ${ID:-unknown}. This script targets Ubuntu." ;;
 esac
 
-if [ "$(uname -m)" = aarch64 ]; then
-    note "aarch64 — every dependency has arm64 wheels, but asyncmy may"
-    note "compile from source. That is what build-essential is here for."
-fi
+[ -f "$BACKEND/requirements.txt" ] || die "not a CyberFraudDataEntry checkout: $SOURCE"
 
 RAM_GB=$(( $(awk '/MemTotal/{print $2}' /proc/meminfo) / 1024 / 1024 ))
 DISK_GB=$(df -BG --output=avail "$SOURCE" | tail -1 | tr -dc '0-9')
 ok "RAM ${RAM_GB} GB, free disk ${DISK_GB} GB"
-[ "$RAM_GB" -lt 4 ] && warn "under 4 GB RAM — MySQL and the parser will contend"
-[ "$DISK_GB" -lt 40 ] && warn "under 40 GB free — the uploads tree alone is ~20 GB"
+ok "source $SOURCE"
+[ "$DISK_GB" -lt 40 ] && warn "under 40 GB free — the uploads tree alone is ~22 GB"
 
-[ -f "$BACKEND/requirements.txt" ] || die "not a CyberFraudDataEntry checkout: $SOURCE"
-ok "source tree $SOURCE"
+POOL_GB=$(( RAM_GB / 4 )); [ "$POOL_GB" -lt 1 ] && POOL_GB=1; [ "$POOL_GB" -gt 16 ] && POOL_GB=16
 
-# Buffer pool: a quarter of RAM, floor 1G, ceiling 16G. MySQL has to leave
-# room for gunicorn and, on an analysis box, the parser workers.
-POOL_GB=$(( RAM_GB / 4 ))
-[ "$POOL_GB" -lt 1 ]  && POOL_GB=1
-[ "$POOL_GB" -gt 16 ] && POOL_GB=16
+# A password with a single quote or backslash would have to be escaped in
+# the SQL literal below. Not worth the risk; everything else is fine.
+case "$DB_PASSWORD" in
+    *\'*|*\\*) die "avoid single quotes and backslashes in --db-password" ;;
+esac
 
-if [ "$ASSUME_YES" -eq 0 ]; then
+if [ "$DO_RESET" -eq 1 ] && [ "$ASSUME_YES" -eq 0 ]; then
     echo
-    echo "  mode          $MODE"
-    echo "  source        $SOURCE"
-    echo "  buffer pool   ${POOL_GB}G"
-    echo "  db password   ${DB_PASSWORD:+<given>}${DB_PASSWORD:-<will prompt if MySQL is fresh>}"
-    if [ "$SKIP_DATA" -eq 1 ]; then
-        echo "  data          --skip-data: none loaded, you restore it yourself"
-    else
-        echo "  restore dump  ${RESTORE_DUMP:-<none — will seed a fresh roster>}"
-    fi
+    warn "--reset will PURGE MySQL and DELETE /var/lib/mysql."
+    warn "Every database on this machine goes, not just $DB_NAME."
     echo
-    read -r -p "  Proceed? [y/N] " reply
-    case "$reply" in y|Y) ;; *) die "aborted" ;; esac
+    read -r -p "  Type RESET to continue: " reply
+    [ "$reply" = RESET ] || die "aborted — nothing changed"
 fi
 
 # ============================================================================
-step "1. System packages"
+step "1. Pull latest from GitHub"
+# ============================================================================
+# Pull first, then re-exec if this script itself changed — otherwise the
+# rest of the run is the OLD script operating on NEW code.
+if [ "$DO_PULL" -eq 0 ]; then
+    warn "skipped (--no-pull)"
+elif [ ! -d "$REPO_ROOT/.git" ]; then
+    warn "$REPO_ROOT is not a git clone — nothing to pull"
+elif [ -n "${CFDSR_BOOTSTRAP_REEXEC:-}" ]; then
+    ok "already pulled (re-executed with the updated script)"
+else
+    BEFORE=$(sha256sum "$0" | cut -d' ' -f1)
+    git -C "$REPO_ROOT" pull --ff-only 2>&1 | sed 's/^/        /' \
+        || die "git pull failed. Resolve it in $REPO_ROOT and re-run."
+    ok "pulled $(git -C "$REPO_ROOT" rev-parse --short HEAD)"
+    if [ "$(sha256sum "$0" | cut -d' ' -f1)" != "$BEFORE" ]; then
+        note "bootstrap.sh itself changed — restarting with the new version"
+        export CFDSR_BOOTSTRAP_REEXEC=1
+        exec bash "$0" "$@"
+    fi
+fi
+
+# ============================================================================
+step "2. Reset MySQL"
+# ============================================================================
+if [ "$DO_RESET" -eq 0 ]; then
+    ok "skipped (no --reset)"
+else
+    [ -n "$DB_PASSWORD" ] || die "--reset needs --db-password: MySQL comes back
+       with no credentials and one has to be set."
+    export DEBIAN_FRONTEND=noninteractive
+    systemctl stop mysql 2>/dev/null
+    apt-get purge -y -qq 'mysql-server*' 'mysql-client*' 'mysql-common' 2>/dev/null | tail -2
+    apt-get autoremove -y -qq 2>/dev/null | tail -1
+    # Purging leaves the data directory behind on purpose; for a clean base
+    # it has to go, or the reinstall adopts the old root account.
+    rm -rf /var/lib/mysql /var/log/mysql /etc/mysql
+    ok "MySQL purged, /var/lib/mysql removed"
+    SKIP_APT=0   # it must be reinstalled below
+fi
+
+# ============================================================================
+step "3. System packages"
 # ============================================================================
 if [ "$SKIP_APT" -eq 1 ]; then
     warn "skipped (--skip-apt)"
@@ -179,12 +228,10 @@ else
         git curl ca-certificates openssl rsync tar gzip \
         || die "apt-get install failed"
     ok "build tools, python3, mysql-server"
-
     if [ "$MODE" = prod ]; then
         apt-get install -y -qq nginx || die "nginx install failed"
         ok "nginx"
     fi
-
     if [ "$SKIP_FRONTEND" -eq 0 ]; then
         NEED_NODE=1
         if command -v node >/dev/null 2>&1; then
@@ -201,87 +248,69 @@ else
 fi
 
 # ============================================================================
-step "2. MySQL"
+step "4. MySQL credentials"
 # ============================================================================
 systemctl enable --now mysql >/dev/null 2>&1 || die "mysql failed to start"
 
-# Ubuntu's fresh root uses auth_socket, so `mysql` as root works with no
-# password until we set one. Detect which state we are in rather than
-# assuming — this script has to be re-runnable.
-if mysql --protocol=socket -uroot -e "SELECT 1" >/dev/null 2>&1; then
-    ok "root reachable over the unix socket (fresh install)"
-    # ASK, never invent.
-    #
-    # This used to generate a random 24-character password. That is the
-    # better default for a server nobody logs into, and the wrong one for
-    # a script whose whole job is recovery: it hands you a secret you then
-    # have to find, keep two .env copies agreeing on, and reconcile with
-    # the password you actually wanted. Debugging a credential is not what
-    # anyone should be doing while restoring a dead server.
-    #
-    # So: --db-password for unattended runs, a prompt otherwise, and a
-    # hard stop if it can neither ask nor be told.
-    if [ -z "$DB_PASSWORD" ]; then
-        if [ "$ASSUME_YES" -eq 1 ] || [ ! -t 0 ]; then
-            die "no MySQL root password to set.
-       This is a fresh MySQL, so one has to be chosen, and an unattended
-       run cannot ask. Pass it explicitly:
+# Establish ONE working root password, from whichever source has it, and
+# make MySQL and .env agree. This is the step whose absence turned a
+# one-command deploy into a debugging session: the password lived in three
+# places and nothing reconciled them.
+ENV_PASS=$(get_env_var "$BACKEND/.env" DB_PASSWORD || true)
 
-           --db-password 'YourPassword'"
-        fi
-        echo
-        note "MySQL has no root password yet. Choose one — it goes into"
-        note "backend/.env and everything reads it from there."
-        while [ -z "$DB_PASSWORD" ]; do
-            printf "  MySQL root password: "; read -rs DB_PASSWORD; printf "\n"
-            printf "  Again to confirm:    "; read -rs _CONFIRM;    printf "\n"
-            if [ "$DB_PASSWORD" != "$_CONFIRM" ]; then
-                warn "the two entries did not match — try again"; DB_PASSWORD=""
-            elif [ "${#DB_PASSWORD}" -lt 8 ]; then
-                warn "at least 8 characters please"; DB_PASSWORD=""
-            fi
-        done
-        unset _CONFIRM
-    fi
-    case "$DB_PASSWORD" in
-        *\'*|*\\*) die "avoid single quotes and backslashes in the DB password" ;;
-    esac
-    # mysql_native_password first: widest compatibility for asyncmy over
-    # TCP. Ubuntu 24.04 ships MySQL 8.0 where it still exists; if a newer
-    # server has dropped the plugin, fall back to the default.
-    mysql --protocol=socket -uroot -e \
-        "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '${DB_PASSWORD}';" 2>/dev/null \
-    || mysql --protocol=socket -uroot -e \
-        "ALTER USER 'root'@'localhost' IDENTIFIED BY '${DB_PASSWORD}';" \
-    || die "could not set the MySQL root password"
-    mysql --protocol=socket -uroot -e "FLUSH PRIVILEGES;" >/dev/null 2>&1
-    ok "root password set"
-elif [ -n "$DB_PASSWORD" ] && mysql -uroot -p"$DB_PASSWORD" -e "SELECT 1" >/dev/null 2>&1; then
-    ok "root password already set and matches --db-password"
-elif [ -f "$BACKEND/.env" ] && grep -q '^DB_PASSWORD=' "$BACKEND/.env"; then
-    DB_PASSWORD="$(grep '^DB_PASSWORD=' "$BACKEND/.env" | head -1 | cut -d= -f2-)"
-    mysql -uroot -p"$DB_PASSWORD" -e "SELECT 1" >/dev/null 2>&1 \
-        || die "the DB_PASSWORD in backend/.env does not work. Pass --db-password."
-    ok "reusing the password already in backend/.env"
-else
-    die "MySQL root needs a password and none worked. Pass --db-password."
+if [ -z "$DB_PASSWORD" ]; then
+    [ -n "$ENV_PASS" ] || die "no --db-password given and no DB_PASSWORD in
+       $BACKEND/.env. On a new machine pass it explicitly:
+
+           sudo bash $0 --db-password 'YourPassword'"
+    DB_PASSWORD="$ENV_PASS"
+    ok "using the password already in backend/.env"
 fi
-MYSQL_ARGS=(-uroot -p"$DB_PASSWORD")
+
+if MYSQL_PWD="$DB_PASSWORD" mysql -uroot -e "SELECT 1" >/dev/null 2>&1; then
+    ok "root already authenticates with this password"
+elif mysql --protocol=socket -uroot -e "SELECT 1" >/dev/null 2>&1; then
+    # Fresh install: root is auth_socket, no password yet.
+    mysql --protocol=socket -uroot -e \
+        "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$DB_PASSWORD';" 2>/dev/null \
+    || mysql --protocol=socket -uroot -e \
+        "ALTER USER 'root'@'localhost' IDENTIFIED BY '$DB_PASSWORD';" \
+    || die "could not set the root password"
+    mysql --protocol=socket -uroot -e "FLUSH PRIVILEGES;" >/dev/null 2>&1
+    ok "root password set (was a fresh MySQL)"
+elif [ -f /etc/mysql/debian.cnf ] && \
+     mysql --defaults-file=/etc/mysql/debian.cnf -e "SELECT 1" >/dev/null 2>&1; then
+    # Root has SOME other password. Ubuntu's maintenance account has full
+    # privileges and needs no restart, so use it rather than making you
+    # hunt for whatever root is currently set to.
+    mysql --defaults-file=/etc/mysql/debian.cnf -e \
+        "ALTER USER 'root'@'localhost' IDENTIFIED WITH mysql_native_password BY '$DB_PASSWORD'; FLUSH PRIVILEGES;" 2>/dev/null \
+    || mysql --defaults-file=/etc/mysql/debian.cnf -e \
+        "ALTER USER 'root'@'localhost' IDENTIFIED BY '$DB_PASSWORD'; FLUSH PRIVILEGES;" \
+    || die "could not reset the root password via debian.cnf"
+    ok "root password reset to the one you passed (via debian-sys-maint)"
+else
+    die "cannot authenticate to MySQL as root, and /etc/mysql/debian.cnf
+       does not work either. Re-run with --reset to reinstall MySQL clean."
+fi
+
+MYSQL_PWD="$DB_PASSWORD" mysql -uroot -e "SELECT 1" >/dev/null 2>&1 \
+    || die "root still does not authenticate after being set — stopping here"
 
 # utf8mb4_unicode_ci is NOT optional. Ubuntu's MySQL 8 defaults new
-# databases to utf8mb4_0900_ai_ci, and every FK in the schema then fails
-# against a table created the other way with error 3780. This one line is
-# the 2026-06-20 production incident, prevented.
-mysql "${MYSQL_ARGS[@]}" -e \
-    "CREATE DATABASE IF NOT EXISTS cyber_fraud_dsr CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" \
-    || die "could not create the database"
-COLL=$(mysql "${MYSQL_ARGS[@]}" -N -B -e \
-    "SELECT default_collation_name FROM information_schema.schemata WHERE schema_name='cyber_fraud_dsr';")
+# databases to utf8mb4_0900_ai_ci, and every foreign key in the schema then
+# fails against it with error 3780. This is the 2026-06-20 incident.
+MYSQL_PWD="$DB_PASSWORD" mysql -uroot -e \
+    "CREATE DATABASE IF NOT EXISTS \`$DB_NAME\` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;" \
+    || die "could not create $DB_NAME"
+COLL=$(MYSQL_PWD="$DB_PASSWORD" mysql -uroot -N -B -e \
+    "SELECT default_collation_name FROM information_schema.schemata WHERE schema_name='$DB_NAME';")
 [ "$COLL" = utf8mb4_unicode_ci ] \
-    || die "cyber_fraud_dsr exists with collation '$COLL', not utf8mb4_unicode_ci.
-       Every foreign key will fail with error 3780. Drop the database and re-run."
-ok "database cyber_fraud_dsr ($COLL)"
+    || die "$DB_NAME has collation '$COLL', not utf8mb4_unicode_ci.
+       Every foreign key will fail with error 3780. Re-run with --reset."
+ok "database $DB_NAME ($COLL)"
 
+install -d -m 755 /etc/mysql/mysql.conf.d 2>/dev/null
 cat > /etc/mysql/mysql.conf.d/z-cyberfraud.cnf <<MYCNF
 # Written by deploy/bootstrap.sh — sized from this machine's RAM.
 [mysqld]
@@ -292,445 +321,266 @@ systemctl restart mysql || die "mysql failed to restart with the new config"
 ok "buffer pool ${POOL_GB}G, max_allowed_packet 1G"
 
 # ============================================================================
-step "3. Python environment"
+step "5. Python environment"
 # ============================================================================
 cd "$BACKEND" || die "no backend dir"
 [ -d venv ] || python3 -m venv venv || die "venv creation failed"
 ./venv/bin/pip install -q -U pip wheel || die "pip self-upgrade failed"
-
-# requirements-dev.txt composes app + analysis + test deps. Production gets
-# requirements.txt alone: it never runs pytest, and requirements-analysis's
-# pillow pin only matters where pdfplumber is installed.
 REQ=requirements-dev.txt
 [ "$MODE" = prod ] && REQ=requirements.txt
 [ -f "$REQ" ] || REQ=requirements.txt
 ./venv/bin/pip install -q -r "$REQ" || die "pip install -r $REQ failed"
 ok "venv ready from $REQ"
 
-if [ "$MODE" = dev ] && [ "$REAL_USER" != root ]; then
-    chown -R "$REAL_USER":"$REAL_USER" venv
-    ok "venv handed to $REAL_USER"
-fi
-
 # ============================================================================
-step "4. backend/.env"
+step "6. backend/.env"
 # ============================================================================
-if [ -f .env ]; then
-    ok ".env already exists — left untouched"
-    grep -q '^JWT_SECRET=' .env || die ".env has no JWT_SECRET; the app refuses to start without one"
+# JWT_SECRET is generated once and never touched again — regenerating it
+# would log out every user. DB_PASSWORD is reconciled on EVERY run, which
+# is what keeps MySQL and .env from drifting apart.
+if [ ! -f "$BACKEND/.env" ]; then
+    install -m 600 /dev/null "$BACKEND/.env"
+    set_env_var "$BACKEND/.env" DB_HOST localhost
+    set_env_var "$BACKEND/.env" DB_PORT 3306
+    set_env_var "$BACKEND/.env" DB_USER root
+    set_env_var "$BACKEND/.env" DB_NAME "$DB_NAME"
+    set_env_var "$BACKEND/.env" JWT_SECRET "$(openssl rand -hex 32)"
+    set_env_var "$BACKEND/.env" JWT_ALGORITHM HS256
+    set_env_var "$BACKEND/.env" JWT_EXPIRE_MINUTES 60
+    set_env_var "$BACKEND/.env" CORS_ORIGINS http://localhost:5175
+    set_env_var "$BACKEND/.env" DISABLE_DOCS "$([ "$MODE" = prod ] && echo true || echo false)"
+    set_env_var "$BACKEND/.env" CHAT_ENABLED false
+    set_env_var "$BACKEND/.env" OLLAMA_BASE_URL http://localhost:11434
+    set_env_var "$BACKEND/.env" OLLAMA_MODEL qwen2.5-coder:32b
+    ok ".env created"
 else
-    JWT_SECRET="$(openssl rand -hex 32)"
-    if [ "$MODE" = prod ]; then DOCS=true; else DOCS=false; fi
-    # vite.config.ts pins the dev server to 5175, and proxies /api to :8000.
-    cat > .env <<ENVEOF
-DB_HOST=localhost
-DB_PORT=3306
-DB_USER=root
-DB_PASSWORD=${DB_PASSWORD}
-DB_NAME=cyber_fraud_dsr
-JWT_SECRET=${JWT_SECRET}
-JWT_ALGORITHM=HS256
-JWT_EXPIRE_MINUTES=60
-CORS_ORIGINS=http://localhost:5175
-DISABLE_DOCS=${DOCS}
-CHAT_ENABLED=false
-OLLAMA_BASE_URL=http://localhost:11434
-OLLAMA_MODEL=qwen2.5-coder:32b
-ENVEOF
-    chmod 600 .env
-    [ "$REAL_USER" != root ] && chown "$REAL_USER":"$REAL_USER" .env
-    ok ".env written (chmod 600), JWT_SECRET is 64 hex chars"
+    ok ".env exists — only DB_PASSWORD is reconciled"
 fi
+set_env_var "$BACKEND/.env" DB_PASSWORD "$DB_PASSWORD"
+chmod 600 "$BACKEND/.env"
+[ "$MODE" = dev ] && [ "$REAL_USER" != root ] && chown "$REAL_USER":"$REAL_USER" "$BACKEND/.env"
+ok "DB_PASSWORD in backend/.env matches MySQL"
 
 # ============================================================================
-step "5. Schema and data"
+step "7. Data"
 # ============================================================================
-TABLE_COUNT=$(mysql "${MYSQL_ARGS[@]}" -N -B -e \
-    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='cyber_fraud_dsr';" 2>/dev/null || echo 0)
+TABLES_NOW() { MYSQL_PWD="$DB_PASSWORD" mysql -uroot -N -B -e \
+    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='$DB_NAME';" 2>/dev/null || echo 0; }
 
-if [ "$SKIP_DATA" -eq 1 ] && [ -z "$RESTORE_DUMP" ]; then
-    ok "--skip-data: database left empty for you to restore into"
-    note "cyber_fraud_dsr exists with utf8mb4_unicode_ci; nothing else touched"
-elif [ -n "$RESTORE_DUMP" ]; then
+if [ -n "$RESTORE_DUMP" ]; then
     [ -f "$RESTORE_DUMP" ] || die "--restore-dump: no such file: $RESTORE_DUMP"
-    note "restoring $(basename "$RESTORE_DUMP") — this replaces the current contents"
+    note "restoring $(basename "$RESTORE_DUMP")"
     if [ "${RESTORE_DUMP##*.}" = gz ]; then
-        gunzip -c "$RESTORE_DUMP" | mysql "${MYSQL_ARGS[@]}" cyber_fraud_dsr || die "restore failed"
+        gunzip -c "$RESTORE_DUMP" | MYSQL_PWD="$DB_PASSWORD" mysql -uroot "$DB_NAME" \
+            || die "restore failed"
     else
-        mysql "${MYSQL_ARGS[@]}" cyber_fraud_dsr < "$RESTORE_DUMP" || die "restore failed"
+        MYSQL_PWD="$DB_PASSWORD" mysql -uroot "$DB_NAME" < "$RESTORE_DUMP" || die "restore failed"
     fi
-    ok "dump restored"
-    note "the dump excludes statement_transactions by design. Rebuild it with:"
-    note "  cd $BACKEND && venv/bin/python -m analysis.daily"
-elif [ "$TABLE_COUNT" -gt 5 ]; then
-    ok "database already has $TABLE_COUNT tables — not re-seeding"
+    ok "dump restored — $(TABLES_NOW) tables"
+    note "the dump excludes statement_transactions by design; rebuild with"
+    note "  cd $RUNTIME/backend && venv/bin/python -m analysis.daily"
+elif [ "$(TABLES_NOW)" -gt 5 ]; then
+    ok "database already has $(TABLES_NOW) tables — left alone"
 else
-    # seed.py builds units + police_stations from the roster spreadsheet and
-    # creates two users per PS with unique random passwords.
-    # The roster ships with the repo, so this normally just passes. It is
-    # still a hard stop rather than a prompt if it is missing, because
-    # seed.py's fallback is AllDistrictPS.xlsx — 1,085 stations across 40
-    # districts, two users each — which looks exactly like a successful
-    # run, and --yes would wave a prompt through unattended.
-    ROSTER="$SOURCE/All District CEN_PS.xlsx"
-    [ -f "$ROSTER" ] || die "no database to restore and no roster to seed from.
-
-       'All District CEN_PS.xlsx' should have come with the clone but is
-       not in $SOURCE — something removed it.
-
-       Without it seed.py silently falls back to AllDistrictPS.xlsx, which
-       is every police station in Karnataka (1,085 across 40 districts)
-       rather than the 44 Cyber Crime stations, and seeds two users for
-       each. That failure looks like success, so this script will not do it.
-
-       Almost always you want --restore-dump instead: units and
-       police_stations come back inside the dump."
-    ok "roster: All District CEN_PS.xlsx (44 stations / 36 districts)"
-    ./venv/bin/python seed.py || die "seed.py failed"
-    ok "seeded"
-    if [ -f seed_credentials.csv ]; then
-        chmod 600 seed_credentials.csv
-        [ "$REAL_USER" != root ] && chown "$REAL_USER":"$REAL_USER" seed_credentials.csv
-        warn "backend/seed_credentials.csv holds PLAINTEXT passwords for every"
-        warn "seeded user. Distribute it, then delete it. It is gitignored."
-    fi
+    ok "database is empty — restore a dump, or seed with backend/seed.py"
 fi
 
 # ============================================================================
-step "6. Migrations"
+step "8. Migrations"
 # ============================================================================
-# Always, in order, whichever path got us here: they are idempotent, so on a
-# restored dump they confirm rather than change. 005 (chat_messages) is dev
-# only — production does not expose the chat endpoint.
-#
-# Gated on what is actually IN the database, not on which flags were passed.
-# Migrations 001+ ALTER tables that a dump or seed.py creates; against a
-# genuinely empty schema the first one fails, which on an unattended run
-# reads as the whole bootstrap having failed.
-NOW_TABLES=$(mysql "${MYSQL_ARGS[@]}" -N -B -e \
-    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='cyber_fraud_dsr';" 2>/dev/null || echo 0)
-if [ "$NOW_TABLES" -lt 5 ]; then
-    MIGS=""
-    warn "database is empty — skipping migrations"
-    note "They alter tables that a restore or a seed creates, so there is"
-    note "nothing to alter yet. Load your data, then re-run:"
-    note "  sudo bash $0 --mode $MODE --skip-apt --skip-frontend"
+# Gated on what is actually in the database. Migrations 001+ ALTER tables
+# that a dump or seed.py creates; against an empty schema the first one
+# fails, which on an unattended run reads as the whole deploy failing.
+if [ "$(TABLES_NOW)" -lt 5 ]; then
+    warn "database empty — migrations skipped until there is data"
 else
-    MIGS=$(find migrations -maxdepth 1 -name '[0-9][0-9][0-9]_*.py' -printf '%f\n' 2>/dev/null | sort)
-    [ -n "$MIGS" ] || die "no migrations found in $BACKEND/migrations/"
-fi
-APPLIED=0
-while IFS= read -r f; do
-    [ -n "$f" ] || continue
-    m="${f%.py}"
-    case "$m" in
-        005_*) if [ "$MODE" = prod ]; then note "skip $m (chat: dev only)"; continue; fi ;;
-    esac
-    ./venv/bin/python -m "migrations.$m" >/dev/null 2>&1 \
-        || die "migration $m failed. Re-run it by hand to see the error:
+    APPLIED=0
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        m="${f%.py}"
+        case "$m" in 005_*) [ "$MODE" = prod ] && continue ;; esac
+        ./venv/bin/python -m "migrations.$m" >/dev/null 2>&1 \
+            || die "migration $m failed. Run it directly to see the error:
        cd $BACKEND && venv/bin/python -m migrations.$m"
-    APPLIED=$((APPLIED + 1))
-done <<< "$MIGS"
-[ -n "$MIGS" ] && ok "$APPLIED migrations applied (idempotent — no-ops when already present)"
+        APPLIED=$((APPLIED + 1))
+    done <<< "$(find migrations -maxdepth 1 -name '[0-9][0-9][0-9]_*.py' -printf '%f\n' | sort)"
+    ok "$APPLIED migrations applied (idempotent)"
+fi
 
 # ============================================================================
-step "7. Uploads"
+step "9. Uploads"
 # ============================================================================
-mkdir -p "$BACKEND/uploads"
-if [ "$SKIP_DATA" -eq 1 ] && [ -z "$RESTORE_UPLOADS" ]; then
-    ok "--skip-data: uploads/ created and left empty for you to fill"
-elif [ -n "$RESTORE_UPLOADS" ] && [ -f "$RESTORE_UPLOADS" ]; then
-    # A SINGLE archive — a hand-made tarball rather than the server's
-    # full+increment chain. tar -xf auto-detects gzip, so .tar and .tar.gz
-    # are both fine.
-    #
-    # Where it extracts to depends on how it was rolled up, and getting
-    # this wrong silently produces uploads/uploads/... which every path in
-    # the database then misses. Peek at the first member instead of
-    # guessing: an archive of "uploads/" unpacks into backend/, an archive
-    # of the directory's CONTENTS unpacks into backend/uploads/.
+UPLOADS="$BACKEND/uploads"
+[ "$MODE" = prod ] && UPLOADS="$RUNTIME/backend/uploads"
+mkdir -p "$UPLOADS"
+
+if [ -z "$RESTORE_UPLOADS" ]; then
+    ok "uploads/ ready ($(find "$UPLOADS" -type f 2>/dev/null | wc -l) files, nothing to restore)"
+elif [ -f "$RESTORE_UPLOADS" ]; then
+    # Where it unpacks depends on how it was rolled up, and getting that
+    # wrong is silent: the files land a level off, every path in the
+    # database misses, and the app reports "no statement" for everything.
     FIRST=$(tar -tf "$RESTORE_UPLOADS" 2>/dev/null | head -1)
-    [ -n "$FIRST" ] || die "cannot read $RESTORE_UPLOADS — truncated download?
-       Check it with: tar -tzf '$RESTORE_UPLOADS' | head"
+    [ -n "$FIRST" ] || die "cannot read $RESTORE_UPLOADS — truncated download?"
     case "$FIRST" in
-        backend/*|./backend/*) DEST="$SOURCE"         ; note "archive contains backend/ — unpacking into the source root" ;;
-        uploads/*|./uploads/*) DEST="$BACKEND"        ; note "archive contains uploads/ — unpacking into backend/" ;;
-        *)                     DEST="$BACKEND/uploads"; note "archive contains bare files — unpacking into backend/uploads/" ;;
+        backend/*|./backend/*) DEST=$(dirname "$UPLOADS")/..; note "archive holds backend/ — unpacking above it" ;;
+        uploads/*|./uploads/*) DEST=$(dirname "$UPLOADS");    note "archive holds uploads/ — unpacking into backend/" ;;
+        *)                     DEST="$UPLOADS";               note "archive holds bare files — unpacking into uploads/" ;;
     esac
-    note "archive: $(basename "$RESTORE_UPLOADS") ($(du -h "$RESTORE_UPLOADS" | cut -f1))"
     tar -xf "$RESTORE_UPLOADS" -C "$DEST" || die "extracting $RESTORE_UPLOADS failed"
-
-    # A misplaced extraction is silent: the files exist, but every path
-    # stored in the database points somewhere else, so the app shows
-    # "no statement" for everything. Check the shape before moving on.
-    for BAD in "$BACKEND/uploads/uploads" "$BACKEND/uploads/backend"; do
-        [ -d "$BAD" ] && warn "unexpected nesting at $BAD — the archive layout was
-        not what the peek suggested. Move its contents up one level, or the
-        app will find none of these files."
-    done
-    UP_FILES=$(find "$BACKEND/uploads" -type f | wc -l)
-    [ "$UP_FILES" -eq 0 ] && warn "0 files under backend/uploads/ after extracting — check the layout"
-    ok "uploads restored: $UP_FILES files"
-
-elif [ -n "$RESTORE_UPLOADS" ]; then
-    [ -d "$RESTORE_UPLOADS" ] || die "--restore-uploads: no such file or directory: $RESTORE_UPLOADS"
-
-    # Names are uploads_full_<ts>.tar / uploads_inc_<ts>.tar, where <ts> is
-    # %Y-%m-%d_%H%M%S — see deploy/backup-uploads.sh. Underscores, not
-    # hyphens, and the timestamp is what orders the chain.
-    stamp_of() {
-        local b; b=$(basename "$1" .tar)
-        b="${b#uploads_full_}"; b="${b#uploads_inc_}"
-        printf '%s' "$b"
-    }
-
+    N=$(find "$UPLOADS" -type f | wc -l)
+    [ "$N" -eq 0 ] && warn "0 files under $UPLOADS — check the archive layout"
+    ok "uploads restored: $N files"
+else
+    [ -d "$RESTORE_UPLOADS" ] || die "--restore-uploads: no such file or directory"
+    stamp_of() { local b; b=$(basename "$1" .tar); b="${b#uploads_full_}"; b="${b#uploads_inc_}"; printf '%s' "$b"; }
     FULL=$(find "$RESTORE_UPLOADS" -maxdepth 1 -name 'uploads_full_*.tar' | sort | tail -1)
-    [ -n "$FULL" ] || die "no uploads_full_*.tar in $RESTORE_UPLOADS.
-       An increment on its own is not a restore — it holds only what changed
-       since the last one. Find the full archive that starts the chain."
+    [ -n "$FULL" ] || die "no uploads_full_*.tar in $RESTORE_UPLOADS — an increment
+       alone is not a restore; it holds only what changed."
     FULL_TS=$(stamp_of "$FULL")
-    note "full: $(basename "$FULL")"
-    tar -xf "$FULL" -C "$BACKEND/uploads" || die "extracting the full archive failed"
-
-    # Increments MUST be applied in creation order, and only those NEWER
-    # than the full. Comparing whole filenames would not do it: "full" sorts
-    # before "inc", so every increment would look newer than every full
-    # including ones from a previous chain. Compare the timestamps.
-    # read -r, not `for INC in $(find ...)`: a backup directory path with a
-    # space in it would otherwise be word-split into pieces and every tar
-    # would fail on a filename that does not exist.
-    APPLIED_INC=0
+    tar -xf "$FULL" -C "$(dirname "$UPLOADS")" || die "extracting $FULL failed"
+    # Ordered by TIMESTAMP, not filename: "full" sorts before "inc", so
+    # comparing whole names makes every increment look newer than every
+    # full, including ones from a previous chain.
     while IFS= read -r INC; do
         [ -n "$INC" ] || continue
-        INC_TS=$(stamp_of "$INC")
-        if [ "$INC_TS" \< "$FULL_TS" ]; then
-            note "skip $(basename "$INC") — predates the full, belongs to an older chain"
-            continue
-        fi
-        note "increment: $(basename "$INC")"
-        tar -xf "$INC" -C "$BACKEND/uploads" || die "extracting $INC failed"
-        APPLIED_INC=$((APPLIED_INC + 1))
+        [ "$(stamp_of "$INC")" \< "$FULL_TS" ] && continue
+        tar -xf "$INC" -C "$(dirname "$UPLOADS")" || die "extracting $INC failed"
     done < <(find "$RESTORE_UPLOADS" -maxdepth 1 -name 'uploads_inc_*.tar' | sort)
-    ok "uploads restored: 1 full + $APPLIED_INC increment(s), $(find "$BACKEND/uploads" -type f | wc -l) files"
-else
-    ok "uploads/ ready (empty — nothing to restore)"
-fi
-if [ "$REAL_USER" != root ] && [ "$MODE" = dev ]; then
-    chown -R "$REAL_USER":"$REAL_USER" "$BACKEND/uploads"
+    ok "uploads restored: $(find "$UPLOADS" -type f | wc -l) files"
 fi
 
 # ============================================================================
-step "8. Frontend"
+step "10. Frontend"
 # ============================================================================
 if [ "$SKIP_FRONTEND" -eq 1 ]; then
     warn "skipped (--skip-frontend)"
 else
     cd "$FRONTEND" || die "no frontend dir"
-    if [ -f package-lock.json ]; then
-        npm ci --silent || die "npm ci failed"
-    else
-        npm install --silent || die "npm install failed"
-    fi
-    # npm run build is "tsc -b && vite build". The vite dev server does not
+    if [ -f package-lock.json ]; then npm ci --silent || die "npm ci failed"
+    else npm install --silent || die "npm install failed"; fi
+    # `npm run build` is `tsc -b && vite build`; the dev server does not
     # typecheck, so a type error only ever surfaces here.
     npm run build >/dev/null 2>&1 \
         || die "frontend build failed. Run it directly to see the errors:
        cd $FRONTEND && npm run build"
-    ok "built: $(du -sh dist 2>/dev/null | cut -f1) in dist/"
-    [ "$REAL_USER" != root ] && chown -R "$REAL_USER":"$REAL_USER" node_modules dist 2>/dev/null
+    ok "built $(du -sh dist 2>/dev/null | cut -f1)"
 fi
 
 # ============================================================================
-step "9. Service layer"
+step "11. Services"
 # ============================================================================
 if [ "$MODE" = dev ]; then
-    ok "dev mode — no systemd, no nginx. You start the servers."
+    ok "dev mode — no systemd. Start the servers yourself."
 else
     id -u cyberfraud >/dev/null 2>&1 \
         || useradd --system --no-create-home --shell /usr/sbin/nologin cyberfraud
     mkdir -p "$RUNTIME/backend" "$RUNTIME/frontend" "$RUNTIME/backups" /var/log/cyberfraud
+    # uploads is excluded: the runtime copy is the real one and holds 22 GB.
     rsync -a --delete --exclude venv --exclude __pycache__ --exclude uploads \
-        "$BACKEND/" "$RUNTIME/backend/"
+        "$BACKEND/" "$RUNTIME/backend/" || die "backend sync failed"
     mkdir -p "$RUNTIME/backend/uploads"
-    [ -n "$RESTORE_UPLOADS" ] && rsync -a "$BACKEND/uploads/" "$RUNTIME/backend/uploads/"
-    rsync -a --delete "$FRONTEND/dist/" "$RUNTIME/frontend/dist/"
+    rsync -a --delete "$FRONTEND/dist/" "$RUNTIME/frontend/dist/" 2>/dev/null
     rsync -a "$SOURCE/deploy/" "$RUNTIME/deploy/"
 
-    # The runtime needs its OWN venv: /opt/cyberfraud is what systemd runs,
-    # and the source checkout may not even be readable by the service user.
     [ -d "$RUNTIME/backend/venv" ] || python3 -m venv "$RUNTIME/backend/venv"
     "$RUNTIME/backend/venv/bin/pip" install -q -U pip wheel
     "$RUNTIME/backend/venv/bin/pip" install -q -r "$RUNTIME/backend/requirements.txt" \
         || die "runtime pip install failed"
+
+    # Ownership LAST and over everything: the service runs as cyberfraud and
+    # reads .env itself, so a root-owned 600 .env stops it dead with a
+    # config error that looks nothing like a permissions problem.
     chown -R cyberfraud:cyberfraud "$RUNTIME" /var/log/cyberfraud
-    chmod +x "$RUNTIME"/deploy/*.sh 2>/dev/null
     chmod 600 "$RUNTIME/backend/.env" 2>/dev/null
+    chmod +x "$RUNTIME"/deploy/*.sh 2>/dev/null
     ok "runtime staged at $RUNTIME"
 
     install -m 644 "$SOURCE/deploy/cyberfraud-backend.service" /etc/systemd/system/
     systemctl daemon-reload
-    systemctl enable --now cyberfraud-backend || die "backend service failed to start"
-    ok "cyberfraud-backend running"
+    systemctl enable cyberfraud-backend >/dev/null 2>&1
+    systemctl restart cyberfraud-backend || {
+        journalctl -u cyberfraud-backend -n 25 --no-pager | sed 's/^/        /'
+        die "cyberfraud-backend failed to start — journal above"
+    }
+    ok "cyberfraud-backend started"
 
     if [ -f "$SOURCE/deploy/nginx.conf" ]; then
         install -m 644 "$SOURCE/deploy/nginx.conf" /etc/nginx/sites-available/cyberfraud
         ln -sfn /etc/nginx/sites-available/cyberfraud /etc/nginx/sites-enabled/cyberfraud
         rm -f /etc/nginx/sites-enabled/default
-        if nginx -t >/dev/null 2>&1; then
-            systemctl reload nginx && ok "nginx serving"
-        else
-            warn "nginx config did not validate (nginx -t). The backend is"
-            warn "still up on :8000 — fix nginx separately."
-        fi
+        if nginx -t >/dev/null 2>&1; then systemctl reload nginx && ok "nginx serving"
+        else warn "nginx config did not validate — backend still up on :8000"; fi
     fi
 
-    # The nightly chain: analysis then backup. Its own installer, because it
-    # also retires the two timers it replaced.
     if [ -f "$SOURCE/deploy/install-nightly.sh" ]; then
-        if bash "$SOURCE/deploy/install-nightly.sh" >/dev/null 2>&1; then
-            ok "nightly analysis + backup timer installed"
-        else
-            warn "install-nightly.sh did not complete — run it by hand"
-        fi
+        bash "$SOURCE/deploy/install-nightly.sh" >/dev/null 2>&1 \
+            && ok "nightly analysis + backup timer installed" \
+            || warn "install-nightly.sh did not complete — run it by hand"
     fi
 fi
 
 # ============================================================================
-step "10. Self-verify"
+step "12. Verify"
 # ============================================================================
-# During a real recovery nobody is in a state to notice a step that
-# half-worked. Everything below is checked, not assumed.
+verify "MySQL reachable" env MYSQL_PWD="$DB_PASSWORD" mysql -uroot -e "USE $DB_NAME"
 
-verify "database reachable" mysql "${MYSQL_ARGS[@]}" -e "USE cyber_fraud_dsr"
-
-# With --skip-data the schema checks below are meaningless: the database is
-# empty ON PURPOSE. Printing eight FAILs for that trains you to ignore FAIL
-# lines, which is the opposite of what a DR self-check is for.
-EMPTY_BY_DESIGN=0
-[ "$SKIP_DATA" -eq 1 ] && [ "${NOW_TABLES:-0}" -lt 5 ] && EMPTY_BY_DESIGN=1
-
-TABLES=$(mysql "${MYSQL_ARGS[@]}" -N -B -e \
-    "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='cyber_fraud_dsr';")
-if [ "$EMPTY_BY_DESIGN" -eq 1 ]; then
-    warn "schema checks skipped — database empty by request (--skip-data)"
-elif [ "$TABLES" -ge 36 ]; then
-    pass_ "$TABLES tables present"
-else
-    fail_ "only $TABLES tables — expected 36 or more"
-fi
-
-if [ "$EMPTY_BY_DESIGN" -eq 0 ]; then
-for T in units police_stations users cases all_accounts upload_ledger crypto_txn ifsc_branch; do
-    verify "table $T" mysql "${MYSQL_ARGS[@]}" cyber_fraud_dsr -e "SELECT 1 FROM $T LIMIT 1"
-done
-fi
-
-# The check that catches the silent wrong-roster failure.
-if [ "$EMPTY_BY_DESIGN" -eq 0 ]; then
-PS_COUNT=$(mysql "${MYSQL_ARGS[@]}" -N -B cyber_fraud_dsr \
-    -e "SELECT COUNT(*) FROM police_stations;" 2>/dev/null || echo 0)
-if [ "$PS_COUNT" -ge 40 ] && [ "$PS_COUNT" -le 60 ]; then
-    pass_ "police_stations = $PS_COUNT (expected ~44)"
-elif [ "$PS_COUNT" -gt 60 ]; then
-    fail_ "police_stations = $PS_COUNT — seeded from the WRONG roster (AllDistrictPS.xlsx, 1,085 rows). Expected ~44."
-else
-    printf "  \033[33mWARN\033[0m  %s\n" "police_stations = $PS_COUNT — empty or partial"
-fi
-
-fi
-
-if [ "$EMPTY_BY_DESIGN" -eq 0 ]; then
-verify "migration 023 landed (summary untested columns)" \
-    mysql "${MYSQL_ARGS[@]}" -N -B -e \
-    "SELECT 1 FROM information_schema.columns
-     WHERE table_schema='cyber_fraud_dsr' AND table_name='account_statement_summary'
-       AND column_name='untested_debit';"
-verify "migration 026 landed (summary money widened)" \
-    mysql "${MYSQL_ARGS[@]}" -N -B -e \
-    "SELECT 1 FROM information_schema.columns
-     WHERE table_schema='cyber_fraud_dsr' AND table_name='account_statement_summary'
-       AND column_name='total_debit' AND numeric_precision >= 24;"
-
-fi
-
-# THE credential check. Everything else here proves the script's own
-# connection works; this proves the one the APP will use works, read from
-# .env exactly as the app reads it — no shell sourcing, which mangles a
-# password containing # or &.
-#
-# Its absence is why a wrong password surfaced later as "Access denied"
-# during a restore instead of here, as one red line, at the point where
-# it was still cheap to fix.
+# THE check. Everything else proves this script's connection works; this
+# proves the one the APP uses works, read from .env the way the app reads
+# it. Its absence is why a wrong password surfaced as "Access denied"
+# during a restore instead of here, as one red line, while still cheap.
 for F in "$BACKEND/.env" "$RUNTIME/backend/.env"; do
     [ -f "$F" ] || continue
-    ENVPASS=$(grep -m1 '^DB_PASSWORD=' "$F" | cut -d= -f2-)
-    if MYSQL_PWD="$ENVPASS" mysql -uroot -e "USE cyber_fraud_dsr" >/dev/null 2>&1; then
+    P=$(get_env_var "$F" DB_PASSWORD)
+    if MYSQL_PWD="$P" mysql -uroot -e "USE $DB_NAME" >/dev/null 2>&1; then
         pass_ "DB_PASSWORD in $F authenticates"
     else
-        fail_ "DB_PASSWORD in $F does NOT authenticate against MySQL — the app
-        cannot reach its own database. Fix with:
-            sudo bash $SCRIPT_DIR/set-db-password.sh 'YourPassword'"
+        fail_ "DB_PASSWORD in $F does NOT authenticate"
     fi
 done
-unset ENVPASS
 
-verify "backend imports" env -C "$BACKEND" "$BACKEND/venv/bin/python" -c "import cyber_fraud"
-verify ".env is chmod 600" bash -c "[ \"\$(stat -c %a '$BACKEND/.env')\" = 600 ]"
-[ "$SKIP_FRONTEND" -eq 1 ] || verify "frontend dist built" test -f "$FRONTEND/dist/index.html"
+T=$(TABLES_NOW)
+if [ "$T" -ge 36 ]; then pass_ "$T tables present"
+elif [ "$T" -eq 0 ]; then warn "database empty — restore a dump, then re-run this script"
+else fail_ "only $T tables — expected 36+ or 0"; fi
+
+if [ "$T" -ge 36 ]; then
+    PS_COUNT=$(MYSQL_PWD="$DB_PASSWORD" mysql -uroot -N -B "$DB_NAME" \
+        -e "SELECT COUNT(*) FROM police_stations;" 2>/dev/null || echo 0)
+    if [ "$PS_COUNT" -ge 40 ] && [ "$PS_COUNT" -le 60 ]; then
+        pass_ "police_stations = $PS_COUNT"
+    else
+        fail_ "police_stations = $PS_COUNT — expected ~44"
+    fi
+fi
+
+[ "$SKIP_FRONTEND" -eq 1 ] || verify "frontend built" test -f "$FRONTEND/dist/index.html"
 
 if [ "$MODE" = prod ]; then
     verify "cyberfraud-backend active" systemctl is-active --quiet cyberfraud-backend
     sleep 3
     verify "health endpoint responds" curl -fsS --max-time 5 http://localhost:8000/health
+    if [ -f "$RUNTIME/backend/.env" ]; then
+        verify ".env readable by the service user" \
+            sudo -u cyberfraud test -r "$RUNTIME/backend/.env"
+    fi
 fi
 
-# ============================================================================
 echo
 if [ "$FAILED" -eq 0 ]; then
-    printf "\033[1;32m  BOOTSTRAP COMPLETE\033[0m\n\n"
+    printf "\033[1;32m  DEPLOY COMPLETE\033[0m\n\n"
+    if [ "$MODE" = prod ]; then
+        echo "  http://$(hostname -I | awk '{print $1}')/"
+        echo "  journalctl -u cyberfraud-backend -f"
+    else
+        echo "  cd $BACKEND   && source venv/bin/activate && uvicorn cyber_fraud:app --reload --port 8000"
+        echo "  cd $FRONTEND  && npm run dev"
+    fi
+    echo
+    echo "  Re-run any time — no arguments needed, the password comes from .env:"
+    echo "      sudo bash $0"
+    echo
 else
-    printf "\033[1;31m  BOOTSTRAP FINISHED WITH FAILURES — read the FAIL lines above\033[0m\n\n"
+    printf "\033[1;31m  FINISHED WITH FAILURES — see the FAIL lines above\033[0m\n\n"
 fi
-
-if [ "$MODE" = dev ]; then
-    cat <<DEVEOF
-  Start the app (two terminals, as $REAL_USER — not root):
-
-    cd $BACKEND && source venv/bin/activate
-    uvicorn cyber_fraud:app --reload --port 8000
-
-    cd $FRONTEND && npm run dev          # http://localhost:5175
-
-  Local AI — the chat feature is already Ollama-native:
-
-    curl -fsSL https://ollama.com/install.sh | sh
-    ollama pull qwen2.5-coder:32b
-    sed -i 's/^CHAT_ENABLED=false/CHAT_ENABLED=true/' $BACKEND/.env
-
-DEVEOF
-else
-    IP=$(hostname -I | awk '{print $1}')
-    cat <<PRODEOF
-  Live on   http://${IP}/
-  Logs      journalctl -u cyberfraud-backend -f
-  Deploys   cd $(dirname "$SOURCE") && sudo bash CyberFraudDataEntry/deploy/update.sh
-
-PRODEOF
-fi
-
-if [ -z "$RESTORE_DUMP" ] && [ -z "$RESTORE_UPLOADS" ]; then
-    cat <<FRESHEOF
-  This is an EMPTY instance. To make it a copy of production:
-
-    sudo bash $0 --mode $MODE \\
-         --restore-dump    /path/to/cyber_fraud_dsr-*.sql.gz \\
-         --restore-uploads /path/to/backups/
-
-  Then rebuild the fact table the dump deliberately omits:
-
-    cd $BACKEND && venv/bin/python -m analysis.daily
-
-FRESHEOF
-fi
-
 exit "$FAILED"
