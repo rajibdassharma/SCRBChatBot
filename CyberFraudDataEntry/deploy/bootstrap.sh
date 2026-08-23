@@ -34,6 +34,12 @@
 #                         database alone.
 #   --restore-uploads X   A single .tar/.tar.gz, or a directory holding the
 #                         server's uploads_full_/uploads_inc_ chain.
+#   --restore-latest      Find the newest dump and the newest uploads
+#                         archive in the backup directory and restore both.
+#                         Saves naming files by hand on a recovery.
+#   --backup-dir PATH     Where to look. Default /opt/cyberfraud/backups —
+#                         the same path backup-db.sh writes to. If that is
+#                         empty, a few obvious places are searched too.
 #   --no-pull             Skip the git pull. Default is to pull first.
 #   --skip-apt            Don't touch apt (faster re-runs).
 #   --skip-frontend       Don't rebuild the frontend.
@@ -59,6 +65,10 @@ BACKEND="$SOURCE/backend"
 FRONTEND="$SOURCE/frontend"
 RUNTIME=/opt/cyberfraud
 DB_NAME=cyber_fraud_dsr
+# Where backups live. The same path backup-db.sh and backup-uploads.sh
+# write to, so --restore-latest finds what the nightly chain produced
+# without being told. Override with --backup-dir.
+BACKUP_DIR=/opt/cyberfraud/backups
 NODE_MAJOR=22
 
 MODE=prod
@@ -67,6 +77,7 @@ RESTORE_DUMP=""
 RESTORE_UPLOADS=""
 DO_RESET=0
 DO_PULL=1
+RESTORE_LATEST=0
 SKIP_APT=0
 SKIP_FRONTEND=0
 ASSUME_YES=0
@@ -92,6 +103,8 @@ while [ $# -gt 0 ]; do
         --mode)            MODE="${2:-}"; shift 2 ;;
         --restore-dump)    RESTORE_DUMP="${2:-}"; shift 2 ;;
         --restore-uploads) RESTORE_UPLOADS="${2:-}"; shift 2 ;;
+        --backup-dir)      BACKUP_DIR="${2:-}"; shift 2 ;;
+        --restore-latest)  RESTORE_LATEST=1; shift ;;
         --no-pull)         DO_PULL=0; shift ;;
         --skip-apt)        SKIP_APT=1; shift ;;
         --skip-frontend)   SKIP_FRONTEND=1; shift ;;
@@ -360,6 +373,47 @@ set_env_var "$BACKEND/.env" DB_PASSWORD "$DB_PASSWORD"
 chmod 600 "$BACKEND/.env"
 [ "$MODE" = dev ] && [ "$REAL_USER" != root ] && chown "$REAL_USER":"$REAL_USER" "$BACKEND/.env"
 ok "DB_PASSWORD in backend/.env matches MySQL"
+
+# ============================================================================
+# --restore-latest: work out WHICH files, before touching anything.
+# Named to match what the backup scripts produce, plus the hand-rolled
+# dbdump_/filedump_ names. If the standard directory has nothing, a few
+# obvious alternatives are tried rather than failing on an empty default.
+if [ "$RESTORE_LATEST" -eq 1 ]; then
+    step "6b. Locating backups"
+    FOUND_DIR=""
+    for D in "$BACKUP_DIR" "/backups" "$HOME/backups"              "$(getent passwd "$REAL_USER" | cut -d: -f6)/backups"; do
+        [ -n "$D" ] && [ -d "$D" ] || continue
+        if find "$D" -maxdepth 1 \( -name 'dbdump*.sql.gz' -o -name '*.sql.gz' \)              2>/dev/null | grep -q .; then FOUND_DIR="$D"; break; fi
+    done
+    [ -n "$FOUND_DIR" ] || die "--restore-latest found no *.sql.gz in any of:
+           $BACKUP_DIR
+           /backups
+           $(getent passwd "$REAL_USER" | cut -d: -f6)/backups
+       Point at the right place with --backup-dir /path/to/backups"
+    ok "backups in $FOUND_DIR"
+
+    if [ -z "$RESTORE_DUMP" ]; then
+        # Newest by MTIME, not by filename. The dumps are named
+        # dbdump_20AUG2026 — DDMMMYYYY, which does not sort
+        # chronologically: 05SEP2026 sorts before 20AUG2026.
+        RESTORE_DUMP=$(find "$FOUND_DIR" -maxdepth 1 -name '*.sql.gz' -printf '%T@ %p
+'                        | sort -n | tail -1 | cut -d' ' -f2-)
+        [ -n "$RESTORE_DUMP" ] && ok "dump    $(basename "$RESTORE_DUMP")"
+    fi
+    if [ -z "$RESTORE_UPLOADS" ]; then
+        # A hand-rolled filedump_*.tar.gz, else the nightly chain's
+        # directory of uploads_full_/uploads_inc_ tars.
+        RESTORE_UPLOADS=$(find "$FOUND_DIR" -maxdepth 1 \( -name 'filedump*.tar.gz' -o -name 'filedump*.tar' \) -printf '%T@ %p
+'                           | sort -n | tail -1 | cut -d' ' -f2-)
+        if [ -z "$RESTORE_UPLOADS" ] &&            find "$FOUND_DIR" -maxdepth 1 -name 'uploads_full_*.tar' | grep -q .; then
+            RESTORE_UPLOADS="$FOUND_DIR"
+        fi
+        [ -n "$RESTORE_UPLOADS" ] && ok "uploads $(basename "$RESTORE_UPLOADS")"
+    fi
+    [ -n "$RESTORE_DUMP" ] || warn "no database dump found — schema only"
+    [ -n "$RESTORE_UPLOADS" ] || warn "no uploads archive found"
+fi
 
 # ============================================================================
 step "7. Data"
