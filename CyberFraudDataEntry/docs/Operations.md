@@ -205,17 +205,40 @@ it.
 
 ### Refreshing the DGX from production
 
-Drop a newer dump in and re-run the restore path. This is the one time
-`bootstrap.sh` is right on an existing machine, because it is the only
-script that restores data:
+Restore the dump by hand, then deploy normally. `bootstrap.sh` is not
+involved — it is green-field only.
 
 ```bash
-sudo cp dbdump_*.sql.gz /opt/cyberfraud/backups/
-sudo bash /opt/scrb/CyberFraudDataEntry/deploy/bootstrap.sh \
-     --restore-latest --no-nightly
+# 1. Database (sudo on gunzip if needed, NEVER on mysql — see below)
+gunzip -c /opt/cyberfraud/backups/dbdump_<date>.sql.gz \
+  | MYSQL_PWD='Sandy@411' mysql --protocol=TCP -h 127.0.0.1 -uroot cyber_fraud_dsr
+
+# 2. Uploads, only when they have changed (~22 GB, minutes)
+sudo tar -xzf /opt/cyberfraud/backups/filedump_<date>.tar.gz \
+     -C /opt/cyberfraud/backend/uploads
+sudo chown -R cyberfraud:cyberfraud /opt/cyberfraud/backend/uploads
+
+# 3. Migrations, build, sync, restart, self-verify
+cd /opt/scrb && sudo git pull && sudo bash CyberFraudDataEntry/deploy/update.sh
 ```
 
-No `--reset`, no `--db-password`.
+Step 3 is the same command as any other deploy. The migrations it runs are
+no-ops against a production dump, which already has 001 → 026 applied;
+they are there to catch a dump older than the current schema.
+
+**Restore into an empty database, not over a populated one.** A dump
+replaces the tables it contains but leaves anything else in place, so
+restoring over an existing database merges two states rather than
+replacing one. To be certain:
+
+```bash
+MYSQL_PWD='Sandy@411' mysql --protocol=TCP -h 127.0.0.1 -uroot \
+  -e "DROP DATABASE cyber_fraud_dsr;
+      CREATE DATABASE cyber_fraud_dsr CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;"
+```
+
+The collation is not optional — Ubuntu's MySQL 8 defaults new databases to
+`utf8mb4_0900_ai_ci`, and every foreign key then fails with error 3780.
 
 ### After a restore you do NOT need to run the analysis
 
