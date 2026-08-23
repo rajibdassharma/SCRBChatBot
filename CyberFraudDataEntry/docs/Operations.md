@@ -160,9 +160,22 @@ sudo bash /opt/scrb/CyberFraudDataEntry/deploy/bootstrap.sh
 ```
 
 No arguments. It pulls from GitHub, reads the password from `.env`,
-rebuilds, restarts, and verifies. This replaces `update.sh` for routine
-deploys — `update.sh` still works and has the richer per-migration
-self-verify, but it assumes a machine that already exists.
+rebuilds, restarts, and verifies.
+
+**This does not replace `update.sh`.** The two have separate jobs and
+that separation is deliberate:
+
+| script | for | takes you from |
+|---|---|---|
+| `update.sh` | **production deploys** | a running installation → a newer one |
+| `bootstrap.sh` | **a new environment, or DR** | a bare machine → a running app |
+
+`update.sh` assumes MySQL, the venv, the schema and the service user all
+exist, and only moves code forward. `bootstrap.sh` builds all of that,
+which necessarily makes it more invasive — it can purge MySQL — and that
+is not what should be pointed at production on a routine deploy. Use
+`update.sh` on the server; use `bootstrap.sh` when standing up the DGX,
+a laptop, or a replacement machine.
 
 ### Restoring data
 

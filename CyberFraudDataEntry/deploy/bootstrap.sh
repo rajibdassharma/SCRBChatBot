@@ -1,11 +1,28 @@
 #!/usr/bin/env bash
 # ============================================================================
-# CyberFraud Data Entry — ONE-COMMAND DEPLOY / DISASTER RECOVERY
+# CyberFraud Data Entry — STAND UP A NEW ENVIRONMENT
 #
-# Pulls the latest code, builds the machine, and starts every service —
-# the same way on the production server and on the DGX Spark. The only
-# thing that differs between environments is the MySQL password, which you
-# pass in.
+# Takes a bare Ubuntu machine to a running application: system packages,
+# MySQL, Node, the venvs, the schema, the data, systemd and nginx.
+#
+# THIS IS NOT THE PRODUCTION DEPLOY SCRIPT.
+#
+#   deploy/update.sh      PRODUCTION. An existing, running installation ->
+#                         a newer one. Battle-tested, with a per-migration
+#                         self-verify. Use this for every prod deploy.
+#   deploy/bootstrap.sh   A NEW ENVIRONMENT, or disaster recovery. A
+#                         machine that has nothing -> a machine that runs
+#                         the app. Also the right tool when an environment
+#                         is in an unknown state and you want a clean base.
+#
+# The division is deliberate. update.sh assumes MySQL, the venv, the
+# schema and the service user all exist and only moves code forward; it
+# would fail on a bare machine at the first step. bootstrap.sh builds all
+# of that, which necessarily makes it more invasive -- it can purge MySQL
+# -- and that is not what you want pointed at production every week.
+#
+# The only thing that differs between environments is the MySQL password,
+# which you pass in.
 #
 #   sudo bash deploy/bootstrap.sh --db-password 'CyberFraud@2026'
 #
@@ -116,7 +133,7 @@ while [ $# -gt 0 ]; do
         --skip-apt)        SKIP_APT=1; shift ;;
         --skip-frontend)   SKIP_FRONTEND=1; shift ;;
         --yes|-y)          ASSUME_YES=1; shift ;;
-        --help|-h)         sed -n '2,53p' "$0"; exit 0 ;;
+        --help|-h)         sed -n '2,78p' "$0"; exit 0 ;;
         *)                 die "unknown argument: $1  (try --help)" ;;
     esac
 done
