@@ -506,6 +506,24 @@ else
     ok "cyberfraud-backend started"
 
     if [ -f "$SOURCE/deploy/nginx.conf" ]; then
+        # nginx.conf listens on 443 and port 80 only redirects to it, so
+        # without a certificate `nginx -t` fails, nothing serves, and you
+        # are left with an API on :8000 and no browser URL. Generate a
+        # self-signed one if it is missing — CYBERFRAUD_CERT_CN sets the
+        # CN, defaulting to this machine's primary address so the browser
+        # warning at least names the right host.
+        if [ ! -f /etc/ssl/certs/cyberfraud.crt ] || [ ! -f /etc/ssl/private/cyberfraud.key ]; then
+            if [ -f "$SOURCE/deploy/generate-cert.sh" ]; then
+                CYBERFRAUD_CERT_CN="${CYBERFRAUD_CERT_CN:-$(hostname -I | awk '{print $1}')}" \
+                    bash "$SOURCE/deploy/generate-cert.sh" >/dev/null 2>&1 \
+                    && ok "self-signed cert generated (CN=$(hostname -I | awk '{print $1}'))" \
+                    || warn "generate-cert.sh failed — nginx will not start"
+            else
+                warn "no cert and no generate-cert.sh — nginx will not start"
+            fi
+        else
+            ok "TLS cert already present"
+        fi
         install -m 644 "$SOURCE/deploy/nginx.conf" /etc/nginx/sites-available/cyberfraud
         ln -sfn /etc/nginx/sites-available/cyberfraud /etc/nginx/sites-enabled/cyberfraud
         rm -f /etc/nginx/sites-enabled/default
@@ -560,6 +578,15 @@ if [ "$MODE" = prod ]; then
     verify "cyberfraud-backend active" systemctl is-active --quiet cyberfraud-backend
     sleep 3
     verify "health endpoint responds" curl -fsS --max-time 5 http://localhost:8000/health
+    # The backend being up is not the same as the app being reachable.
+    # nginx serves the frontend and proxies the API; if its cert is
+    # missing it silently does neither.
+    if systemctl is-active --quiet nginx; then
+        verify "nginx serving over https" curl -fsSk --max-time 5 https://localhost/health
+    else
+        fail_ "nginx is not running — the app is not reachable in a browser.
+        The API is still up on :8000. Check: sudo nginx -t"
+    fi
     if [ -f "$RUNTIME/backend/.env" ]; then
         verify ".env readable by the service user" \
             sudo -u cyberfraud test -r "$RUNTIME/backend/.env"
@@ -570,7 +597,7 @@ echo
 if [ "$FAILED" -eq 0 ]; then
     printf "\033[1;32m  DEPLOY COMPLETE\033[0m\n\n"
     if [ "$MODE" = prod ]; then
-        echo "  http://$(hostname -I | awk '{print $1}')/"
+        echo "  https://$(hostname -I | awk '{print $1}')/    (self-signed cert — accept the browser warning)"
         echo "  journalctl -u cyberfraud-backend -f"
     else
         echo "  cd $BACKEND   && source venv/bin/activate && uvicorn cyber_fraud:app --reload --port 8000"
