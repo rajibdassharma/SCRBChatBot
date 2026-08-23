@@ -470,8 +470,9 @@ else
         m="${f%.py}"
         case "$m" in 005_*) [ "$MODE" = prod ] && continue ;; esac
         ./venv/bin/python -m "migrations.$m" >/dev/null 2>&1 \
-            || die "migration $m failed. Run it directly to see the error:
-       cd $BACKEND && venv/bin/python -m migrations.$m"
+            || die "migration $m failed. Run it directly to see the error
+       (sudo is required — .env is mode 600 and root-owned):
+       cd $BACKEND && sudo venv/bin/python -m migrations.$m"
         APPLIED=$((APPLIED + 1))
     done <<< "$(find migrations -maxdepth 1 -name '[0-9][0-9][0-9]_*.py' -printf '%f\n' | sort)"
     ok "$APPLIED migrations applied (idempotent)"
