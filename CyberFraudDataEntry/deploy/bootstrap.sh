@@ -383,10 +383,16 @@ step "6. backend/.env"
 # will not start and every migration dies on import. Preserving such a
 # file is worse than replacing it, so detect and rewrite, carrying the
 # JWT secret across: regenerating that would log out every user.
-if [ -f "$BACKEND/.env" ] && ! grep -q '^CFDSR_' "$BACKEND/.env" 2>/dev/null; then
+# Tested by looking for UNPREFIXED keys, not for the absence of prefixed
+# ones. A .env touched by the 8a611cc-era script has exactly one CFDSR_
+# line (the password it reconciles) sitting on top of twelve unprefixed
+# ones — so "has no CFDSR_ key" was false, the file was preserved, and the
+# same ValidationError came back. Any unprefixed key means config.py
+# cannot read the file, whatever else is in it.
+if [ -f "$BACKEND/.env" ] &&    grep -qE '^(DB_|JWT_|CORS_|CHAT_|OLLAMA_|DISABLE_)' "$BACKEND/.env" 2>/dev/null; then
     OLD_JWT=$(get_env_var "$BACKEND/.env" JWT_SECRET || true)
     mv -f "$BACKEND/.env" "$BACKEND/.env.unprefixed.bak"
-    warn "backend/.env had no CFDSR_ keys — config.py could never have read it"
+    warn "backend/.env has unprefixed keys — config.py cannot read it"
     note "moved aside to .env.unprefixed.bak; rebuilding with the right names"
     [ -n "$OLD_JWT" ] && note "carrying the existing JWT_SECRET across"
 fi
@@ -413,7 +419,7 @@ set_env_var "$BACKEND/.env" CFDSR_DB_PASSWORD "$DB_PASSWORD"
 # The runtime copy is regenerated from source by the rsync in step 11, but
 # only in prod mode and only if we get that far. Clear a legacy one now so
 # a failure in between cannot leave the service reading unprefixed keys.
-if [ -f "$RUNTIME/backend/.env" ] && ! grep -q '^CFDSR_' "$RUNTIME/backend/.env" 2>/dev/null; then
+if [ -f "$RUNTIME/backend/.env" ] &&    grep -qE '^(DB_|JWT_|CORS_|CHAT_|OLLAMA_|DISABLE_)' "$RUNTIME/backend/.env" 2>/dev/null; then
     mv -f "$RUNTIME/backend/.env" "$RUNTIME/backend/.env.unprefixed.bak"
     warn "runtime .env also had no CFDSR_ keys — moved aside"
 fi
