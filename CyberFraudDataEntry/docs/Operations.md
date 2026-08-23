@@ -125,44 +125,114 @@ tail -50 /var/log/mysql/slow.log
 
 ---
 
-## Disaster Recovery — bare machine to running app
+## Disaster Recovery / Deploy — one command
 
-`deploy/bootstrap.sh` is the sibling of `update.sh`, and the split is the
-point:
+`deploy/bootstrap.sh` pulls the latest code, builds the machine, and
+starts every service. It is the same command on every environment; the
+only thing that differs is the MySQL password.
 
-| script | takes you from | to | run |
-|---|---|---|---|
-| `bootstrap.sh` | a bare Ubuntu box | a running app | once per machine |
-| `update.sh` | a running app | a newer running app | every deploy |
+| environment | MySQL password |
+|---|---|
+| Laptop | `Sandy@411` |
+| DGX Spark (home, off KSWAN) | `Sandy@411` |
+| Production server | `CyberFraud@KSP2026` |
 
-`update.sh` assumes MySQL exists, the venv exists, the schema exists, the
-service user exists. On a dead server none of that is true, which is why
-recovery needed its own script rather than a longer runbook.
+Laptop and DGX share one because both are yours and both sit outside
+KSWAN. Production keeps its own so that a compromise of a personal
+machine does not carry the production credential with it.
+
+### First run on a machine (or any time you want a clean base)
 
 ```bash
-# On the replacement machine:
 git clone https://github.com/rajibdassharma/SCRBChatBot.git /opt/scrb
 cd /opt/scrb/CyberFraudDataEntry
-
-sudo bash deploy/bootstrap.sh --mode prod --yes      --restore-dump    /path/to/cyber_fraud_dsr-<date>.sql.gz      --restore-uploads /path/to/backups/
+sudo bash deploy/bootstrap.sh --reset --db-password '<the one above>'
 ```
 
-That is the whole RTO: a clone, one command, and however long the restore
-takes. It installs apt packages, MySQL (with the right collation), Node,
-both venvs, the schema, migrations 001–026, the data, the frontend build,
-the systemd units, nginx, and the nightly timer — then verifies its own
-work and exits non-zero if any check failed.
+`--reset` purges MySQL and `/var/lib/mysql` and reinstalls it. It asks
+you to type `RESET` first. It exists so that a half-configured machine is
+never a dead end — there is always one command back to a known base.
+
+### Every run after that
+
+```bash
+sudo bash /opt/scrb/CyberFraudDataEntry/deploy/bootstrap.sh
+```
+
+No arguments. It pulls from GitHub, reads the password from `.env`,
+rebuilds, restarts, and verifies. This replaces `update.sh` for routine
+deploys — `update.sh` still works and has the richer per-migration
+self-verify, but it assumes a machine that already exists.
+
+### Restoring data
+
+Either pass the flags:
+
+```bash
+sudo bash deploy/bootstrap.sh --restore-dump    /backups/dbdump_<date>.sql.gz                               --restore-uploads /backups/filedump_<date>.tar.gz
+```
+
+…or do it by hand and re-run the script afterwards, which is the better
+choice for the 22 GB uploads archive — a failure forty minutes into an
+in-script extraction costs you the whole extraction on retry:
+
+```bash
+# 1. environment only
+sudo bash deploy/bootstrap.sh --reset --db-password '<password>'
+
+# 2. uploads
+sudo tar -xzf /backups/filedump_<date>.tar.gz -C /opt/cyberfraud/backend/uploads
+
+# 3. database.  sudo on gunzip, NOT on mysql -- sudo resets the
+#    environment, so MYSQL_PWD never reaches the client and you get
+#    "Access denied for user root@localhost".
+sudo gunzip -c /backups/dbdump_<date>.sql.gz   | MYSQL_PWD='<password>' mysql -uroot cyber_fraud_dsr
+
+# 4. migrations, ownership, restart, verify
+sudo bash deploy/bootstrap.sh
+```
+
+Then rebuild the fact table, which the dump excludes by design:
+
+```bash
+cd /opt/cyberfraud/backend && sudo -u cyberfraud venv/bin/python -m analysis.daily
+```
+
+### The password rule
+
+**One password per machine, reconciled on every run.** It lives in
+`backend/.env` and nowhere else; the script makes MySQL agree with it
+each time it runs, and the final verify connects using the value from
+each `.env` exactly as the app reads it.
+
+That check exists because its absence cost a debugging session: the
+password was living in MySQL and in two `.env` copies with nothing
+keeping them in step, and the mismatch surfaced hours later as
+`Access denied` in the middle of a restore rather than as one red line at
+setup. If root has drifted to some other password, the script resets it
+through Ubuntu's `debian-sys-maint` account rather than making anyone
+hunt for the current one.
+
+Never read `.env` with `set -a; . .env`. Sourcing runs it through the
+shell, so a value containing `#` is truncated and one containing `&`
+forks. Use `grep -m1 '^KEY=' file | cut -d= -f2-`. Never rewrite it with
+`sed -i` either: that reassigns the file's owner to whoever ran it, and a
+root-owned `600 .env` stops the service dead with a config error that
+looks nothing like a permissions problem.
 
 ### Things it deliberately refuses to do
 
-- **Overwrite `backend/.env`.** Re-running it never costs you a secret.
-- **Re-seed a database that already has tables**, unless you pass
-  `--restore-dump` — which is an explicit instruction to replace them.
+- **Regenerate `JWT_SECRET`.** It is written once. Regenerating it would
+  log out every user.
+- **Invent a password.** `--db-password` is required when MySQL is new.
+  An earlier version generated a random one, which is the right default
+  for an unattended server and the wrong one for recovery: it hands you a
+  secret you then have to find and reconcile.
 - **Restore uploads from an increment alone.** It requires a
-  `uploads_full_<ts>.tar` and applies only the increments NEWER than it,
-  by timestamp. Filename order would not do: `full` sorts before `inc`,
-  so every increment looks newer than every full, including ones from a
-  previous chain.
+  `uploads_full_<ts>.tar` and applies only the increments newer than it,
+  **by timestamp**. Filename order would not do: `full` sorts before
+  `inc`, so every increment looks newer than every full, including ones
+  from a previous chain.
 
 ### The check that matters most
 
@@ -180,14 +250,15 @@ reference data rather than case data. The two backup dumps stay out of
 git permanently; that exclusion is what `dbdump*` / `filedump*` in
 `.gitignore` is for.
 
-`bootstrap.sh` also **refuses to seed** if the roster is somehow absent —
-a hard stop, not a prompt, since `--yes` would wave a prompt through
-unattended — and step 10 asserts `police_stations` lands between 40 and
-60. A recovery is the worst possible moment to be reading row counts by
-eye.
+`bootstrap.sh` does not seed at all — seeding is a deliberate,
+separate `python seed.py`. What it does do is **assert
+`police_stations` lands between 40 and 60** in its verify block, so a
+database built from the wrong roster is caught immediately rather than
+discovered later by someone reading row counts by eye.
 
 In practice this rarely bites: a DR restores a dump, and `units` +
-`police_stations` come back inside it.
+`police_stations` come back inside it. The roster only matters when
+standing up an instance with no database at all.
 
 ### After a restore
 
