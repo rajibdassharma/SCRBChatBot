@@ -585,7 +585,15 @@ else
         else warn "nginx config did not validate — backend still up on :8000"; fi
     fi
 
-    if [ -f "$SOURCE/deploy/install-nightly.sh" ]; then
+    if [ "$NO_NIGHTLY" -eq 1 ]; then
+        # Actively disable, not merely skip installing: a machine that had
+        # the timer once keeps firing it.
+        systemctl disable --now cyberfraud-nightly.timer  >/dev/null 2>&1
+        systemctl disable --now cyberfraud-backup.timer   >/dev/null 2>&1
+        systemctl disable --now cyberfraud-analysis.timer >/dev/null 2>&1
+        ok "nightly timer NOT installed (--no-nightly); any existing one disabled"
+        note "backups and analysis on this machine are manual, by design"
+    elif [ -f "$SOURCE/deploy/install-nightly.sh" ]; then
         bash "$SOURCE/deploy/install-nightly.sh" >/dev/null 2>&1 \
             && ok "nightly analysis + backup timer installed" \
             || warn "install-nightly.sh did not complete — run it by hand"

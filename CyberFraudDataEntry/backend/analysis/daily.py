@@ -106,6 +106,67 @@ STEPS = [
 ]
 
 
+def _ledger_and_facts_agree() -> bool:
+    """Refuse to run when the ledger claims work the fact table cannot show.
+
+    A machine restored from a dump gets `upload_ledger` — every file
+    marked parsed — but NOT `statement_transactions`, which backup-db.sh
+    excludes as rebuildable. That combination is never valid and it fails
+    DESTRUCTIVELY rather than loudly:
+
+      * parse_statements skips every file, because the ledger says done
+      * build_links then does DELETE FROM mule_account_link and rebuilds
+        from an empty fact table, wiping the links that came in the dump
+      * summary --check compares the restored summaries against nothing
+
+    Cost the 2026-08-18 re-seed. Cheap to detect, so detect it.
+    """
+    try:
+        import sqlalchemy as sa
+        sys.path.insert(0, BACKEND)
+        from config import settings
+        from urllib.parse import quote_plus
+        url = (f"mysql+pymysql://{settings.DB_USER}:{quote_plus(settings.DB_PASSWORD)}"
+               f"@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}")
+        try:
+            eng = sa.create_engine(url)
+        except Exception:
+            url = url.replace("pymysql", "mysqldb")
+            eng = sa.create_engine(url)
+        with eng.connect() as c:
+            ledger = c.execute(sa.text("SELECT COUNT(*) FROM upload_ledger")).scalar() or 0
+            facts = c.execute(sa.text("SELECT COUNT(*) FROM statement_transactions")).scalar() or 0
+        eng.dispose()
+    except Exception as exc:                       # table missing on a first run
+        print(f"[daily] ledger/fact consistency check skipped ({exc.__class__.__name__})")
+        return True
+
+    if ledger > 0 and facts == 0:
+        print("=" * 70)
+        print("REFUSING TO RUN — the ledger and the fact table disagree")
+        print("=" * 70)
+        print(f"  upload_ledger          {ledger:,} rows")
+        print(f"  statement_transactions {facts:,} rows")
+        print()
+        print("  The ledger says every file has been parsed; the fact table")
+        print("  says nothing has. That is what a restore looks like, because")
+        print("  backup-db.sh excludes statement_transactions as rebuildable.")
+        print()
+        print("  Running anyway would SKIP every file (the ledger says done),")
+        print("  then DELETE FROM mule_account_link and rebuild it from an")
+        print("  empty table — destroying the links that came in the dump.")
+        print()
+        print("  If you want the fact table on this machine, reparse from")
+        print("  scratch — hours, and it needs the uploaded files present:")
+        print("      mysql ... -e 'TRUNCATE upload_ledger;'")
+        print("      python -m analysis.daily")
+        print()
+        print("  If you only want the app to work, you need neither: no API")
+        print("  route reads statement_transactions. Do nothing.")
+        return False
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-parse", action="store_true",
@@ -128,6 +189,9 @@ def main() -> int:
         # never restores, so running it there is pure cost — and it is
         # the one step whose cost grows with the fact table.
         steps = [(l, a) for l, a in steps if "analysis.relink" not in str(a)]
+
+    if not _ledger_and_facts_agree():
+        return 2
 
     print("=" * 70)
     print("DAILY POST-RESTORE RUN")
