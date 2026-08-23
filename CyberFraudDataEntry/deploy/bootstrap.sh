@@ -58,6 +58,9 @@
 #                         the same path backup-db.sh writes to. If that is
 #                         empty, a few obvious places are searched too.
 #   --no-pull             Skip the git pull. Default is to pull first.
+#   --empty-ok            Allow --reset without a restore, i.e. end up
+#                         with a deliberately empty database. Without it
+#                         that combination is refused.
 #   --no-nightly          Do not install the 23:00 analysis+backup timer.
 #                         For any machine that is a RESTORED COPY rather
 #                         than the system of record: the analysis half of
@@ -101,6 +104,7 @@ DO_RESET=0
 DO_PULL=1
 RESTORE_LATEST=0
 NO_NIGHTLY=0
+EMPTY_OK=0
 SKIP_APT=0
 SKIP_FRONTEND=0
 ASSUME_YES=0
@@ -130,10 +134,11 @@ while [ $# -gt 0 ]; do
         --restore-latest)  RESTORE_LATEST=1; shift ;;
         --no-pull)         DO_PULL=0; shift ;;
         --no-nightly)      NO_NIGHTLY=1; shift ;;
+        --empty-ok)        EMPTY_OK=1; shift ;;
         --skip-apt)        SKIP_APT=1; shift ;;
         --skip-frontend)   SKIP_FRONTEND=1; shift ;;
         --yes|-y)          ASSUME_YES=1; shift ;;
-        --help|-h)         sed -n '2,78p' "$0"; exit 0 ;;
+        --help|-h)         sed -n '2,82p' "$0"; exit 0 ;;
         *)                 die "unknown argument: $1  (try --help)" ;;
     esac
 done
@@ -199,6 +204,28 @@ POOL_GB=$(( RAM_GB / 4 )); [ "$POOL_GB" -lt 1 ] && POOL_GB=1; [ "$POOL_GB" -gt 1
 case "$DB_PASSWORD" in
     *\'*|*\\*) die "avoid single quotes and backslashes in --db-password" ;;
 esac
+
+# --reset with nothing to restore leaves you with an empty database. That
+# is almost never what anyone means, and it is an easy mistake to make:
+# --reset is needed exactly once, on the first run, and then sits in the
+# shell history looking harmless. Re-running that line silently destroyed
+# a restored production copy on 2026-08-23 — every check passed, because
+# an empty database is a perfectly valid outcome of a reset.
+#
+# So: refuse the combination unless it is stated outright.
+if [ "$DO_RESET" -eq 1 ] && [ -z "$RESTORE_DUMP" ] && [ "$RESTORE_LATEST" -eq 0 ] && [ "$EMPTY_OK" -eq 0 ]; then
+    die "--reset with no restore would leave an EMPTY database.
+
+       --reset purges MySQL and deletes /var/lib/mysql. Without
+       --restore-dump or --restore-latest, nothing puts the data back.
+
+       If you want a copy of production:
+           --reset --db-password '...' --restore-latest
+
+       If you genuinely want an empty instance — a brand-new deployment
+       with no data — say so:
+           --reset --empty-ok --db-password '...'"
+fi
 
 if [ "$DO_RESET" -eq 1 ] && [ "$ASSUME_YES" -eq 0 ]; then
     echo
