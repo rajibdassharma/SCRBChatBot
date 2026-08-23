@@ -121,24 +121,30 @@ def _ledger_and_facts_agree() -> bool:
 
     Cost the 2026-08-18 re-seed. Cheap to detect, so detect it.
     """
+    # Uses the ASYNC engine the app already ships. The first version of
+    # this reached for mysql+pymysql, which is not in requirements.txt —
+    # so it raised ModuleNotFoundError, hit the except below, and reported
+    # "skipped" every time. A guard that never fires is worse than none:
+    # it reads like protection in the log while protecting nothing.
     try:
-        import sqlalchemy as sa
+        import asyncio
         sys.path.insert(0, BACKEND)
-        from config import settings
-        from urllib.parse import quote_plus
-        url = (f"mysql+pymysql://{settings.DB_USER}:{quote_plus(settings.DB_PASSWORD)}"
-               f"@{settings.DB_HOST}:{settings.DB_PORT}/{settings.DB_NAME}")
-        try:
-            eng = sa.create_engine(url)
-        except Exception:
-            url = url.replace("pymysql", "mysqldb")
-            eng = sa.create_engine(url)
-        with eng.connect() as c:
-            ledger = c.execute(sa.text("SELECT COUNT(*) FROM upload_ledger")).scalar() or 0
-            facts = c.execute(sa.text("SELECT COUNT(*) FROM statement_transactions")).scalar() or 0
-        eng.dispose()
-    except Exception as exc:                       # table missing on a first run
-        print(f"[daily] ledger/fact consistency check skipped ({exc.__class__.__name__})")
+        from sqlalchemy import text
+        from database import engine
+
+        async def _counts():
+            try:
+                async with engine.connect() as c:
+                    l = (await c.execute(text("SELECT COUNT(*) FROM upload_ledger"))).scalar() or 0
+                    f = (await c.execute(text("SELECT COUNT(*) FROM statement_transactions"))).scalar() or 0
+                return l, f
+            finally:
+                await engine.dispose()
+
+        ledger, facts = asyncio.run(_counts())
+    except Exception as exc:            # tables absent on a first-ever run
+        print(f"[daily] ledger/fact consistency check skipped "
+              f"({exc.__class__.__name__}: {exc})")
         return True
 
     if ledger > 0 and facts == 0:
