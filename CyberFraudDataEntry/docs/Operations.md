@@ -125,165 +125,188 @@ tail -50 /var/log/mysql/slow.log
 
 ---
 
-## Disaster Recovery / Deploy — one command
+## Standing Up an Environment, and Keeping It Current
 
-`deploy/bootstrap.sh` pulls the latest code, builds the machine, and
-starts every service. It is the same command on every environment; the
-only thing that differs is the MySQL password.
+Two scripts, two jobs. Which one you run depends only on whether the
+machine already exists.
 
-| environment | MySQL password |
+| | script | when |
+|---|---|---|
+| **Green-field** | `deploy/bootstrap.sh` | **once** per machine — a bare Ubuntu box, one in an unknown state, or a disaster recovery |
+| **Everything after** | `deploy/update.sh` | every deploy, on every environment, forever |
+
+Production, the DGX Spark and the laptop are the same machine once their
+green-field build is done. There is no separate "DGX procedure": past the
+first run they are all maintained with `update.sh`.
+
+### 1. Green-field build (once per machine)
+
+```bash
+sudo git clone https://github.com/rajibdassharma/SCRBChatBot.git /opt/scrb
+cd /opt/scrb/CyberFraudDataEntry
+
+# Put the dumps where the script looks:
+sudo mkdir -p /opt/cyberfraud/backups
+sudo cp dbdump_*.sql.gz filedump_*.tar.gz /opt/cyberfraud/backups/
+
+sudo bash deploy/bootstrap.sh --reset --db-password '<see table below>' \
+     --restore-latest --no-nightly
+```
+
+Type `RESET` when it asks. It installs apt packages, MySQL with the right
+collation, Node, both venvs, the schema, the data, the frontend build, the
+TLS cert, systemd and nginx — then verifies every required table **by
+name** and exits non-zero if any is missing.
+
+**The MySQL password is the only thing that differs between
+environments:**
+
+| machine | password |
 |---|---|
 | Laptop | `Sandy@411` |
-| DGX Spark (home, off KSWAN) | `Sandy@411` |
-| Production server | `CyberFraud@KSP2026` |
+| DGX Spark | `Sandy@411` |
+| Production | `CyberFraud@KSP2026` |
 
-Laptop and DGX share one because both are yours and both sit outside
-KSWAN. Production keeps its own so that a compromise of a personal
-machine does not carry the production credential with it.
+Laptop and DGX share one — both are personal machines outside KSWAN.
+Production keeps its own, so a compromise of a personal machine does not
+carry the production credential with it.
 
-### First run on a machine (or any time you want a clean base)
+**Flag notes, each of which cost something to learn:**
 
-```bash
-git clone https://github.com/rajibdassharma/SCRBChatBot.git /opt/scrb
-cd /opt/scrb/CyberFraudDataEntry
-sudo bash deploy/bootstrap.sh --reset --db-password '<the one above>'
-```
+- `--reset` purges MySQL and deletes `/var/lib/mysql` — **every** database
+  on the box. It belongs in the green-field command and nowhere else. The
+  script refuses it without a restore flag, because `--reset` on its own
+  completes "successfully" with an empty database.
+- `--no-nightly` on any machine that is a RESTORED COPY rather than the
+  system of record — the DGX and the laptop. The 23:00 chain runs
+  `analysis.daily`, which is destructive against a restored database: the
+  dump carries `upload_ledger` marked fully parsed but not
+  `statement_transactions`, so `build_links` deletes `mule_account_link`
+  and rebuilds it from nothing. Production IS the system of record and
+  keeps its timer.
+- `--db-password` is required only when MySQL is new. Afterwards it is
+  read from `backend/.env`.
 
-`--reset` purges MySQL and `/var/lib/mysql` and reinstalls it. It asks
-you to type `RESET` first. It exists so that a half-configured machine is
-never a dead end — there is always one command back to a known base.
-
-### Every run after that
-
-```bash
-sudo bash /opt/scrb/CyberFraudDataEntry/deploy/bootstrap.sh
-```
-
-No arguments. It pulls from GitHub, reads the password from `.env`,
-rebuilds, restarts, and verifies.
-
-**This does not replace `update.sh`.** The two have separate jobs and
-that separation is deliberate:
-
-| script | for | takes you from |
-|---|---|---|
-| `update.sh` | **production deploys** | a running installation → a newer one |
-| `bootstrap.sh` | **a new environment, or DR** | a bare machine → a running app |
-
-`update.sh` assumes MySQL, the venv, the schema and the service user all
-exist, and only moves code forward. `bootstrap.sh` builds all of that,
-which necessarily makes it more invasive — it can purge MySQL — and that
-is not what should be pointed at production on a routine deploy. Use
-`update.sh` on the server; use `bootstrap.sh` when standing up the DGX,
-a laptop, or a replacement machine.
-
-### Restoring data
-
-Either pass the flags:
+### 2. Every deploy after that — `update.sh`, everywhere
 
 ```bash
-sudo bash deploy/bootstrap.sh --restore-dump    /backups/dbdump_<date>.sql.gz                               --restore-uploads /backups/filedump_<date>.tar.gz
+cd /opt/scrb && sudo git pull && sudo bash CyberFraudDataEntry/deploy/update.sh
 ```
 
-…or do it by hand and re-run the script afterwards, which is the better
-choice for the 22 GB uploads archive — a failure forty minutes into an
-in-script extraction costs you the whole extraction on retry:
+The same command on production and on the DGX. `update.sh` installs pip
+dependencies, runs migrations 001 → 004, 006 → 026, builds the frontend,
+syncs into `/opt/cyberfraud`, restarts the backend, and self-verifies each
+schema change. It never installs the nightly timer, so running it on the
+DGX cannot resurrect the chain that `--no-nightly` suppressed.
+
+**Do not use `bootstrap.sh` for routine deploys.** It can purge MySQL —
+the right capability for building a machine, the wrong one for updating
+it.
+
+### Refreshing the DGX from production
+
+Drop a newer dump in and re-run the restore path. This is the one time
+`bootstrap.sh` is right on an existing machine, because it is the only
+script that restores data:
 
 ```bash
-# 1. environment only
-sudo bash deploy/bootstrap.sh --reset --db-password '<password>'
-
-# 2. uploads
-sudo tar -xzf /backups/filedump_<date>.tar.gz -C /opt/cyberfraud/backend/uploads
-
-# 3. database.  sudo on gunzip, NOT on mysql -- sudo resets the
-#    environment, so MYSQL_PWD never reaches the client and you get
-#    "Access denied for user root@localhost".
-sudo gunzip -c /backups/dbdump_<date>.sql.gz   | MYSQL_PWD='<password>' mysql -uroot cyber_fraud_dsr
-
-# 4. migrations, ownership, restart, verify
-sudo bash deploy/bootstrap.sh
+sudo cp dbdump_*.sql.gz /opt/cyberfraud/backups/
+sudo bash /opt/scrb/CyberFraudDataEntry/deploy/bootstrap.sh \
+     --restore-latest --no-nightly
 ```
 
-Then rebuild the fact table, which the dump excludes by design:
+No `--reset`, no `--db-password`.
 
-```bash
-cd /opt/cyberfraud/backend && sudo -u cyberfraud venv/bin/python -m analysis.daily
-```
+### After a restore you do NOT need to run the analysis
+
+Every analysis RESULT is in the dump — `account_statement_summary`,
+`mule_account_link`, `crypto_txn`, `id_photo_hashes`, `ifsc_branch`,
+`upload_ledger`. Only `statement_transactions` is excluded; it is 27 GB of
+raw parsed rows and **no API route reads it**. All ten analysis tabs work
+off the restore.
+
+Running `analysis.daily` on a restored machine is actively harmful, which
+is why it refuses to start when the ledger is populated and the fact table
+is empty. You would want the fact table only if THIS machine were going to
+parse new uploads — and that means truncating `upload_ledger` and
+reparsing ~30k files from scratch.
 
 ### The password rule
 
 **One password per machine, reconciled on every run.** It lives in
-`backend/.env` and nowhere else; the script makes MySQL agree with it
-each time it runs, and the final verify connects using the value from
-each `.env` exactly as the app reads it.
+`backend/.env` under the key **`CFDSR_DB_PASSWORD`** — `config.py` sets
+`env_prefix = "CFDSR_"`, so an unprefixed `DB_PASSWORD=` is ignored
+entirely and pydantic then refuses to construct `Settings` at all.
 
-That check exists because its absence cost a debugging session: the
-password was living in MySQL and in two `.env` copies with nothing
-keeping them in step, and the mismatch surfaced hours later as
-`Access denied` in the middle of a restore rather than as one red line at
-setup. If root has drifted to some other password, the script resets it
-through Ubuntu's `debian-sys-maint` account rather than making anyone
-hunt for the current one.
+Every auth check is made **over TCP** (`--protocol=TCP -h 127.0.0.1`),
+because that is how the application connects. `mysql -uroot` over the unix
+socket as OS root succeeds with *any* password when root is on the
+`auth_socket` plugin — so a socket-based check reports success while the
+app cannot connect at all. A check that does not use the same path as the
+thing it checks is not a check.
 
-Never read `.env` with `set -a; . .env`. Sourcing runs it through the
+Never read `.env` with `set -a; . .env`: sourcing runs it through the
 shell, so a value containing `#` is truncated and one containing `&`
 forks. Use `grep -m1 '^KEY=' file | cut -d= -f2-`. Never rewrite it with
-`sed -i` either: that reassigns the file's owner to whoever ran it, and a
-root-owned `600 .env` stops the service dead with a config error that
-looks nothing like a permissions problem.
+`sed -i` either — that reassigns the file's owner to whoever ran it, and a
+root-owned `600 .env` stops the service with a config error that looks
+nothing like a permissions problem.
 
-### Things it deliberately refuses to do
+### Restoring a dump by hand
 
-- **Regenerate `JWT_SECRET`.** It is written once. Regenerating it would
-  log out every user.
-- **Invent a password.** `--db-password` is required when MySQL is new.
-  An earlier version generated a random one, which is the right default
-  for an unattended server and the wrong one for recovery: it hands you a
-  secret you then have to find and reconcile.
+```bash
+gunzip -c /opt/cyberfraud/backups/dbdump_<date>.sql.gz \
+  | MYSQL_PWD='<password>' mysql --protocol=TCP -h 127.0.0.1 -uroot cyber_fraud_dsr
+```
+
+`sudo` on `gunzip` if it is needed to read the file, **never on `mysql`** —
+`sudo` resets the environment, `MYSQL_PWD` never arrives, and the result
+is `Access denied for user root@localhost`. Equally, `sudo mysql` with no
+password works only while root is still on `auth_socket`; once a password
+is set it stops working, which is why the same command can succeed one
+hour and fail the next.
+
+### Things bootstrap.sh deliberately refuses to do
+
+- **Regenerate `JWT_SECRET`.** Written once. Regenerating it logs out
+  every user.
+- **Invent a password.** `--db-password` is required when MySQL is new. An
+  earlier version generated a random one — the right default for an
+  unattended server, the wrong one for a recovery, where it hands you a
+  secret you then have to go and find.
+- **`--reset` with nothing to restore.** That completes successfully with
+  an empty database, because an empty database is a valid outcome of a
+  reset. Pass `--empty-ok` if it is genuinely what you want.
 - **Restore uploads from an increment alone.** It requires a
-  `uploads_full_<ts>.tar` and applies only the increments newer than it,
-  **by timestamp**. Filename order would not do: `full` sorts before
-  `inc`, so every increment looks newer than every full, including ones
-  from a previous chain.
+  `uploads_full_<ts>.tar` and applies only increments newer than it, **by
+  timestamp** — `full` sorts before `inc`, so filename order would treat
+  every increment as newer than every full, including ones from a previous
+  chain.
 
 ### The check that matters most
 
 `seed.py` builds `units` and `police_stations` from
 `All District CEN_PS.xlsx` — 44 stations across 36 districts — and falls
 back to `AllDistrictPS.xlsx` if it is missing. The fallback is **1,085
-stations across 40 districts**: every police station in Karnataka, not
-the Cyber Crime ones. It seeds two users per station, so the failure
-looks like a successful run that produced 2,170 accounts.
+stations across 40 districts**: every police station in Karnataka, not the
+Cyber Crime ones, seeded with two users each. The failure looks like a
+successful run that produced 2,170 accounts.
 
-The roster was gitignored until 2026-08-22, meaning a DR from a fresh
-clone would have hit the fallback silently. It travels with the code
-now — it is 44 rows of district and station name, all public, and it is
-reference data rather than case data. The two backup dumps stay out of
-git permanently; that exclusion is what `dbdump*` / `filedump*` in
-`.gitignore` is for.
+That roster was gitignored until 2026-08-22, meaning a recovery from a
+fresh clone would have hit the fallback silently. It travels with the code
+now — 44 rows of district and station name, all public, reference data
+rather than case data. The two backup dumps stay out of git permanently;
+that is what `dbdump*` / `filedump*` in `.gitignore` is for.
 
-`bootstrap.sh` does not seed at all — seeding is a deliberate,
-separate `python seed.py`. What it does do is **assert
-`police_stations` lands between 40 and 60** in its verify block, so a
-database built from the wrong roster is caught immediately rather than
-discovered later by someone reading row counts by eye.
+`bootstrap.sh` asserts `police_stations` lands between 40 and 60, and
+separately checks **every required table by name** rather than counting
+them. A count was the original check and it was worthless: `>= 36` passes
+for 36 wrong tables, and 35 is in fact the correct number for a restored
+copy, since `statement_transactions` and `chat_messages` are legitimately
+absent. The expected set is derived from `Base.metadata` so it cannot
+drift as models are added.
 
-In practice this rarely bites: a DR restores a dump, and `units` +
-`police_stations` come back inside it. The roster only matters when
-standing up an instance with no database at all.
-
-### After a restore
-
-The dump excludes `statement_transactions` by design, so the money
-screens will read zero until the fact table is rebuilt from the PDFs:
-
-```bash
-cd /opt/cyberfraud/backend && venv/bin/python -m analysis.daily
-```
-
-Everything else — summaries, photo hashes, mule links, crypto rows,
-the IFSC directory — comes back with the dump.
+A recovery is the worst possible moment to be reading row counts by eye.
 
 ---
 
