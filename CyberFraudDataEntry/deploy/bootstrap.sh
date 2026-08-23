@@ -41,6 +41,11 @@
 #                         the same path backup-db.sh writes to. If that is
 #                         empty, a few obvious places are searched too.
 #   --no-pull             Skip the git pull. Default is to pull first.
+#   --no-nightly          Do not install the 23:00 analysis+backup timer.
+#                         For any machine that is a RESTORED COPY rather
+#                         than the system of record: the analysis half of
+#                         that chain is destructive against a restored
+#                         database.
 #   --skip-apt            Don't touch apt (faster re-runs).
 #   --skip-frontend       Don't rebuild the frontend.
 #   --yes                 No prompts. Required for unattended runs.
@@ -78,6 +83,7 @@ RESTORE_UPLOADS=""
 DO_RESET=0
 DO_PULL=1
 RESTORE_LATEST=0
+NO_NIGHTLY=0
 SKIP_APT=0
 SKIP_FRONTEND=0
 ASSUME_YES=0
@@ -106,6 +112,7 @@ while [ $# -gt 0 ]; do
         --backup-dir)      BACKUP_DIR="${2:-}"; shift 2 ;;
         --restore-latest)  RESTORE_LATEST=1; shift ;;
         --no-pull)         DO_PULL=0; shift ;;
+        --no-nightly)      NO_NIGHTLY=1; shift ;;
         --skip-apt)        SKIP_APT=1; shift ;;
         --skip-frontend)   SKIP_FRONTEND=1; shift ;;
         --yes|-y)          ASSUME_YES=1; shift ;;
