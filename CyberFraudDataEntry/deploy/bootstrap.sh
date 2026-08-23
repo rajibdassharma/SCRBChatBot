@@ -736,15 +736,66 @@ for F in "$BACKEND/.env" "$RUNTIME/backend/.env"; do
     fi
 done
 
+# ── Which tables, by NAME ───────────────────────────────────────────────
+# A count is not a check. "36 or more tables" passes for 36 wrong ones,
+# and passed while the thing everybody actually needed — police_stations —
+# was absent.
+#
+# The expected set is derived from the ORM rather than hard-coded, so it
+# cannot drift as models are added: Base.metadata knows every table the
+# web app declares. Two groups sit outside it deliberately and are listed
+# here instead —
+#   * the analysis tables, which models/__init__.py does not import
+#     because the web app never touches the analysis package
+#   * mule_account_link, which has no ORM model at all and is read
+#     through raw text() in routes_dashboard.py
+#
+# Two are legitimately absent and are NOT required:
+#   * statement_transactions — excluded from every dump by design
+#   * chat_messages — migration 005, dev only
+EXPECTED=$("$BACKEND/venv/bin/python" -c "
+import sys; sys.path.insert(0, '$BACKEND')
+import models
+from database import Base
+orm = set(Base.metadata.tables)
+analysis = {'upload_ledger', 'account_statement_summary', 'id_photo_hashes',
+            'mule_account_link', 'crypto_txn', 'ifsc_branch'}
+optional = {'statement_transactions', 'chat_messages'}
+print(' '.join(sorted((orm | analysis) - optional)))
+" 2>/dev/null)
+
+if [ -z "$EXPECTED" ]; then
+    fail_ "could not derive the expected table list from the ORM — cannot verify the schema"
+else
+    ACTUAL=$(MYSQL_PWD="$DB_PASSWORD" mysql --protocol=TCP -h 127.0.0.1 -uroot -N -B -e \
+        "SELECT table_name FROM information_schema.tables WHERE table_schema='$DB_NAME';" 2>/dev/null)
+    MISSING=""
+    for tbl in $EXPECTED; do
+        echo "$ACTUAL" | grep -qx "$tbl" || MISSING="$MISSING $tbl"
+    done
+    if [ -z "$MISSING" ]; then
+        pass_ "all $(echo "$EXPECTED" | wc -w) required tables present, by name"
+    else
+        fail_ "MISSING TABLES:$MISSING"
+    fi
+fi
+
+# The by-name check above is the authoritative one. This reports the
+# total for context and catches the one case names cannot: nothing at all.
+# The old threshold here was ">= 36", which was both weak (36 wrong tables
+# would pass) and wrong (35 is the correct number for a restored copy —
+# statement_transactions and chat_messages are legitimately absent).
 T=$(TABLES_NOW)
-if [ "$T" -ge 36 ]; then pass_ "$T tables present"
-elif [ "$T" -eq 0 ] && [ -n "$RESTORE_DUMP" ]; then
+if [ "$T" -eq 0 ] && [ -n "$RESTORE_DUMP" ]; then
     # Empty is a legitimate outcome of --skip-data. It is never a
     # legitimate outcome of an explicit restore, and reporting it as a
     # warning let a run finish with DEPLOY COMPLETE over nothing.
     fail_ "database is EMPTY after a restore was requested — the restore did not work"
-elif [ "$T" -eq 0 ]; then warn "database empty — restore a dump, then re-run this script"
-else fail_ "only $T tables — expected 36+ or 0"; fi
+elif [ "$T" -eq 0 ]; then
+    warn "database empty — restore a dump, then re-run this script"
+else
+    note "$T tables in $DB_NAME"
+fi
 
 if [ "$T" -ge 36 ]; then
     PS_COUNT=$(MYSQL_PWD="$DB_PASSWORD" mysql -uroot -N -B "$DB_NAME" \
