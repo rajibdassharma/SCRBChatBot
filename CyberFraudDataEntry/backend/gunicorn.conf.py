@@ -30,14 +30,15 @@ bind = "127.0.0.1:8000"
 # async. A sync worker here would serve requests but serialise them.
 worker_class = "uvicorn.workers.UvicornWorker"
 
-# Sized from the machine rather than hard-coded: production has 2 vCPUs,
-# the DGX Spark has 20. These are async workers, so a handful saturates
-# even a large box — the ceiling is deliberate, and each worker holds its
-# own MySQL pool (10 + 5 overflow), so more workers means more connections
-# against MySQL's max_connections.
-workers = int(os.environ.get("CFDSR_GUNICORN_WORKERS", "0")) or min(
-    4, max(2, os.cpu_count() or 2)
-)
+# 4, matching what production has actually been running. This file was
+# reconstructed on 2026-08-23 and the first draft sized workers from
+# os.cpu_count() with a floor of 2 — clever, and wrong: production has 2
+# vCPUs, so it would have quietly halved a box that has been serving 90
+# users on 4. These are async workers and the app is I/O-bound, so 4 on 2
+# cores is a deliberate over-provision, not an error.
+#
+# Empirical beats derived. Override per machine if a box needs different.
+workers = int(os.environ.get("CFDSR_GUNICORN_WORKERS", "0")) or 4
 
 # NEVER preload. database.py builds the async engine at import time, so
 # preloading would create it in the parent and fork it into every worker,
@@ -52,6 +53,14 @@ preload_app = False
 timeout = 120
 graceful_timeout = 30
 keepalive = 5
+
+# Recycle each worker after ~1000 requests, jittered so they do not all
+# retire together. Production has run with these since it was set up; they
+# bound the effect of any slow leak in a long-lived worker. The first
+# reconstruction of this file omitted them, which would have removed a
+# protection nobody had noticed was there.
+max_requests = 1000
+max_requests_jitter = 50
 
 # ── Logging ─────────────────────────────────────────────────────────────
 # Files, not stdout, because Operations.md documents these paths and the
@@ -70,9 +79,10 @@ loglevel = os.environ.get("CFDSR_LOG_LEVEL", "info")
 # Send worker tracebacks to errorlog rather than losing them.
 capture_output = True
 
-# Default access format plus request time, which is what you want when
-# someone reports "the dashboard is slow".
-access_log_format = '%(h)s %(l)s %(u)s %(t)s "%(r)s" %(s)s %(b)s "%(f)s" "%(a)s" %(L)ss'
+# Access log format deliberately left at gunicorn's default, to match what
+# production has been writing. Adding request time (%(L)s) would be useful
+# but changes the shape of every line in access.log, and this file's job
+# right now is to reproduce a working configuration, not improve it.
 
 # ── systemd ─────────────────────────────────────────────────────────────
 # The unit is Type=notify, so gunicorn must tell systemd when it is ready.
