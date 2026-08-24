@@ -82,8 +82,12 @@ CyberFraudDataEntry/
 │   ├── config.py               # Pydantic Settings, env prefix CFDSR_
 │   ├── database.py             # Async engine + session factory
 │   ├── seed.py                 # Seed units + PSes + admin user
-│   ├── requirements.txt
-│   ├── .env                    # NEVER commit
+│   ├── gunicorn.conf.py        # Prod process config. LOAD-BEARING: the
+│   │                           # systemd unit will not start without it
+│   ├── requirements.txt        # the web app
+│   ├── requirements-analysis.txt   # the parser (pins pillow<12)
+│   ├── requirements-dev.txt    # composes all three, for dev/build boxes
+│   ├── .env                    # NEVER commit. Keys are CFDSR_-prefixed
 │   ├── api/                    # Route handlers (13 files)
 │   │   ├── deps.py             # Auth + scoping dependencies
 │   │   ├── routes_auth.py      # Login, /me, change-password
@@ -100,7 +104,10 @@ CyberFraudDataEntry/
 │   │   ├── routes_reports.py   # PDF + Excel + JSON preview endpoints
 │   │   └── routes_chat.py      # Ask-the-Data chat (super_admin only)
 │   ├── auth/security.py        # JWT create/decode, bcrypt hashing
-│   ├── models/                 # SQLAlchemy ORM (30 files, one per table)
+│   ├── models/                 # SQLAlchemy ORM. 30 tables in
+│   │                           # Base.metadata; the 6 analysis models are
+│   │                           # deliberately NOT imported by __init__.py,
+│   │                           # and mule_account_link has no model at all
 │   ├── schemas/                # Pydantic (one file per domain)
 │   ├── reports/                # PDF + Excel renderers
 │   │   ├── base.py             # Shared chrome (title, page header, tables)

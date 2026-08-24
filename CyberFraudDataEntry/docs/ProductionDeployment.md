@@ -186,6 +186,8 @@ python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip
 pip install -r requirements.txt gunicorn openpyxl
+# On a dev or build box, install everything instead:
+#   pip install -r requirements-dev.txt
 ```
 
 ### Production .env
@@ -324,25 +326,42 @@ sudo systemctl reload nginx
 
 ## 9. Gunicorn + Uvicorn Workers
 
-```python
-# /opt/cyberfraud/backend/gunicorn.conf.py
+**The config lives in the repo: [`backend/gunicorn.conf.py`](../backend/gunicorn.conf.py).**
+Read it there rather than from a copy here — a snippet in a document is a
+second source of truth that drifts, and this one nearly caused real harm.
 
-bind = "127.0.0.1:8000"
-workers = 4                          # (2 * CPU_cores) + 1
-worker_class = "uvicorn.workers.UvicornWorker"
-timeout = 120
-keepalive = 5
-max_requests = 1000
-max_requests_jitter = 50
-accesslog = "/var/log/cyberfraud/access.log"
-errorlog = "/var/log/cyberfraud/error.log"
-loglevel = "info"
-```
+Until 2026-08-23 the file existed ONLY on the production server,
+hand-written once and never committed. The values were written down here
+and nowhere else. That meant:
+
+- a new machine could not start the service at all —
+  `gunicorn: Error: 'gunicorn.conf.py' doesn't exist`
+- a genuine recovery OF PRODUCTION would have hit the same wall, at the
+  moment the server and the file were both gone
+
+When it was finally reconstructed, the first attempt sized `workers` from
+`os.cpu_count()`. Production has 2 vCPUs and runs **4** workers, so that
+would have halved a box serving 90 users, and `update.sh` copies
+`backend/` over the runtime — it would have shipped silently. The
+committed file now matches the live one field for field.
+
+The settings that are decisions rather than defaults:
+
+| setting | value | why |
+|---|---|---|
+| `workers` | 4 | Async workers, I/O-bound app. Deliberate over-provision against 2 vCPUs — empirical, not derived |
+| `timeout` | 120 | PDF/Excel reports render inside the request; a 45-station landscape sheet exceeds the default 30 s |
+| `max_requests` / `_jitter` | 1000 / 50 | Recycles workers to bound any slow leak, staggered so they do not all retire at once |
+| `preload_app` | False | `database.py` builds the async engine at import; preloading forks a shared pool and a dead event loop into every worker |
 
 ```bash
 sudo mkdir -p /var/log/cyberfraud
-sudo chown $USER:$USER /var/log/cyberfraud
+sudo chown cyberfraud:cyberfraud /var/log/cyberfraud
 ```
+
+The unit's `ReadWritePaths=/var/log/cyberfraud` makes this the only
+directory the service may write to, so moving the logs means editing the
+unit as well.
 
 ---
 
@@ -353,6 +372,9 @@ Three service units live in the repo under `deploy/`:
 | File | Purpose |
 |---|---|
 | `deploy/cyberfraud-backend.service` | Gunicorn+Uvicorn worker for the backend |
+| `deploy/bootstrap.sh` | **Green-field only.** Bare machine -> running app. Can purge MySQL; never use it for a routine deploy |
+| `deploy/update.sh` | **Every deploy, every environment.** Running installation -> newer one |
+| `deploy/set-db-password.sh` | Changes the MySQL password in MySQL and in every `.env` together, with rollback if either half fails |
 | `deploy/cyberfraud-nightly.service` | One-shot nightly chain (runs `nightly-all.sh`: analysis, then `backup-all.sh`) |
 | `deploy/cyberfraud-nightly.timer` | Fires the nightly chain at 23:00 IST |
 | `deploy/cyberfraud-backup.{service,timer}` | **Retired 2026-08-17.** Backup-only, 00:00 IST. Superseded by the chain above; `install-nightly.sh` disables it |

@@ -11,6 +11,8 @@ Canonical copies of all the server-side config files used in production.
 | `cyberfraud-backend.service` | systemd unit for the FastAPI backend | `/etc/systemd/system/cyberfraud-backend.service` |
 | `bootstrap.sh` | **bare Ubuntu box -> running app.** Green-field install and DR | run from the checkout |
 | `update.sh` | running app -> newer running app. Every deploy | run from the checkout |
+| `set-db-password.sh` | change the MySQL password in MySQL AND every `.env` in one step, rolling back if either half fails | run from the checkout |
+| `generate-cert.sh` | self-signed TLS cert for nginx. `bootstrap.sh` calls it when the cert is missing | run from the checkout |
 | `cyberfraud-nightly.service` | **CURRENT.** One-shot unit: analysis, then backup | `/etc/systemd/system/cyberfraud-nightly.service` |
 | `cyberfraud-nightly.timer` | fires the chain at 23:00 IST daily | `/etc/systemd/system/cyberfraud-nightly.timer` |
 | `nightly-all.sh` | the chain: `analysis.daily` then `backup-all.sh` | `/opt/cyberfraud/deploy/nightly-all.sh` |

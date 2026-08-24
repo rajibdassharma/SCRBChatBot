@@ -66,12 +66,18 @@ Old CLAUDE / SPEC docs mention only admin + unit_user — that's out of date. Su
     routes_portals_dsr.py routes_nil.py routes_dashboard.py
     routes_reports.py routes_chat.py
   /auth/security.py             # JWT + bcrypt
-  /models                       # 37 SQLAlchemy models, one per table
+  /models                       # 30 models in Base.metadata. NOT one per
+                                # table: the 6 analysis models are not
+                                # imported by models/__init__.py, and
+                                # mule_account_link has no model at all
   /schemas                      # Pydantic per-domain
   /reports                      # PDF (reportlab) + Excel (openpyxl) renderers
     base.py                     # Shared chrome for PDFs
   /chat/schema_description.py   # LLM schema hint
   /utils/{validators,sanitize}.py
+  gunicorn.conf.py              # Prod process config — the systemd unit
+                                # will not start without it
+  requirements-dev.txt          # app + analysis + test deps in one install
   /migrations/001..026_*.py     # Numbered, idempotent
   /analysis/                    # Upload analysis — BATCH ONLY.
                                 # The web app never imports this.

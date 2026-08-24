@@ -22,7 +22,8 @@ file follows.
 ```bash
 # Backend
 cd c:/VSCProjects/SCRBChatBot/CyberFraudDataEntry/backend
-pip install -r requirements.txt
+pip install -r requirements-dev.txt   # app + parser + tests in one shot
+# (or just requirements.txt if you only need the web app running)
 python seed.py              # one-time: units, police stations, admin user
 
 # Frontend
