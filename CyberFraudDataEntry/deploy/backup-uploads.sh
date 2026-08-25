@@ -65,12 +65,40 @@ chown -R cyberfraud:cyberfraud "$BACKUP_DIR" 2>/dev/null || true
 TIMESTAMP=$(TZ=Asia/Kolkata date +'%Y-%m-%d_%H%M%S')
 DOW=$(TZ=Asia/Kolkata date +'%u')
 
-# A missing snapshot means there is no chain to extend, so a full is the
-# only correct thing to do -- an "incremental" against no snapshot would
-# archive everything while being named as though it were small.
+# TWO ways the chain can be broken, and both must force a full.
+#
+# 1. A MISSING SNAPSHOT means there is nothing to extend, so an
+#    "incremental" would archive everything while being named as though
+#    it were small.
+#
+# 2. A MISSING FULL ARCHIVE means the increments have nothing to be
+#    restored on top of. This is the dangerous one and it was not
+#    checked until 2026-08-25. The full is ~20 GB and the increments are
+#    a few hundred MB, so the full is exactly the file someone deletes
+#    to reclaim disk. Do that and the snapshot survives, every
+#    subsequent run is an incremental, every run reports success, the
+#    logs look normal -- and the chain is unrestorable. You find out at
+#    restore time, which is the worst possible moment.
+#
+#    Checked by looking for the file rather than by trusting the
+#    snapshot, because the snapshot describes what tar archived, not
+#    what still exists on disk.
+HAVE_FULL=$(find "$BACKUP_DIR" -maxdepth 1 -name 'uploads_full_*.tar' -print -quit 2>/dev/null)
+
 MODE=incremental
-if [ "$FORCE_FULL" -eq 1 ] || [ ! -f "$SNAPSHOT" ] || [ "$DOW" = "$FULL_DOW" ]; then
+if [ "$FORCE_FULL" -eq 1 ] || [ ! -f "$SNAPSHOT" ] || [ -z "$HAVE_FULL" ]    || [ "$DOW" = "$FULL_DOW" ]; then
     MODE=full
+fi
+
+# Say WHY, so a full appearing on a Tuesday is explicable from the log
+# rather than alarming.
+if [ "$MODE" = "full" ]; then
+    if   [ "$FORCE_FULL" -eq 1 ];   then WHY="--full requested"
+    elif [ ! -f "$SNAPSHOT" ];      then WHY="no snapshot: $SNAPSHOT is missing"
+    elif [ -z "$HAVE_FULL" ];       then WHY="no full archive left in $BACKUP_DIR"
+    else                                 WHY="scheduled (day $FULL_DOW)"
+    fi
+    echo "[backup-uploads] taking a FULL archive -- $WHY"
 fi
 
 if [ "$MODE" = "full" ]; then

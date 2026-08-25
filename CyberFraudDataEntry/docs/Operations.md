@@ -407,6 +407,29 @@ than a timer of its own (see
   increment after it, applied in order** — an increment alone is not a
   backup.
 
+  **A full is taken whenever the chain is broken, not only on Sundays.**
+  Two ways it breaks, and both now force a full:
+
+  | what is missing | why it forces a full |
+  |---|---|
+  | `uploads.snar` | nothing to extend — an "incremental" would archive everything while being *named* as though it were small |
+  | any `uploads_full_*.tar` | the increments have nothing to be restored on top of |
+
+  The second was unchecked until 2026-08-25. The full is ~20 GB and the
+  increments are a few hundred MB, so **the full is precisely the file
+  someone deletes to reclaim disk** — and doing so left the snapshot
+  intact, so every later run was an incremental, every run reported
+  success, and the chain was unrestorable. You would find out at restore
+  time. The check looks for the file rather than trusting the snapshot,
+  because the snapshot records what tar archived, not what still exists.
+
+  When a full is taken off-schedule the log says why, so one appearing
+  on a Tuesday is explicable rather than alarming:
+
+  ```
+  [backup-uploads] taking a FULL archive -- no full archive left in /opt/cyberfraud/backups
+  ```
+
 Both are invoked by `backup-all.sh`, which `nightly-all.sh` runs after
 the analysis. Installed once via `deploy/install-nightly.sh`, which
 also disables the retired `cyberfraud-backup.timer` and
