@@ -147,6 +147,31 @@ export function MuleNetworkTab({ onTrace }: {
   // levels, so a toggle rather than a second tab.
   const [view, setView] = useState<'ranking' | 'network' | 'all'>('ranking');
 
+  // THE GRAPH IS NEVER FILTERED. A second, fixed fetch.
+  //
+  // The Ranking table's filters answer "which account should I look at
+  // first" -- a shortlist. The graph answers "what shape is this", and
+  // that question has no correct filtered answer: money moves through
+  // mule accounts in layers ACROSS THE COUNTRY, so a network cut to one
+  // state is not a smaller true picture, it is a false one.
+  //
+  // Measured before this change: with Karnataka selected the diagram
+  // drew 30 of the 389 links touching a Karnataka account, because only
+  // 30 have both ends in the state. 71 of 111 Karnataka accounts had no
+  // in-state peer at all and vanished entirely.
+  //
+  // Deliberately (false, 'all'): cross-FIR only and state scope are both
+  // ignored here, whatever the table is showing.
+  const [fullData, setFullData] = useState<MuleNetworkSummary | null>(null);
+  useEffect(() => {
+    let alive = true;
+    getMuleNetwork(false, 'all', 20000)
+      .then((d) => { if (alive) setFullData(d); })
+      .catch(() => { /* the table still works; the graph shows its own empty state */ });
+    return () => { alive = false; };
+  }, []);
+  const fullRows = fullData?.rows ?? [];
+
   useEffect(() => {
     let alive = true;
     setLoading(true);
@@ -166,14 +191,19 @@ export function MuleNetworkTab({ onTrace }: {
   const infraCount = useMemo(
     () => rows.filter((r) => looksInfra(r.account_holder_name)).length, [rows]);
 
+  // Resolved against the FULL set, not the filtered one. An account
+  // opened from the table must keep all of its links -- the point of
+  // opening it is to see who it paid, and half of those are usually in
+  // another state.
   const selectedRow = useMemo(
-    () => rows.find((r) => r.account_id === selected) ?? null, [rows, selected]);
+    () => fullRows.find((r) => r.account_id === selected)
+       ?? rows.find((r) => r.account_id === selected) ?? null,
+    [fullRows, rows, selected]);
 
-  // Clearing the selection when the filters change matters: the
-  // selected account may not exist in the new result set, and a
-  // diagram left on screen describing a row that is no longer in the
-  // table is worse than no diagram.
-  useEffect(() => { setSelected(null); }, [crossOnly, scope]);
+  // The selection no longer needs clearing when the filters change: it
+  // resolves against the full set, so the diagram stays valid and keeps
+  // describing the same account. Clearing it meant that changing a
+  // table filter while looking at a network closed the network.
 
   function matrix() {
     return {
@@ -345,7 +375,30 @@ export function MuleNetworkTab({ onTrace }: {
             scopeLabel={SCOPES.find((o) => o.value === scope)?.label ?? scope} />
         </div>
       ) : view === 'network' && !selectedRow ? (
-        <MuleNetworkFull rows={rows} onOpenAccount={setSelected} />
+        <div className="space-y-3">
+          {/* Said before the diagram, not after it. The Ranking tab
+              carries a state filter and a Cross-FIR checkbox; without
+              this line an officer reasonably assumes they are still in
+              force here, and reads the graph as Karnataka's network
+              when it is the whole state's. */}
+          <CaveatNote summary="The network is always the whole picture — filters do not apply here">
+            The Cross-FIR checkbox and the State filter shape the <b>Ranking
+            table</b>, which is a shortlist of accounts to look at first.
+            They are deliberately ignored on this diagram. Money moves
+            through mule accounts in layers across the country, so a
+            network cut to one state is not a smaller true picture — it is
+            a false one. <b>Of 389 links touching a Karnataka account,
+            only 30 have both ends in Karnataka.</b>
+          </CaveatNote>
+          {fullData === null ? (
+            <div className="rounded-2xl px-5 py-8 text-sm font-semibold text-center"
+              style={{ ...cardStyle, color: C_NAVY }}>
+              Building the full network…
+            </div>
+          ) : (
+            <MuleNetworkFull rows={fullRows} onOpenAccount={setSelected} />
+          )}
+        </div>
       ) : (
       <>
       {/* The diagram REPLACES the list rather than sitting above it.
@@ -355,7 +408,7 @@ export function MuleNetworkTab({ onTrace }: {
       {selectedRow ? (
         <MuleNetworkGraph
           centre={selectedRow}
-          allRows={rows}
+          allRows={fullRows.length ? fullRows : rows}
           onRecentre={setSelected}
           // Clearing the selection falls back to whichever view is
           // active, so the label follows `view`, not a constant.
