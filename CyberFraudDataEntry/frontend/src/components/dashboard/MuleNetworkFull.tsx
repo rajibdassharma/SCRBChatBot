@@ -100,6 +100,22 @@ interface GraphNode {
   layer: number | null;
   degree: number; crossFir: number;
   x: number; y: number;
+  /** True when this account is NOT in the filtered result set — a peer
+   *  reached from one that is.
+   *
+   *  Under a state filter the server returns only accounts in that
+   *  state, but their counterparties are wherever they are. Drawing
+   *  only the returned accounts severed almost every edge: of 389 links
+   *  touching a Karnataka account, just 30 have BOTH ends in Karnataka.
+   *  71 of 111 Karnataka accounts had no in-state peer at all, became
+   *  isolated nodes, and were then dropped from the master view along
+   *  with every other ring of two or fewer. Selecting a state showed
+   *  almost nothing.
+   *
+   *  A state filter says WHICH ACCOUNTS I AM INVESTIGATING. It cannot
+   *  mean "pretend the money stopped at the border" — for mule networks
+   *  the out-of-state hop is usually the whole point. */
+  outside: boolean;
 }
 interface GraphEdge {
   from: string; to: string; txns: number; amount: number; crossFir: boolean;
@@ -233,7 +249,7 @@ export function MuleNetworkFull({ rows, onOpenAccount }: {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const drag = useRef<{ x: number; y: number; px: number; py: number } | null>(null);
 
-  const { nodes: allNodes, edges: allEdges, railsDropped } = useMemo(() => {
+  const { nodes: allNodes, edges: allEdges, railsDropped, outsideCount } = useMemo(() => {
     const keep = rows.filter((r) => !RAILS.test(r.account_holder_name || ''));
     const byId = new Map(keep.map((r) => [r.account_id, r]));
     const nodes: GraphNode[] = keep.map((r) => ({
@@ -241,11 +257,46 @@ export function MuleNetworkFull({ rows, onOpenAccount }: {
       label: r.account_holder_name || r.account_no || '—',
       fir: r.fir_no, ps: r.ps_name, bank: r.bank_name, layer: r.layer,
       degree: r.connected, crossFir: r.cross_fir, x: 0, y: 0,
+      outside: false,
     }));
+
+    // Peers that the filter excluded still get drawn, marked as
+    // outside it. Everything needed is already in the payload -- the
+    // server sends each peer's name, account number, bank, FIR and
+    // station -- so this costs no extra request.
+    //
+    // Rails stay out at BOTH ends. A payment gateway is a mode of
+    // transfer, not a party, and re-admitting it as a peer would weld
+    // unrelated rings together through PayU exactly as it would have
+    // as a row.
+    const peerNode = new Map<string, GraphNode>();
+    for (const r of keep) {
+      for (const p of r.peers) {
+        if (byId.has(p.account_id) || peerNode.has(p.account_id)) continue;
+        if (RAILS.test(p.account_holder_name || '')) continue;
+        peerNode.set(p.account_id, {
+          id: p.account_id,
+          label: p.account_holder_name || p.account_no || '—',
+          fir: p.fir_no, ps: p.ps_name, bank: p.bank_name,
+          // The peer payload carries no layer, and grey is already the
+          // established meaning of "no layer recorded" on this canvas.
+          layer: null,
+          // Degree is not known for a node the server did not rank; it
+          // is filled in below from the edges actually drawn, so the
+          // size of a peer reflects what is on screen rather than a
+          // number this view cannot see.
+          degree: 0, crossFir: 0, x: 0, y: 0,
+          outside: true,
+        });
+      }
+    }
+    for (const n of peerNode.values()) nodes.push(n);
+
+    const drawable = new Set(nodes.map((n) => n.id));
     const byKey = new Map<string, GraphEdge>();
     for (const r of keep) {
       for (const p of r.peers) {
-        if (!byId.has(p.account_id)) continue;
+        if (!drawable.has(p.account_id)) continue;
         const out = (p.direction || '').toLowerCase().startsWith('out');
         const from = out ? r.account_id : p.account_id;
         const to = out ? p.account_id : r.account_id;
@@ -268,8 +319,22 @@ export function MuleNetworkFull({ rows, onOpenAccount }: {
         });
       }
     }
+    const edges = [...byKey.values()];
+
+    // Degree for the peers, counted from the edges actually drawn. A
+    // node the server did not rank has no `connected` figure, and
+    // leaving it at 0 would draw every out-of-filter account at the
+    // minimum size regardless of how much of the picture it carries.
+    const deg = new Map<string, number>();
+    for (const e of edges) {
+      deg.set(e.from, (deg.get(e.from) ?? 0) + 1);
+      deg.set(e.to, (deg.get(e.to) ?? 0) + 1);
+    }
+    for (const n of nodes) if (n.outside) n.degree = deg.get(n.id) ?? 0;
+
     return {
-      nodes, edges: [...byKey.values()], railsDropped: rows.length - keep.length,
+      nodes, edges, railsDropped: rows.length - keep.length,
+      outsideCount: nodes.filter((n) => n.outside).length,
     };
   }, [rows]);
 
@@ -419,6 +484,15 @@ export function MuleNetworkFull({ rows, onOpenAccount }: {
       <div className="px-4 py-1.5 text-[11px] opacity-70" style={{ color: C_NAVY }}>
         {formatNumber(laid.length)} accounts · {formatNumber(shownEdges.length)} transfers
         {railsDropped > 0 && ` · ${railsDropped} payment rail${railsDropped === 1 ? '' : 's'} excluded`}
+        {/* Say it plainly. An officer reading this diagram under a state
+            filter needs to know that the hollow nodes are real accounts
+            outside the filter, not artefacts -- and for Karnataka they
+            are most of the picture. */}
+        {outsideCount > 0 && (
+          <> · <b>{formatNumber(outsideCount)}</b> outside the current
+            filter, drawn hollow — their links are why the network is
+            connected at all</>
+        )}
         {' · '}drag to pan, +/- to zoom, hover a node for the name or a line for the amount, click to open
       </div>
 
@@ -490,10 +564,22 @@ export function MuleNetworkFull({ rows, onOpenAccount }: {
                       strokeOpacity={0.9} />
                   )}
                   {/* Dark outline on every node: #f2c200 on a white
-                      canvas is invisible without one. */}
+                      canvas is invisible without one.
+
+                      HOLLOW = OUTSIDE THE CURRENT FILTER. An account
+                      reached from one that matched, but which does not
+                      match itself -- almost always a different state.
+                      Drawn, because severing it is what made a state
+                      filter show 30 of 389 links; distinguished,
+                      because an officer must be able to tell what the
+                      filter actually selected. Fill, not colour, so it
+                      does not compete with the layer code. */}
                   <circle cx={n.x} cy={n.y} r={r}
-                    fill={layerColour(n.layer)} fillOpacity={0.95}
-                    stroke="#20303f" strokeWidth={0.8 / zoom} />
+                    fill={n.outside ? '#ffffff' : layerColour(n.layer)}
+                    fillOpacity={n.outside ? 1 : 0.95}
+                    stroke={n.outside ? C_GREY : '#20303f'}
+                    strokeWidth={(n.outside ? 1.6 : 0.8) / zoom}
+                    strokeDasharray={n.outside ? `${2.5 / zoom} ${1.8 / zoom}` : undefined} />
                   {/* No labels on the canvas. Account holder names run
                       20-40 characters and overlap their neighbours at
                       any zoom that still shows a ring's shape, which
@@ -516,6 +602,15 @@ export function MuleNetworkFull({ rows, onOpenAccount }: {
               {hover.degree === 1 ? '' : 's'}
               {hover.crossFir > 0 && ` · ${hover.crossFir} cross-FIR`}
             </div>
+            {/* Said on the node itself, not only in the caption. An
+                officer reading a hollow circle needs to know why it is
+                hollow at the moment they are looking at it. */}
+            {hover.outside && (
+              <div className="mt-1" style={{ color: 'var(--ksp-yellow)' }}>
+                Outside the current filter — shown because it is connected
+                to one that is not. Its own links are not counted here.
+              </div>
+            )}
             <div className="opacity-60 mt-1">click to open this account</div>
           </div>
         )}
