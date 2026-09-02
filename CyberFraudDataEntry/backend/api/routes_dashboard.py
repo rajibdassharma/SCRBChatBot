@@ -2881,6 +2881,9 @@ async def get_accounts_fir_trace(
     # skipped: they are still drawn, just without these annotations.
     traced_ids = [a.account_id for a in accounts if a.account_id]
     flows: list[FirTraceFlow] = []
+    # The same case as a network: one row per account in this FIR,
+    # carrying every link it has including the ones leaving the case.
+    network: list[MuleNetworkRow] = []
     if traced_ids:
         by_id = {a.account_id: a for a in accounts if a.account_id}
 
@@ -2908,23 +2911,114 @@ async def get_accounts_fir_trace(
         ).bindparams(bindparam("ids", expanding=True)),
             {"ids": traced_ids})).all()
         inside = set(traced_ids)
+        # Every account on the far end of a link, whether or not this FIR
+        # recorded it. Needed to DRAW the outside hops rather than only
+        # count them -- see `network` below.
+        outside_ids = {str(x) for pair in links for x in (pair[0], pair[1])} - inside
+        peer_info: dict = {}
+        if outside_ids:
+            pq = (select(
+                    AllAccount.id, AllAccount.account_holder_name,
+                    AllAccount.account_no, AllAccount.bank_name,
+                    AllAccount.fir_no, PoliceStation.station_name,
+                    PoliceStation.id, Unit.name,
+                    func.trim(func.coalesce(AllAccount.branch_state, "")),
+                    AllAccount.layer)
+                  .select_from(AllAccount)
+                  .outerjoin(PoliceStation, PoliceStation.id == AllAccount.ps_id)
+                  .outerjoin(Unit, Unit.id == AllAccount.unit_id)
+                  .where(AllAccount.id.in_(outside_ids)))
+            pq = where_not_test(pq, admin,
+                                exclude_test_unit(AllAccount.unit_id),
+                                exclude_test_ps(AllAccount.ps_id))
+            peer_info = {str(r[0]): r for r in (await db.execute(pq)).all()}
+
+        # Accumulated per account in THIS FIR, both directions, so the
+        # network rows carry the same shape the Mule Network tab uses.
+        agg: dict = {}
+
+        def bucket(aid: str):
+            return agg.setdefault(aid, {"peers": {}, "txns": 0, "amt": 0.0,
+                                        "out": 0, "in": 0, "cross": set()})
+
         for src, dst, n, amt, xf in links:
             s_id, d_id = str(src), str(dst)
+            n, amt, xf = int(n or 0), float(amt or 0), bool(xf)
+
             if s_id in inside and d_id in inside:
                 flows.append(FirTraceFlow(
                     src_account_id=s_id, dst_account_id=d_id,
-                    txns=int(n or 0), amount=float(amt or 0),
-                    cross_fir=bool(xf)))
+                    txns=n, amount=amt, cross_fir=xf))
             else:
-                # One end is outside this FIR. Counted on whichever end
-                # IS in the trace, so the screen can say "this account
-                # also pays two mules you are not looking at".
+                # Still counted, because the layer table and the account
+                # cards use it. It is no longer the ONLY thing done with
+                # it -- the link is now drawn as well.
                 end = by_id.get(s_id) or by_id.get(d_id)
                 if end:
                     end.external_links += 1
 
+            # Build the network rows from the SAME links, inside and out.
+            for me, other, direction in ((s_id, d_id, "out"), (d_id, s_id, "in")):
+                if me not in inside:
+                    continue
+                o = peer_info.get(other)
+                b = bucket(me)
+                b["txns"] += n
+                b["amt"] += amt
+                b["out" if direction == "out" else "in"] += 1
+                if xf:
+                    b["cross"].add(other)
+                # The far end is either an account in this FIR (already
+                # in by_id) or one outside it (looked up in peer_info).
+                # Resolved once, into plain locals, rather than as a
+                # chain of nested conditionals per field -- the version
+                # that did that was correct and unreadable, which is the
+                # combination that breaks on the next edit.
+                mine = by_id.get(other)
+                if o is not None:
+                    p_name, p_no, p_bank = o[1], o[2], o[3]
+                    p_fir, p_ps = o[4], o[5]
+                elif mine is not None:
+                    p_name, p_no, p_bank = (mine.account_holder_name,
+                                            mine.account_no, mine.bank_name)
+                    p_fir = fir
+                    p_ps = ps_row.station_name if ps_row else None
+                else:
+                    # Linked, but the account row is not visible to this
+                    # caller -- a test station excluded by scoping. Draw
+                    # the link, name it as unavailable rather than
+                    # inventing a label or dropping the edge.
+                    p_name = p_no = p_bank = p_fir = p_ps = None
+
+                b["peers"][(other, direction)] = MuleLinkPeer(
+                    account_id=other,
+                    account_holder_name=p_name, account_no=p_no,
+                    bank_name=p_bank, fir_no=p_fir, ps_name=p_ps,
+                    direction=direction, cross_fir=xf, txns=n, amount=amt)
+
+        for aid, b in agg.items():
+            src_acc = by_id.get(aid)
+            peers = list(b["peers"].values())
+            peers.sort(key=lambda p: (-int(p.cross_fir), -p.amount))
+            network.append(MuleNetworkRow(
+                account_id=aid,
+                account_holder_name=src_acc.account_holder_name if src_acc else None,
+                account_no=src_acc.account_no if src_acc else None,
+                bank_name=src_acc.bank_name if src_acc else None,
+                fir_no=fir,
+                ps_name=ps_row.station_name if ps_row else None,
+                ps_id=ps_id,
+                district=ps_row.district_name if ps_row else None,
+                branch_state=src_acc.branch_state if src_acc else None,
+                layer=src_acc.layer if src_acc else None,
+                connected=len({p.account_id for p in peers}),
+                cross_fir=len(b["cross"]),
+                out_links=b["out"], in_links=b["in"],
+                txns=b["txns"], amount=b["amt"], peers=peers))
+
     return AccountsFirTrace(
         flows=flows,
+        network=network,
         fir_no=fir,
         case=case_meta,
         accounts=accounts,

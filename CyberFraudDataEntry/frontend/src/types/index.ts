@@ -1209,6 +1209,7 @@ export interface AccountsFirTrace {
    *  only 177 of 3,822 have an internal link, because a link needs both
    *  accounts' statements parsed AND both recorded as Mule. */
   flows: FirTraceFlow[];
+  network: MuleNetworkRow[];
   warnings: string[];
 }
 

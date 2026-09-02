@@ -287,6 +287,20 @@ class AccountsFirTrace(BaseModel):
     accounts: List[FirTraceAccount] = []
     #: Drawable transfers between two accounts in `accounts`.
     flows: List[FirTraceFlow] = []
+    #: The same case drawn as a NETWORK rather than as layer columns.
+    #:
+    #: One row per account in this FIR, each carrying EVERY link it has
+    #: -- including links to accounts that are not part of this FIR.
+    #: `flows` above deliberately holds only transfers with both ends
+    #: inside the case, which is what the layer table needs; that is
+    #: also why it shows ~20% of the money. At layer 1, 77% of onward
+    #: payments go to accounts nobody recorded under this FIR, and those
+    #: are the hops an investigator is actually chasing.
+    #:
+    #: Deliberately MuleNetworkRow, the same shape the Mule Network tab
+    #: consumes, so both screens draw through one component and an
+    #: account looks the same wherever it appears.
+    network: List["MuleNetworkRow"] = []
     warnings: List[str] = []
 
 
@@ -761,6 +775,15 @@ class MuleNetworkRow(BaseModel):
     #: than sending it all once.
     peers: List[MuleLinkPeer] = []
 
+
+
+# AccountsFirTrace.network is typed List["MuleNetworkRow"] and this
+# file has no `from __future__ import annotations`, so the forward
+# reference stays unresolved until the class above exists. Without
+# this line FastAPI raises PydanticUndefinedAnnotation the moment it
+# builds the response model for /accounts-fir-trace -- at import, so
+# the whole app fails to start rather than one route failing.
+AccountsFirTrace.model_rebuild()
 
 class MuleNetworkSummary(BaseModel):
     total_links: int = 0
