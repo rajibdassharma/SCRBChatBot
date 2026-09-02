@@ -289,9 +289,13 @@ export function MuleNetworkFull({ rows, onOpenAccount }: {
           id: p.account_id,
           label: p.account_holder_name || p.account_no || '—',
           fir: p.fir_no, ps: p.ps_name, bank: p.bank_name,
-          // The peer payload carries no layer, and grey is already the
-          // established meaning of "no layer recorded" on this canvas.
-          layer: null,
+          // The peer's OWN layer. This used to be hard-coded null,
+          // because the payload did not carry one -- so every account
+          // outside the current view rendered grey and the layer
+          // structure vanished exactly where it mattered most. On one
+          // FIR that hid a 104 / 65 / 25 / 4 spread across layers 1 to 8
+          // behind a single "not recorded" colour.
+          layer: p.layer ?? null,
           // Degree is not known for a node the server did not rank; it
           // is filled in below from the edges actually drawn, so the
           // size of a peer reflects what is on screen rather than a

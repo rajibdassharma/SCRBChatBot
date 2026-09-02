@@ -990,6 +990,9 @@ export interface MuleLinkPeer {
   bank_name: string | null;
   fir_no: string | null;
   ps_name: string | null;
+  /** Money-trail depth of the PEER, so a node drawn from a peer is
+   *  coloured by layer like any other. */
+  layer: number | null;
   direction: string;
   cross_fir: boolean;
   txns: number;

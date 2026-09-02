@@ -731,6 +731,12 @@ class MuleLinkPeer(BaseModel):
     bank_name: Optional[str] = None
     fir_no: Optional[str] = None
     ps_name: Optional[str] = None
+    #: Money-trail depth of the PEER, so a node drawn from a peer can be
+    #: coloured by layer like any other. Omitting it made every
+    #: out-of-view account grey -- on one FIR that hid a clean 104 / 65 /
+    #: 25 / 4 spread across layers 1 to 8 behind a single "not recorded"
+    #: colour, which is the structure the diagram exists to show.
+    layer: Optional[int] = None
     direction: str = "out"
     cross_fir: bool = False
     txns: int = 0

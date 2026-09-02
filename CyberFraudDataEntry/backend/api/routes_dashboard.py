@@ -2120,6 +2120,8 @@ async def get_mule_network(
             b["peers"][(other, direction)] = MuleLinkPeer(
                 account_id=other, account_holder_name=o[1], account_no=o[2],
                 bank_name=o[3], fir_no=o[4], ps_name=o[5],
+                # o[9] is AllAccount.layer -- see the select above.
+                layer=o[9],
                 direction=direction, cross_fir=xf, txns=n, amount=amt)
 
     rows: List[MuleNetworkRow] = []
@@ -2977,23 +2979,26 @@ async def get_accounts_fir_trace(
                 mine = by_id.get(other)
                 if o is not None:
                     p_name, p_no, p_bank = o[1], o[2], o[3]
-                    p_fir, p_ps = o[4], o[5]
+                    p_fir, p_ps, p_layer = o[4], o[5], o[9]
                 elif mine is not None:
                     p_name, p_no, p_bank = (mine.account_holder_name,
                                             mine.account_no, mine.bank_name)
                     p_fir = fir
                     p_ps = ps_row.station_name if ps_row else None
+                    p_layer = mine.layer
                 else:
                     # Linked, but the account row is not visible to this
                     # caller -- a test station excluded by scoping. Draw
                     # the link, name it as unavailable rather than
                     # inventing a label or dropping the edge.
                     p_name = p_no = p_bank = p_fir = p_ps = None
+                    p_layer = None
 
                 b["peers"][(other, direction)] = MuleLinkPeer(
                     account_id=other,
                     account_holder_name=p_name, account_no=p_no,
                     bank_name=p_bank, fir_no=p_fir, ps_name=p_ps,
+                    layer=p_layer,
                     direction=direction, cross_fir=xf, txns=n, amount=amt)
 
         for aid, b in agg.items():
