@@ -30,7 +30,6 @@ import TabBar, { type TabDef } from '../components/common/TabBar';
 import { CryptoTrailTab } from '../components/dashboard/CryptoTrailTab';
 import { StatementCoverageTab } from '../components/dashboard/StatementCoverageTab';
 import { MuleNetworkTab } from '../components/dashboard/MuleNetworkTab';
-import CaveatNote from '../components/common/CaveatNote';
 import { INDIA_LAYOUT, KARNATAKA_LAYOUT, KARNATAKA_REGION_ALIASES } from '../lib/utils/geo-tile-grid';
 import {
   downloadAccountsPsComparisonExcel, downloadAccountsPsComparisonPdf,
@@ -1029,58 +1028,28 @@ function DeepAnalysisTab({ mode, focus, onBack }: {
 // signed off.
 
 function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
-  /** Accounts this FIR's accounts transacted with that NOBODY recorded
-   *  under this FIR — another case, another station, or never
-   *  registered.
+  /** Transfers between accounts ON THIS FIR, plus the victim's opening
+   *  hop.
    *
-   *  They belong in the columns. Layer 1 is where the victim's money
-   *  lands and layer 2 is where it goes next, and for most cases layer
-   *  2 is somebody else's paperwork: across the corpus 77% of onward
-   *  payments from a layer-1 account go to an account outside the FIR.
-   *  Without these the columns thin out to nothing after the first hop
-   *  and the trail appears to stop, when what stopped was the filing.
+   *  Deliberately NOT every link these accounts have. This screen is
+   *  case investigation: the officer is asking what happened inside
+   *  their own FIR, and an account filed under somebody else's case is
+   *  a lead for the Mule Network tab rather than a node in this one.
+   *  Widening it here turned a 16-account case into a 221-account
+   *  starburst and answered a question nobody on this screen had asked.
    *
-   *  Synthesised as FirTraceAccount so they flow through the existing
-   *  column layout unchanged, tagged `source: 'outside'` so the node
-   *  can be drawn hollow and the hover card can say where it came
-   *  from. */
-  const outside = useMemo<FirTraceAccount[]>(() => {
-    const own = new Set(trace.accounts.map((a) => a.account_id).filter(Boolean));
-    const seen = new Map<string, FirTraceAccount>();
-    for (const r of trace.network ?? []) {
-      for (const p of r.peers) {
-        if (own.has(p.account_id) || seen.has(p.account_id)) continue;
-        seen.set(p.account_id, {
-          source: 'outside' as FirTraceSource,
-          layer: p.layer ?? null,
-          account_id: p.account_id,
-          account_no: p.account_no,
-          account_holder_name: p.account_holder_name,
-          bank_name: p.bank_name,
-          branch_name: null,
-          branch_state: null,
-          ifsc_code: null,
-          amount: 0,
-          account_type: null,
-          crypto_txns: 0,
-          crypto_exchanges: [],
-          crypto_debit: 0,
-          external_links: 0,
-        });
-      }
-    }
-    return [...seen.values()];
-  }, [trace]);
-
-  /** EVERY transfer, not only the ones with both ends inside the FIR.
-   *
-   *  `trace.flows` is deliberately the inside-only set — the layered
-   *  table counts on that. The diagram needs the rest, which is where
-   *  roughly 80% of the money goes. */
+   *  The victim's opening hop IS included, because the victim is part
+   *  of the case. It comes from the network payload rather than from
+   *  `flows`, since no bank statement records it. */
   const allFlows = useMemo<FirTraceFlow[]>(() => {
     const seen = new Set<string>();
     const out: FirTraceFlow[] = [];
-    for (const r of trace.network ?? []) {
+    for (const f of trace.flows ?? []) {
+      seen.add(`${f.src_account_id}>${f.dst_account_id}`);
+      out.push(f);
+    }
+    // Only the victim row adds anything beyond that.
+    for (const r of (trace.network ?? []).filter((x) => x.layer === 0)) {
       for (const p of r.peers) {
         const outgoing = (p.direction || '').toLowerCase().startsWith('out');
         const src = outgoing ? r.account_id : p.account_id;
@@ -1101,7 +1070,7 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
   // their own column at the far right so nothing is silently hidden.
   const columns = useMemo(() => {
     const buckets = new Map<number | null, FirTraceAccount[]>();
-    for (const a of [...trace.accounts, ...outside]) {
+    for (const a of trace.accounts) {
       const k = a.layer ?? null;
       const arr = buckets.get(k) ?? [];
       arr.push(a);
@@ -1119,9 +1088,15 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
       cols.push({ key: 'Lx', label: 'Unlayered', layer: null, accounts: buckets.get(null)! });
     }
     return cols;
-  }, [trace, outside]);
+  }, [trace]);
 
   const hasVictim = !!(trace.case && (trace.case.victim_name || trace.case.amount_lost));
+  /** The layer-0 row the server places at the head of the trail. Its id
+   *  is what the victim's dashed edges are measured against, so the
+   *  node has to register under exactly this key. */
+  const victimId = useMemo(
+    () => (trace.network ?? []).find((r) => r.layer === 0)?.account_id ?? null,
+    [trace]);
 
   // Hover-state tooltip. Rendered as a position:fixed floating card
   // that tracks the mouse -- fixed position escapes any overflow-x
@@ -1143,6 +1118,13 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
   const [edges, setEdges] = useState<{
     key: string; x1: number; y1: number; x2: number; y2: number;
     colour: string; label: string;
+    /** Asserted by the case file rather than observed in a statement —
+     *  only the victim's opening hop. Layer 1 is DEFINED as the account
+     *  the victim paid, and no bank statement records that payment: a
+     *  victim account never appears in the mule-to-mule link table.
+     *  Drawn dashed and unlabelled, because every other arrow here is
+     *  evidence and this screen ends up in case files. */
+    asserted?: boolean;
   }[]>([]);
   const [canvas, setCanvas] = useState({ w: 0, h: 0 });
 
@@ -1173,11 +1155,13 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
       for (const f of flows) {
         const a = at(f.src_account_id); const b = at(f.dst_account_id);
         if (!a || !b) continue;
+        const asserted = f.src_account_id === victimId;
         out.push({
           key: `f:${f.src_account_id}:${f.dst_account_id}`,
           x1: a.cx, y1: a.cy, x2: b.cx, y2: b.cy,
           colour: f.cross_fir ? FLOW_CROSS_FIR : FLOW_COLOR,
-          label: `${formatNumber(f.txns)} txn`,
+          label: asserted ? '' : `${formatNumber(f.txns)} txn`,
+          asserted,
         });
       }
       for (const a of cryptoAccounts) {
@@ -1212,18 +1196,6 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
 
   return (
     <div className="space-y-4">
-    {outside.length > 0 && (
-      <CaveatNote summary={`${formatNumber(outside.length)} accounts here are outside this FIR — that is where the trail continues`}>
-        Solid nodes are accounts recorded under this FIR. <b>Hollow ones are
-        accounts they transacted with that nobody entered under this case</b>
-        — another FIR, another station, or never registered. They are in the
-        columns because the money does not stop at the case file: across the
-        corpus about 77% of onward payments from a layer-1 account go to an
-        account outside the FIR. Without them the columns thin out after the
-        first hop and the trail looks like it ended, when what ended was the
-        filing.
-      </CaveatNote>
-    )}
     <div className="rounded-2xl overflow-hidden" style={cardStyle}>
       <div className="px-5 py-3" style={{ borderTop: '4px solid #0b2c4a' }}>
         <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>
@@ -1280,7 +1252,10 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
                       <line
                         x1={e.x1 + (dx / len) * gap} y1={e.y1 + (dy / len) * gap}
                         x2={e.x2 - (dx / len) * gap} y2={e.y2 - (dy / len) * gap}
-                        stroke={e.colour} strokeWidth={1.8} strokeOpacity={0.75}
+                        stroke={e.colour}
+                        strokeWidth={e.asserted ? 1.4 : 1.8}
+                        strokeOpacity={e.asserted ? 0.45 : 0.75}
+                        strokeDasharray={e.asserted ? '6 5' : undefined}
                         markerEnd="url(#fir-arrow)" />
                       {showLabel && (
                         <text x={(e.x1 + e.x2) / 2} y={(e.y1 + e.y2) / 2 - 4}
@@ -1312,10 +1287,52 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
                       <div><span className="opacity-60">Registered:</span> {trace.case?.registration_date ?? '—'}</div>
                     </>
                   }
+                  nodeRef={(el) => {
+                    if (!victimId) return;
+                    if (el) nodeEls.current.set(victimId, el);
+                    else nodeEls.current.delete(victimId);
+                  }}
                   onHover={(c, x, y) => setHovered({ content: c, x, y })}
                   onLeave={() => setHovered(null)}
                 />
-              ) : null}
+              ) : (
+                /* DRAWN EVEN WHEN THERE IS NOTHING TO DRAW.
+                   A case with no victim recorded and a case that simply
+                   has not been opened look identical if the node is
+                   omitted. Hollow, labelled, and it still anchors the
+                   dashed layer-1 edges so the shape of the trail is
+                   unchanged -- an officer sees where the victim SHOULD
+                   be and that the file does not say. */
+                <>
+                  <FlowNode
+                    color={COLOR_VICTIM}
+                    hollow
+                    nodeRef={(el) => {
+                      if (!victimId) return;
+                      if (el) nodeEls.current.set(victimId, el);
+                      else nodeEls.current.delete(victimId);
+                    }}
+                    content={
+                      <>
+                        <div className="font-bold mb-1" style={{ color: 'var(--ksp-navy)' }}>
+                          Victim — data not available
+                        </div>
+                        <div className="opacity-70">
+                          No victim details are recorded against this FIR.
+                          The node is drawn so the gap is visible rather
+                          than silent.
+                        </div>
+                      </>
+                    }
+                    onHover={(c, x, y) => setHovered({ content: c, x, y })}
+                    onLeave={() => setHovered(null)}
+                  />
+                  <div className="text-[10px] italic opacity-50 text-center leading-tight"
+                       style={{ maxWidth: 92 }}>
+                    data not available
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Layer columns */}
@@ -1336,7 +1353,6 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
                   <FlowNode
                     key={`${col.key}-${i}`}
                     color={nodeColorFor(a)}
-                    hollow={a.source === 'outside'}
                     nodeRef={(el) => {
                       if (!a.account_id) return;
                       if (el) nodeEls.current.set(a.account_id, el);
