@@ -237,7 +237,18 @@ export function MuleNetworkFull({ rows, onOpenAccount }: {
   rows: MuleNetworkRow[];
   onOpenAccount: (accountId: string) => void;
 }) {
-  const [ring, setRing] = useState<string>('0');
+  // 'all' — the master view — NOT ring 0.
+  //
+  // It defaulted to the first ring, so opening this screen showed one
+  // arbitrary cluster out of hundreds and looked like the whole network.
+  // On a case with one big ring and a tail of pairs, the pair won: an
+  // officer tracing an FIR landed on "2 accounts, 1 transfer" and
+  // reasonably concluded that was the case's network.
+  //
+  // Master first, then narrow to a ring by choice. A view that shows
+  // everything is honest when it is wrong; a view that silently shows
+  // 1/300th of the data is not.
+  const [ring, setRing] = useState<string>('all');
   const [full, setFull] = useState(false);
   const [showPairs, setShowPairs] = useState(false);
   const [hover, setHover] = useState<GraphNode | null>(null);

@@ -1046,6 +1046,15 @@ function DeepAnalysisTab({ mode, focus, onBack }: {
 function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
   const rows = trace.network ?? [];
 
+  // Only claim there are hollow accounts when there are. The banner
+  // rendered unconditionally, so a case whose every link is a payment
+  // rail showed "hollow accounts are outside this FIR" above an empty
+  // canvas -- explaining something that was not on screen.
+  const hasOutside = useMemo(() => {
+    const own = new Set(rows.map((r) => r.account_id));
+    return rows.some((r) => r.peers.some((p) => !own.has(p.account_id)));
+  }, [rows]);
+
   if (!rows.length) {
     return (
       <div className="rounded-2xl px-5 py-10 text-center" style={cardStyle}>
@@ -1064,6 +1073,7 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
 
   return (
     <div className="space-y-3">
+      {hasOutside && (
       <CaveatNote summary="Hollow accounts are outside this FIR — and that is where most of the money goes">
         Solid nodes are accounts recorded under this FIR. <b>Hollow nodes
         are accounts they transacted with that nobody entered under this
@@ -1074,6 +1084,7 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
         payments. Colour is the money-trail layer; a dashed red halo
         marks an account appearing in more than one FIR.
       </CaveatNote>
+      )}
       <MuleNetworkFull
         rows={rows}
         onOpenAccount={() => {
