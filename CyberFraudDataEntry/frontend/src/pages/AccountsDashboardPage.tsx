@@ -1085,6 +1085,18 @@ function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
         marks an account appearing in more than one FIR.
       </CaveatNote>
       )}
+      <CaveatNote summary="The victim sits at layer 0, and its lines are asserted rather than observed">
+        Layer 1 is <b>defined</b> as the account the victim paid, so the
+        victim is the origin of every arrow here. But no bank statement
+        records that first hop — a victim account never appears in the
+        mule-to-mule link table — so the lines from it are drawn
+        <b> dashed and carry no amount</b>: the FIR record asserts them,
+        evidence does not. Every solid line on this canvas is a parsed
+        statement naming the account at the other end. Where the case
+        holds no victim details the node still appears, marked
+        <b> data not available</b>, because a missing victim is a gap in
+        the file rather than a case without one.
+      </CaveatNote>
       <MuleNetworkFull
         rows={rows}
         onOpenAccount={() => {

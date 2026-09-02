@@ -77,13 +77,22 @@ const LAYER_CODE: { layer: number; name: string; fill: string }[] = [
 ];
 const LAYER_UNKNOWN = { name: 'Grey — not recorded', fill: '#9aa5b1' };
 
+/** Layer 0 — the victim. Exists nowhere in all_accounts (the scheme
+ *  starts at 1) and is introduced by the FIR trace purely to place the
+ *  victim before the first hop. Given its own colour so it never lands
+ *  in the "not recorded" grey, which would read as a data gap rather
+ *  than as the origin of the money. */
+const LAYER_VICTIM = { name: 'Victim', fill: '#111827' };
+
 function layerColour(layer: number | null | undefined): string {
+  if (layer === 0) return LAYER_VICTIM.fill;
   if (layer === null || layer === undefined || layer < 1) return LAYER_UNKNOWN.fill;
   const e = LAYER_CODE[Math.min(layer, LAYER_CODE.length) - 1];
   return e ? e.fill : LAYER_UNKNOWN.fill;
 }
 
 function layerName(layer: number | null | undefined): string {
+  if (layer === 0) return LAYER_VICTIM.name;
   if (layer === null || layer === undefined || layer < 1) return LAYER_UNKNOWN.name;
   const e = LAYER_CODE[Math.min(layer, LAYER_CODE.length) - 1];
   return e ? e.name : LAYER_UNKNOWN.name;
@@ -119,6 +128,13 @@ interface GraphNode {
 }
 interface GraphEdge {
   from: string; to: string; txns: number; amount: number; crossFir: boolean;
+  /** True when the case file ASSERTS this hop rather than a bank
+   *  statement recording it — currently only victim → layer 1, which
+   *  follows from layer 1's definition ("the account the victim paid")
+   *  and from no parsed transaction. Rendered differently on purpose:
+   *  every other line here is evidence, and a diagram that draws an
+   *  assertion identically to evidence is worse than one that omits it. */
+  asserted?: boolean;
 }
 
 /** Deterministic [0,1) from a string — the seed for initial placement. */
@@ -265,7 +281,12 @@ export function MuleNetworkFull({ rows, onOpenAccount }: {
     const byId = new Map(keep.map((r) => [r.account_id, r]));
     const nodes: GraphNode[] = keep.map((r) => ({
       id: r.account_id,
-      label: r.account_holder_name || r.account_no || '—',
+      // A layer-0 node with no name is a victim the case file never
+      // recorded. Say that, rather than falling through to the em-dash
+      // used for an account whose holder is simply blank -- the two
+      // look identical on screen and mean completely different things.
+      label: r.account_holder_name || r.account_no
+        || (r.layer === 0 ? 'Victim — data not available' : '—'),
       fir: r.fir_no, ps: r.ps_name, bank: r.bank_name, layer: r.layer,
       degree: r.connected, crossFir: r.cross_fir, x: 0, y: 0,
       outside: false,
@@ -331,6 +352,10 @@ export function MuleNetworkFull({ rows, onOpenAccount }: {
         }
         byKey.set(key, {
           from, to, txns: p.txns, amount: p.amount || 0, crossFir: p.cross_fir,
+          // The victim hop carries no transaction and no amount because
+          // no statement recorded it -- the case file asserts it. That
+          // is exactly the signature, so it is also the test.
+          asserted: r.layer === 0 || p.layer === 0,
         });
       }
     }
@@ -552,12 +577,24 @@ export function MuleNetworkFull({ rows, onOpenAccount }: {
                   <line x1={a.x} y1={a.y} x2={x2} y2={y2}
                     pointerEvents="none"
                     stroke={on ? C_NAVY : e.crossFir ? C_RED : C_GREY}
+                    /* Dashed, thin and pale for an asserted hop. Every
+                       other line on this canvas is a parsed bank
+                       statement; drawing the case file's claim in the
+                       same ink would make an assertion look like
+                       evidence, which is the one confusion this screen
+                       cannot afford. */
+                    strokeDasharray={e.asserted ? `${5 / zoom} ${4 / zoom}` : undefined}
                     strokeWidth={
                       (on ? 2.2
+                        : e.asserted ? 1.1
                         : Math.min(2.4, 0.4 + Math.log10(1 + e.txns) * 0.9))
                       / zoom
                     }
-                    strokeOpacity={on ? 0.95 : e.crossFir ? 0.5 : 0.28}
+                    strokeOpacity={
+                      on ? 0.95
+                        : e.asserted ? 0.55
+                        : e.crossFir ? 0.5 : 0.28
+                    }
                     markerEnd="url(#mn-arrow)" />
                 </g>
               );
@@ -620,6 +657,16 @@ export function MuleNetworkFull({ rows, onOpenAccount }: {
             {/* Said on the node itself, not only in the caption. An
                 officer reading a hollow circle needs to know why it is
                 hollow at the moment they are looking at it. */}
+            {hover.layer === 0 && (
+              <div className="mt-1" style={{ color: 'var(--ksp-yellow)' }}>
+                {hover.label.startsWith('Victim —')
+                  ? 'No victim recorded on this FIR. The node is drawn so the '
+                    + 'gap is visible rather than silent.'
+                  : 'From the case file, not from a bank statement. The dashed '
+                    + 'lines are asserted by the FIR record — layer 1 is defined '
+                    + 'as the account the victim paid.'}
+              </div>
+            )}
             {hover.outside && (
               <div className="mt-1" style={{ color: 'var(--ksp-yellow)' }}>
                 Outside the current filter — shown because it is connected

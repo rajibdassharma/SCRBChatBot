@@ -2752,6 +2752,7 @@ async def get_accounts_fir_trace(
     )).first()
     case_meta: FirTraceCase | None = None
     case_id: str | None = None
+    victim_row = None
     if case_row:
         c, unit, ps = case_row
         case_id = c.id
@@ -3020,6 +3021,59 @@ async def get_accounts_fir_trace(
                 cross_fir=len(b["cross"]),
                 out_links=b["out"], in_links=b["in"],
                 txns=b["txns"], amount=b["amt"], peers=peers))
+
+    # ── the victim, at the head of the trail ─────────────────────────
+    #
+    # ALWAYS DRAWN, even when there is nothing to draw. A money trail
+    # that starts at layer 1 starts one step late: layer 1 is DEFINED as
+    # the account the victim paid, so the victim is the origin of every
+    # arrow on the diagram and leaving them out makes the picture begin
+    # in the middle.
+    #
+    # When the case carries no victim -- no case row at all, or a case
+    # with the victim block unfilled -- the node is still placed and
+    # says so. An absent victim is a gap in the file that an officer
+    # should see, in the same way a missing layer stays grey rather than
+    # vanishing. Silence looks identical to "no victim exists".
+    #
+    # THE EDGES ARE NOT EVIDENCE AND MUST NOT LOOK LIKE IT. Every other
+    # line on this canvas comes from a parsed bank statement naming the
+    # far account. These come from the case file's definition of layer 1
+    # -- a different kind of claim, carried with txns=0 and amount=0 so
+    # the client can render them as asserted rather than observed.
+    if network:
+        layer1 = [r for r in network if r.layer == 1] or network
+        named = bool(victim_row and (victim_row.first_name or victim_row.bank_account_no))
+        network.insert(0, MuleNetworkRow(
+            # Sentinel id. Not a real account, and prefixed so it can
+            # never collide with a UUID from all_accounts.
+            account_id=f"victim:{case_id or fir}",
+            account_holder_name=(
+                f"{victim_row.first_name or ''} {victim_row.last_name or ''}".strip()
+                if named else None),
+            account_no=(victim_row.bank_account_no if named else None),
+            bank_name=(victim_row.bank_name if named else None),
+            fir_no=fir,
+            ps_name=ps_row.station_name if ps_row else None,
+            ps_id=ps_id,
+            district=ps_row.district_name if ps_row else None,
+            branch_state=None,
+            # Layer 0 exists nowhere in all_accounts -- the scheme starts
+            # at 1. It is introduced here purely to place the victim
+            # before the first hop, and the client maps it to its own
+            # colour rather than to the "not recorded" grey.
+            layer=0,
+            connected=len(layer1), cross_fir=0,
+            out_links=len(layer1), in_links=0,
+            txns=0, amount=float(victim_row.amount_lost or 0) if named else 0.0,
+            peers=[MuleLinkPeer(
+                account_id=r.account_id,
+                account_holder_name=r.account_holder_name,
+                account_no=r.account_no, bank_name=r.bank_name,
+                fir_no=r.fir_no, ps_name=r.ps_name, layer=r.layer,
+                direction="out", cross_fir=False,
+                txns=0, amount=0.0) for r in layer1],
+        ))
 
     return AccountsFirTrace(
         flows=flows,
