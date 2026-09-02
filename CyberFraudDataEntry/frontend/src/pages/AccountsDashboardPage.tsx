@@ -1,4 +1,7 @@
-import { useEffect, useMemo, useState } from 'react';
+import {
+  useEffect, useLayoutEffect, useMemo, useRef, useState,
+  type ReactNode,
+} from 'react';
 import {
   BarChart3, Users, ShieldAlert, HelpCircle, MapPin, Camera,
   Trophy, FileDown, FileSpreadsheet, Search, Network, Waypoints, Repeat,
@@ -27,7 +30,6 @@ import TabBar, { type TabDef } from '../components/common/TabBar';
 import { CryptoTrailTab } from '../components/dashboard/CryptoTrailTab';
 import { StatementCoverageTab } from '../components/dashboard/StatementCoverageTab';
 import { MuleNetworkTab } from '../components/dashboard/MuleNetworkTab';
-import { MuleNetworkFull } from '../components/dashboard/MuleNetworkFull';
 import CaveatNote from '../components/common/CaveatNote';
 import { INDIA_LAYOUT, KARNATAKA_LAYOUT, KARNATAKA_REGION_ALIASES } from '../lib/utils/geo-tile-grid';
 import {
@@ -40,7 +42,7 @@ import { AccountsPsDetailPanel } from '../components/dashboard/AccountsPsDetailP
 import type {
   AccountsKpiSummary, AccountsPsComparison,
   AccountsDailyPoint, AccountsLayerDistribution,
-  AccountsFirTrace, FirTraceAccount, FirTraceSource,
+  AccountsFirTrace, FirTraceAccount, FirTraceSource, FirTraceFlow,
   RepeatAccount, AccountFirOccurrence,
   AccountsGeoRegion, AccountsGeoScope,
 } from '../types';
@@ -69,6 +71,9 @@ const COLOR_MULE     = '#8b1919';  // dark red — offender
 // Validated against Mule red: deuteranopia dE 11.1, all-pairs PASS.
 const COLOR_NONMULE  = '#0b2c4a';  // navy — neutral / unknown
 const COLOR_NAVY     = '#0b2c4a';
+const CRYPTO_COLOR   = '#b45309';   // amber-700 -- crypto cash-out
+const FLOW_COLOR     = '#0b2c4a';
+const FLOW_CROSS_FIR = '#8b1919';
 const COLOR_PURPLE   = '#6a1b9a';
 const COLOR_ORANGE   = '#c67c1d';
 const COLOR_TEAL     = '#00695c';
@@ -660,6 +665,8 @@ const SOURCE_LABELS: Record<FirTraceSource, string> = {
   victim_accounts: 'Victim Account',
   accused_accounts: 'Accused Account',
   money_transfer: 'Mule Transfer',
+  // Not one of this FIR's tables. An account reached from one of them.
+  outside: 'Outside this FIR',
 };
 
 // Distinct colour per money-trail layer -- reused across the
@@ -1021,95 +1028,572 @@ function DeepAnalysisTab({ mode, focus, onBack }: {
 // which we'll wire up as edges in a follow-up once the layout is
 // signed off.
 
-/** Graphical Analysis: the case drawn as a network.
- *
- *  THE SAME COMPONENT THE MULE NETWORK TAB USES, fed this FIR's own
- *  accounts and their links.
- *
- *  It was a bespoke layer-column layout — accounts bucketed into Layer
- *  1..n with money-flow lines measured off the DOM. The columns were
- *  honest about the case file and dishonest about the money: they could
- *  only ever contain accounts somebody had recorded under this FIR, so
- *  the arrows stopped wherever the paperwork stopped.
- *
- *  Measured across the corpus: 1,012 links have both ends inside one
- *  FIR and 2,049 leave it — ₹26.75 crore drawn against ₹109.75 crore
- *  not drawn. At layer 1 specifically, 77% of onward payments go to
- *  accounts nobody entered under that FIR. Those are the hops an
- *  investigator is chasing, and they were being reduced to a number in
- *  an `external_links` column.
- *
- *  Using one component for both screens also means an account looks the
- *  same wherever an officer meets it: same layer colours, same
- *  cross-FIR halo, same hover card, same hollow ring for an account
- *  outside the current view. */
 function GraphicalAnalysisView({ trace }: { trace: AccountsFirTrace }) {
-  const rows = trace.network ?? [];
+  /** Accounts this FIR's accounts transacted with that NOBODY recorded
+   *  under this FIR — another case, another station, or never
+   *  registered.
+   *
+   *  They belong in the columns. Layer 1 is where the victim's money
+   *  lands and layer 2 is where it goes next, and for most cases layer
+   *  2 is somebody else's paperwork: across the corpus 77% of onward
+   *  payments from a layer-1 account go to an account outside the FIR.
+   *  Without these the columns thin out to nothing after the first hop
+   *  and the trail appears to stop, when what stopped was the filing.
+   *
+   *  Synthesised as FirTraceAccount so they flow through the existing
+   *  column layout unchanged, tagged `source: 'outside'` so the node
+   *  can be drawn hollow and the hover card can say where it came
+   *  from. */
+  const outside = useMemo<FirTraceAccount[]>(() => {
+    const own = new Set(trace.accounts.map((a) => a.account_id).filter(Boolean));
+    const seen = new Map<string, FirTraceAccount>();
+    for (const r of trace.network ?? []) {
+      for (const p of r.peers) {
+        if (own.has(p.account_id) || seen.has(p.account_id)) continue;
+        seen.set(p.account_id, {
+          source: 'outside' as FirTraceSource,
+          layer: p.layer ?? null,
+          account_id: p.account_id,
+          account_no: p.account_no,
+          account_holder_name: p.account_holder_name,
+          bank_name: p.bank_name,
+          branch_name: null,
+          branch_state: null,
+          ifsc_code: null,
+          amount: 0,
+          account_type: null,
+          crypto_txns: 0,
+          crypto_exchanges: [],
+          crypto_debit: 0,
+          external_links: 0,
+        });
+      }
+    }
+    return [...seen.values()];
+  }, [trace]);
 
-  // Only claim there are hollow accounts when there are. The banner
-  // rendered unconditionally, so a case whose every link is a payment
-  // rail showed "hollow accounts are outside this FIR" above an empty
-  // canvas -- explaining something that was not on screen.
-  const hasOutside = useMemo(() => {
-    const own = new Set(rows.map((r) => r.account_id));
-    return rows.some((r) => r.peers.some((p) => !own.has(p.account_id)));
-  }, [rows]);
+  /** EVERY transfer, not only the ones with both ends inside the FIR.
+   *
+   *  `trace.flows` is deliberately the inside-only set — the layered
+   *  table counts on that. The diagram needs the rest, which is where
+   *  roughly 80% of the money goes. */
+  const allFlows = useMemo<FirTraceFlow[]>(() => {
+    const seen = new Set<string>();
+    const out: FirTraceFlow[] = [];
+    for (const r of trace.network ?? []) {
+      for (const p of r.peers) {
+        const outgoing = (p.direction || '').toLowerCase().startsWith('out');
+        const src = outgoing ? r.account_id : p.account_id;
+        const dst = outgoing ? p.account_id : r.account_id;
+        const k = `${src}>${dst}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        out.push({
+          src_account_id: src, dst_account_id: dst,
+          txns: p.txns, amount: p.amount, cross_fir: p.cross_fir,
+        });
+      }
+    }
+    return out;
+  }, [trace]);
 
-  if (!rows.length) {
-    return (
-      <div className="rounded-2xl px-5 py-10 text-center" style={cardStyle}>
-        <p className="text-sm font-semibold" style={{ color: COLOR_NAVY }}>
-          No transfers found between the accounts on this FIR.
-        </p>
-        <p className="text-xs mt-2 opacity-70 max-w-xl mx-auto" style={{ color: COLOR_NAVY }}>
-          A link requires a <b>parsed bank statement</b> naming the other
-          account. Accounts whose statement has not been uploaded or
-          parsed yet still appear in the Deep Analysis table, but cannot
-          appear here — Coverage lists which ones are still missing.
-        </p>
-      </div>
-    );
-  }
+  // Group accounts into layer columns. Unknown-layer accounts get
+  // their own column at the far right so nothing is silently hidden.
+  const columns = useMemo(() => {
+    const buckets = new Map<number | null, FirTraceAccount[]>();
+    for (const a of [...trace.accounts, ...outside]) {
+      const k = a.layer ?? null;
+      const arr = buckets.get(k) ?? [];
+      arr.push(a);
+      buckets.set(k, arr);
+    }
+    const numeric = Array.from(buckets.keys())
+      .filter((k): k is number => k !== null)
+      .sort((a, b) => a - b);
+    const maxLayer = numeric.length ? numeric[numeric.length - 1] : 0;
+    const cols: { key: string; label: string; layer: number | null; accounts: FirTraceAccount[] }[] = [];
+    for (let l = 1; l <= maxLayer; l++) {
+      cols.push({ key: `L${l}`, label: `Layer ${l}`, layer: l, accounts: buckets.get(l) ?? [] });
+    }
+    if (buckets.has(null)) {
+      cols.push({ key: 'Lx', label: 'Unlayered', layer: null, accounts: buckets.get(null)! });
+    }
+    return cols;
+  }, [trace, outside]);
+
+  const hasVictim = !!(trace.case && (trace.case.victim_name || trace.case.amount_lost));
+
+  // Hover-state tooltip. Rendered as a position:fixed floating card
+  // that tracks the mouse -- fixed position escapes any overflow-x
+  // ancestor (a plain absolute popup gets clipped when the graph
+  // scrolls horizontally). Coordinates come from onMouseMove on
+  // each node so the card follows the cursor rather than anchoring
+  // on entry.
+  const [hovered, setHovered] = useState<{ content: ReactNode; x: number; y: number } | null>(null);
+
+  // ---- money-flow edges ------------------------------------------
+  //
+  // Measured from the DOM rather than modelled alongside it. The
+  // columns are a flex layout whose node positions depend on how many
+  // accounts each layer holds and how wide the viewport is; a parallel
+  // coordinate model would have to reproduce all of that and would go
+  // wrong the first time either changed.
+  const canvasRef = useRef<HTMLDivElement | null>(null);
+  const nodeEls = useRef(new Map<string, HTMLDivElement>());
+  const [edges, setEdges] = useState<{
+    key: string; x1: number; y1: number; x2: number; y2: number;
+    colour: string; label: string;
+  }[]>([]);
+  const [canvas, setCanvas] = useState({ w: 0, h: 0 });
+
+  // Crypto accounts get a terminal node of their own, so the cash-out
+  // reads as the end of the flow instead of a badge bolted to a node.
+  const cryptoAccounts = useMemo(
+    () => trace.accounts.filter((a) => a.account_id && a.crypto_txns > 0),
+    [trace]);
+
+  const flows: FirTraceFlow[] = allFlows;
+
+  useLayoutEffect(() => {
+    const measure = () => {
+      const cont = canvasRef.current;
+      if (!cont) return;
+      const cr = cont.getBoundingClientRect();
+      const at = (k: string) => {
+        const el = nodeEls.current.get(k);
+        if (!el) return null;
+        const r = el.getBoundingClientRect();
+        return {
+          cx: r.left - cr.left + r.width / 2,
+          cy: r.top - cr.top + r.height / 2,
+          rw: r.width / 2,
+        };
+      };
+      const out: typeof edges = [];
+      for (const f of flows) {
+        const a = at(f.src_account_id); const b = at(f.dst_account_id);
+        if (!a || !b) continue;
+        out.push({
+          key: `f:${f.src_account_id}:${f.dst_account_id}`,
+          x1: a.cx, y1: a.cy, x2: b.cx, y2: b.cy,
+          colour: f.cross_fir ? FLOW_CROSS_FIR : FLOW_COLOR,
+          label: `${formatNumber(f.txns)} txn`,
+        });
+      }
+      for (const a of cryptoAccounts) {
+        const p = at(a.account_id!); const q = at(`crypto:${a.account_id}`);
+        if (!p || !q) continue;
+        out.push({
+          key: `c:${a.account_id}`,
+          x1: p.cx, y1: p.cy, x2: q.cx, y2: q.cy,
+          colour: CRYPTO_COLOR,
+          label: `${formatNumber(a.crypto_txns)} txn`,
+        });
+      }
+      setEdges(out);
+      setCanvas({ w: cont.scrollWidth, h: cont.scrollHeight });
+    };
+    measure();
+    const ro = new ResizeObserver(measure);
+    if (canvasRef.current) ro.observe(canvasRef.current);
+    window.addEventListener('resize', measure);
+    return () => { ro.disconnect(); window.removeEventListener('resize', measure); };
+  }, [trace, flows, cryptoAccounts]);
+
+  const externalTotal = trace.accounts.reduce(
+    (n, a) => n + (a.external_links || 0), 0);
+
+  const layersPresent = columns.filter((c) => c.layer != null && c.accounts.length > 0)
+                               .map((c) => c.layer as number);
+  const hasUnlayered = columns.some((c) => c.layer == null && c.accounts.length > 0);
+  const hasNonMule = trace.accounts.some(
+    (a) => a.source === 'all_accounts' && a.account_type === 'Non-Mule',
+  );
 
   return (
-    <div className="space-y-3">
-      {hasOutside && (
-      <CaveatNote summary="Hollow accounts are outside this FIR — and that is where most of the money goes">
-        Solid nodes are accounts recorded under this FIR. <b>Hollow nodes
-        are accounts they transacted with that nobody entered under this
-        case</b> — another FIR, another station, or never registered.
-        They are drawn because the layers do not stop where the case file
-        does: across the corpus roughly 80% of the money leaving these
-        accounts goes to them, and at layer 1 it is 77% of onward
-        payments. Colour is the money-trail layer; a dashed red halo
-        marks an account appearing in more than one FIR.
+    <div className="space-y-4">
+    {outside.length > 0 && (
+      <CaveatNote summary={`${formatNumber(outside.length)} accounts here are outside this FIR — that is where the trail continues`}>
+        Solid nodes are accounts recorded under this FIR. <b>Hollow ones are
+        accounts they transacted with that nobody entered under this case</b>
+        — another FIR, another station, or never registered. They are in the
+        columns because the money does not stop at the case file: across the
+        corpus about 77% of onward payments from a layer-1 account go to an
+        account outside the FIR. Without them the columns thin out after the
+        first hop and the trail looks like it ended, when what ended was the
+        filing.
       </CaveatNote>
-      )}
-      <CaveatNote summary="The victim sits at layer 0, and its lines are asserted rather than observed">
-        Layer 1 is <b>defined</b> as the account the victim paid, so the
-        victim is the origin of every arrow here. But no bank statement
-        records that first hop — a victim account never appears in the
-        mule-to-mule link table — so the lines from it are drawn
-        <b> dashed and carry no amount</b>: the FIR record asserts them,
-        evidence does not. Every solid line on this canvas is a parsed
-        statement naming the account at the other end. Where the case
-        holds no victim details the node still appears, marked
-        <b> data not available</b>, because a missing victim is a gap in
-        the file rather than a case without one.
-      </CaveatNote>
-      <MuleNetworkFull
-        rows={rows}
-        onOpenAccount={() => {
-          /* No per-account drill-down from a case view. The officer
-             arrived with an FIR in hand; re-centring the diagram on one
-             account would silently drop that context and leave them
-             looking at a network with no case attached to it. */
-        }}
-      />
+    )}
+    <div className="rounded-2xl overflow-hidden" style={cardStyle}>
+      <div className="px-5 py-3" style={{ borderTop: '4px solid #0b2c4a' }}>
+        <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>
+          Money Flow Graph — FIR {trace.fir_no}
+        </h3>
+        <p className="text-xs opacity-60 mt-0.5">
+          Victim on the left, then one column per money-trail layer, then crypto cash-out.
+          Hover any node for details. <b>Arrows are evidence, not layout</b> — one account's own
+          bank statement names the other's account number.
+          {flows.length > 40 && ` ${formatNumber(flows.length)} transfers — counts hidden to keep the shape readable.`}
+        </p>
+        {/* Say when there is nothing to draw, and why. A graph with no
+            arrows otherwise reads as "no transfers happened", when it
+            almost always means the statements are not on file. Only
+            177 of 3,822 FIRs have a link between two of their OWN
+            accounts. */}
+        {flows.length === 0 && (
+          <p className="text-xs mt-1" style={{ color: COLOR_MULE }}>
+            No statement-derived transfer between two accounts of this FIR.
+            {externalTotal > 0
+              ? ` ${externalTotal} link(s) lead to mule accounts outside it — those accounts are ringed.`
+              : ' Either the statements are not parsed yet, or the counterparties are not on file.'}
+          </p>
+        )}
+      </div>
+
+      <div className="px-5 pb-5">
+        <div className="overflow-x-auto">
+          <div ref={canvasRef} className="relative flex gap-6 items-start min-w-fit pt-3 pb-2">
+            {/* Edge layer, behind the nodes. pointer-events none so it
+                never steals a hover from the node it points at. */}
+            {edges.length > 0 && (
+              <svg width={canvas.w} height={canvas.h}
+                className="absolute left-0 top-0"
+                style={{ pointerEvents: 'none', zIndex: 0 }}>
+                <defs>
+                  <marker id="fir-arrow" viewBox="0 0 10 10" refX="9" refY="5"
+                    markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+                    <path d="M 0 0 L 10 5 L 0 10 z" fill="currentColor" />
+                  </marker>
+                </defs>
+                {edges.map((e) => {
+                  // Labels only while they can still be read. FIR
+                  // 0007/2026 at PS 37 carries 364 internal edges -- a
+                  // real mule farm, and every label on it would overlap
+                  // its neighbours into a grey smear that hides the
+                  // structure the arrows exist to show.
+                  const showLabel = edges.length <= 40;
+                  const dx = e.x2 - e.x1, dy = e.y2 - e.y1;
+                  const len = Math.sqrt(dx * dx + dy * dy) || 1;
+                  const gap = 25;
+                  return (
+                    <g key={e.key} style={{ color: e.colour }}>
+                      <line
+                        x1={e.x1 + (dx / len) * gap} y1={e.y1 + (dy / len) * gap}
+                        x2={e.x2 - (dx / len) * gap} y2={e.y2 - (dy / len) * gap}
+                        stroke={e.colour} strokeWidth={1.8} strokeOpacity={0.75}
+                        markerEnd="url(#fir-arrow)" />
+                      {showLabel && (
+                        <text x={(e.x1 + e.x2) / 2} y={(e.y1 + e.y2) / 2 - 4}
+                          textAnchor="middle"
+                          style={{ fontSize: 9, fill: e.colour, fontWeight: 700 }}>
+                          {e.label}
+                        </text>
+                      )}
+                    </g>
+                  );
+                })}
+              </svg>
+            )}
+            {/* Victim column -- rendered even when there's no case row so the layout is anchored. */}
+            <div className="flex flex-col items-center gap-3 min-w-[100px]">
+              <div className="text-[11px] font-bold uppercase tracking-wide"
+                   style={{ color: COLOR_VICTIM }}>Victim</div>
+              {hasVictim ? (
+                <FlowNode
+                  color={COLOR_VICTIM}
+                  content={
+                    <>
+                      <div className="font-bold mb-1" style={{ color: 'var(--ksp-navy)' }}>
+                        {trace.case?.victim_name ?? '—'}
+                      </div>
+                      <div><span className="opacity-60">Amount Lost:</span> ₹ {formatNumber(Math.round(trace.case?.amount_lost ?? 0))}</div>
+                      <div><span className="opacity-60">FIR:</span> {trace.fir_no}</div>
+                      <div><span className="opacity-60">PS:</span> {trace.case?.ps_name ?? '—'}</div>
+                      <div><span className="opacity-60">Registered:</span> {trace.case?.registration_date ?? '—'}</div>
+                    </>
+                  }
+                  onHover={(c, x, y) => setHovered({ content: c, x, y })}
+                  onLeave={() => setHovered(null)}
+                />
+              ) : null}
+            </div>
+
+            {/* Layer columns */}
+            {columns.map((col) => (
+              <div key={col.key} className="flex flex-col items-center gap-3 min-w-[100px]">
+                <div className="text-[11px] font-bold uppercase tracking-wide flex items-center gap-1.5"
+                     style={{ color: 'var(--ksp-navy)' }}>
+                  <span className="inline-block w-2.5 h-2.5 rounded-full"
+                        style={{ background: layerColor(col.layer) }} />
+                  {col.label}
+                  {col.accounts.length > 0 && (
+                    <span className="opacity-60">({col.accounts.length})</span>
+                  )}
+                </div>
+                {col.accounts.length === 0 ? (
+                  <div className="text-xs italic opacity-40">empty</div>
+                ) : col.accounts.map((a, i) => (
+                  <FlowNode
+                    key={`${col.key}-${i}`}
+                    color={nodeColorFor(a)}
+                    hollow={a.source === 'outside'}
+                    nodeRef={(el) => {
+                      if (!a.account_id) return;
+                      if (el) nodeEls.current.set(a.account_id, el);
+                      else nodeEls.current.delete(a.account_id);
+                    }}
+                    // An account paying mules outside this FIR is a lead
+                    // out of the case file. Ringed rather than drawn:
+                    // drawing it would put a node on screen that this
+                    // FIR does not cover.
+                    ring={a.external_links > 0 ? COLOR_MULE : undefined}
+                    badge={a.crypto_txns > 0 ? (
+                      <span
+                        className="absolute -top-1 -right-1 w-4 h-4 rounded-full flex items-center justify-center"
+                        style={{ background: CRYPTO_COLOR, color: '#fff',
+                                 fontSize: 9, fontWeight: 800 }}
+                        title={`${a.crypto_txns} crypto transaction(s)`}>
+                        ₿
+                      </span>
+                    ) : undefined}
+                    content={
+                      <>
+                        <div className="font-bold mb-1" style={{ color: 'var(--ksp-navy)' }}>
+                          {a.account_holder_name ?? '—'}
+                        </div>
+                        <div><span className="opacity-60">Source:</span> {SOURCE_LABELS[a.source]}{a.account_type ? ` · ${a.account_type}` : ''}</div>
+                        <div><span className="opacity-60">Layer:</span> {a.layer == null ? '—' : `L${a.layer}`}</div>
+                        <div><span className="opacity-60">Account:</span> {a.account_no ?? '—'}</div>
+                        <div><span className="opacity-60">Bank:</span> {a.bank_name ?? '—'}</div>
+                        <div><span className="opacity-60">Branch:</span> {a.branch_name ?? '—'}{a.branch_state ? ` / ${a.branch_state}` : ''}</div>
+                        <div><span className="opacity-60">IFSC:</span> {a.ifsc_code ?? '—'}</div>
+                        {a.amount > 0 && (
+                          <div className="mt-1 font-bold" style={{ color: COLOR_MULE }}>
+                            Amount: ₹ {formatNumber(Math.round(a.amount))}
+                          </div>
+                        )}
+                        {a.crypto_txns > 0 && (
+                          <div className="mt-1 font-bold" style={{ color: CRYPTO_COLOR }}>
+                            Crypto: {formatNumber(a.crypto_txns)} txn ·{' '}
+                            {a.crypto_exchanges.join(', ')}
+                            {a.crypto_debit > 0
+                              && ` · ₹ ${formatNumber(Math.round(a.crypto_debit))} out`}
+                            <div className="font-normal opacity-70">
+                              matched on the bank narration — a lead, not proof
+                            </div>
+                          </div>
+                        )}
+                        {a.external_links > 0 && (
+                          <div className="mt-1" style={{ color: COLOR_MULE }}>
+                            Pays {a.external_links} mule account(s) outside this FIR
+                          </div>
+                        )}
+                      </>
+                    }
+                    onHover={(c, x, y) => setHovered({ content: c, x, y })}
+                    onLeave={() => setHovered(null)}
+                  />
+                ))}
+              </div>
+            ))}
+
+            {/* Crypto cash-out column. Placed after the deepest layer
+                because that is what it is: the end of the trail, where
+                money leaves the banking system. Rendered only when
+                there is something in it — an always-present empty
+                column would imply every FIR was checked and cleared,
+                and only 128 of 3,822 have any crypto at all. */}
+            {cryptoAccounts.length > 0 && (
+              <div className="flex flex-col items-center gap-3 min-w-[110px]">
+                <div className="text-[11px] font-bold uppercase tracking-wide flex items-center gap-1.5"
+                     style={{ color: CRYPTO_COLOR }}>
+                  <span className="inline-block w-2.5 h-2.5 rounded-full"
+                        style={{ background: CRYPTO_COLOR }} />
+                  Crypto
+                  <span className="opacity-60">({cryptoAccounts.length})</span>
+                </div>
+                {cryptoAccounts.map((a) => (
+                  <FlowNode
+                    key={`crypto-${a.account_id}`}
+                    color={CRYPTO_COLOR}
+                    nodeRef={(el) => {
+                      const k = `crypto:${a.account_id}`;
+                      if (el) nodeEls.current.set(k, el);
+                      else nodeEls.current.delete(k);
+                    }}
+                    content={
+                      <>
+                        <div className="font-bold mb-1" style={{ color: CRYPTO_COLOR }}>
+                          {a.crypto_exchanges.join(', ') || 'Crypto'}
+                        </div>
+                        <div><span className="opacity-60">From:</span> {a.account_holder_name ?? '—'}</div>
+                        <div><span className="opacity-60">Transactions:</span> {formatNumber(a.crypto_txns)}</div>
+                        {a.crypto_debit > 0 && (
+                          <div><span className="opacity-60">Money out:</span> ₹ {formatNumber(Math.round(a.crypto_debit))}</div>
+                        )}
+                        <div className="mt-1 opacity-70">
+                          Flagged by matching the bank narration against
+                          exchange and asset names. Verify the narration
+                          before acting — money figures count only
+                          chain-reconciled rows.
+                        </div>
+                      </>
+                    }
+                    onHover={(c, x, y) => setHovered({ content: c, x, y })}
+                    onLeave={() => setHovered(null)}
+                  />
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Compact layer legend -- only layers actually present. */}
+        <div className="flex flex-wrap gap-3 mt-4 pt-3 border-t text-xs items-center"
+             style={{ borderColor: 'rgba(11,44,74,0.15)' }}>
+          <span className="font-bold" style={{ color: 'var(--ksp-navy)' }}>Node colour:</span>
+          <LegendChip color={COLOR_VICTIM} label="Victim" />
+          {layersPresent.map((l) => (
+            <LegendChip key={l} color={layerColor(l)} label={`Layer ${l}`} />
+          ))}
+          {hasUnlayered && (
+            <LegendChip color={LAYER_UNKNOWN_COLOR} label="Unlayered" />
+          )}
+          {hasNonMule && (
+            <LegendChip color={NON_MULE_COLOR} label="NM (Non-Mule)" />
+          )}
+          {cryptoAccounts.length > 0 && (
+            <LegendChip color={CRYPTO_COLOR} label="Crypto cash-out" />
+          )}
+          {externalTotal > 0 && (
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-3 h-3 rounded-full"
+                    style={{ background: '#fff', boxShadow: `0 0 0 2px ${COLOR_MULE}` }} />
+              ringed = pays a mule outside this FIR
+            </span>
+          )}
+          {flows.some((f) => f.cross_fir) && (
+            <span className="flex items-center gap-1.5">
+              <span className="inline-block w-4 h-0.5"
+                    style={{ background: FLOW_CROSS_FIR }} />
+              arrow crossing two FIRs
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* Cursor-following floating tooltip -- position:fixed escapes
+           any overflow-x-auto ancestor. pointer-events:none so it
+           doesn't intercept mouseleave on the underlying node. */}
+      {hovered && <FloatingTooltip content={hovered.content} x={hovered.x} y={hovered.y} />}
+    </div>
     </div>
   );
 }
 
+function FlowNode({ color, content, onHover, onLeave, nodeRef, badge, ring, hollow }: {
+  color: string;
+  content: ReactNode;
+  onHover: (content: ReactNode, x: number, y: number) => void;
+  onLeave: () => void;
+  /** Registers the DOM node so edges can be measured against it. Edges
+   *  are drawn from real laid-out positions rather than a parallel
+   *  coordinate model, so they cannot drift out of step with the
+   *  columns when the layout reflows. */
+  nodeRef?: (el: HTMLDivElement | null) => void;
+  /** Small corner marker — used for the crypto flag. */
+  badge?: ReactNode;
+  /** Outline colour, for accounts with links leading out of this FIR. */
+  ring?: string;
+  /** Drawn as an outline rather than a filled disc: this account is NOT
+   *  recorded under this FIR — it was reached from one that is.
+   *
+   *  Hollow rather than a different colour, because colour on this
+   *  canvas already means the money-trail layer and a second meaning on
+   *  the same channel would destroy the first. An officer can then read
+   *  two things at once: how deep the account sits, and whether anybody
+   *  has filed it. */
+  hollow?: boolean;
+}) {
+  // Small solid circle. onMouseEnter + onMouseMove both report the
+  // current cursor position so the floating tooltip tracks the mouse
+  // (not just anchors on entry). Focus events fall back to the node's
+  // bounding rect for keyboard users.
+  const report = (e: React.MouseEvent) => onHover(content, e.clientX, e.clientY);
+  const reportFromFocus = (e: React.FocusEvent<HTMLDivElement>) => {
+    const r = e.currentTarget.getBoundingClientRect();
+    onHover(content, r.right, r.top);
+  };
+  return (
+    <div className="relative" ref={nodeRef}>
+      <div
+        className={`w-11 h-11 rounded-full cursor-help transition-transform hover:scale-110${
+          hollow ? '' : ' shadow-md ring-2'}`}
+        style={{
+          background: hollow ? '#fff' : color,
+          ...(hollow ? { border: `2.5px dashed ${color}` } : {}),
+          ...(ring ? { boxShadow: `0 0 0 3px ${ring}` } : {}),
+        }}
+        tabIndex={0}
+        onMouseEnter={report}
+        onMouseMove={report}
+        onMouseLeave={onLeave}
+        onFocus={reportFromFocus}
+        onBlur={onLeave}
+      />
+      {badge}
+    </div>
+  );
+}
+
+/** Fixed-position hover card that follows the mouse cursor. Anchors
+ *  bottom-right by default; flips to the LEFT of the cursor if the
+ *  card would overflow the viewport's right edge, and clamps to the
+ *  visible area vertically. pointer-events:none so the card can't
+ *  swallow the mouseleave that would dismiss it. */
+function FloatingTooltip({ content, x, y }: {
+  content: ReactNode; x: number; y: number;
+}) {
+  const width = 260;
+  const gap = 14;
+  const viewportW = typeof window === 'undefined' ? 1200 : window.innerWidth;
+  const viewportH = typeof window === 'undefined' ? 800 : window.innerHeight;
+  const flipLeft = x + gap + width > viewportW;
+  const left = flipLeft ? Math.max(8, x - gap - width) : x + gap;
+  // Rough tooltip height; keep it from clipping the bottom edge.
+  const top = Math.min(y + gap, viewportH - 220);
+  return (
+    <div
+      style={{
+        position: 'fixed',
+        left,
+        top,
+        width,
+        zIndex: 100,
+        pointerEvents: 'none',
+        background: '#fff',
+        border: '1px solid rgba(11,44,74,0.2)',
+        borderRadius: 10,
+        boxShadow: '0 10px 30px rgba(0,0,0,0.18)',
+        padding: 12,
+        fontSize: 12,
+        color: '#0f172a',
+        lineHeight: 1.35,
+      }}
+    >
+      {content}
+    </div>
+  );
+}
+
+function LegendChip({ color, label }: { color: string; label: string }) {
+  return (
+    <span className="inline-flex items-center gap-1.5">
+      <span className="inline-block w-3 h-3 rounded-full" style={{ background: color }} />
+      {label}
+    </span>
+  );
+}
 
 /** KA-vs-Rest state-split panel shared by the Mule and Non-Mule
  *  breakdowns on the Deep Analysis tab. Three tiles: Total /

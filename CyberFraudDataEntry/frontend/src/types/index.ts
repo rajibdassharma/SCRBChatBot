@@ -1165,7 +1165,12 @@ export type FirTraceSource =
   | 'lien_accounts'
   | 'victim_accounts'
   | 'accused_accounts'
-  | 'money_transfer';
+  | 'money_transfer'
+  /** Not from any of this FIR's tables — an account one of them
+   *  transacted with, synthesised client-side from the link payload so
+   *  the money trail continues past where the paperwork stops. Never
+   *  returned by the server under this tag. */
+  | 'outside';
 
 export interface FirTraceAccount {
   source: FirTraceSource;
