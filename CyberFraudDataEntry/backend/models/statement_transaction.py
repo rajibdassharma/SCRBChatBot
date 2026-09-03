@@ -60,6 +60,17 @@ class StatementTransaction(Base):
     #: indexed boolean instead of matching source_file against a list of
     #: every reconciled path — see migration 019 for the measurement.
     verified = Column(Boolean, nullable=False, default=False)
+    #: PER-ROW balance-chain verdict (migration 022).
+    #:  1 passed   previous - debit + credit = balance held
+    #:  0 rejected the arithmetic did not hold
+    #: -1 untested not enough context to check
+    #:
+    #: The column has existed in the database since migration 022 and was
+    #: missing from this model, so ORM code could not filter on it and
+    #: had to reach for the file-level `verified` flag instead -- which
+    #: cannot tell a bad row from a bad file, and is the distinction 022
+    #: was added to make. ONLY chain_ok = 1 may be summed.
+    chain_ok = Column(Integer, nullable=False, default=-1, server_default="-1")
 
     #: Which reader produced the row (table-pdf / text-pdf / excel).
     #: Kept because a systematic error usually belongs to one reader.

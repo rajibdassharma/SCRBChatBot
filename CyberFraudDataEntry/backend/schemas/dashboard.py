@@ -277,6 +277,33 @@ class FirTraceFlow(BaseModel):
     cross_fir: bool = False
 
 
+class FirTraceUnlinked(BaseModel):
+    """Money that left an account on this FIR to a counterparty the bank
+    NAMED but did not give an account number for.
+
+    These can never become links. A link needs the other party's account
+    number so it can be matched against the mule register; an IMPS
+    narration that says "FT IMPS/IFI/408616259658/SHIVANANDLAXMANHALLU"
+    identifies a person and no account, and an outbound one gives an
+    IFSC -- a branch shared by thousands of accounts.
+
+    So they are reported rather than drawn. Without this the screen
+    shows a parsed statement, hundreds of rows, no arrows, and no
+    explanation -- which reads as a broken diagram instead of as the
+    limit of what the bank disclosed.
+    """
+    counterparty_name: str
+    channel: Optional[str] = None
+    txns: int = 0
+    #: Chain-verified rows ONLY, like every other money figure here.
+    amount: float = 0
+    #: Rows excluded from `amount` because the balance chain could not be
+    #: verified. Surfaced rather than folded in -- collapsing untested
+    #: into verified is what put a quadrillion-rupee figure on a
+    #: dashboard once already.
+    unverified_txns: int = 0
+
+
 class AccountsFirTrace(BaseModel):
     """Deep Analysis: everything the DB knows about one FIR, joined
     from the 5 account/transfer tables. Foundation for the layered
@@ -301,6 +328,9 @@ class AccountsFirTrace(BaseModel):
     #: consumes, so both screens draw through one component and an
     #: account looks the same wherever it appears.
     network: List["MuleNetworkRow"] = []
+    #: Named recipients with no account number — money that left the
+    #: case and cannot be drawn as an arrow. See FirTraceUnlinked.
+    unlinked: List[FirTraceUnlinked] = []
     warnings: List[str] = []
 
 

@@ -30,18 +30,20 @@ import TabBar, { type TabDef } from '../components/common/TabBar';
 import { CryptoTrailTab } from '../components/dashboard/CryptoTrailTab';
 import { StatementCoverageTab } from '../components/dashboard/StatementCoverageTab';
 import { MuleNetworkTab } from '../components/dashboard/MuleNetworkTab';
+import CaveatNote from '../components/common/CaveatNote';
 import { INDIA_LAYOUT, KARNATAKA_LAYOUT, KARNATAKA_REGION_ALIASES } from '../lib/utils/geo-tile-grid';
 import {
   downloadAccountsPsComparisonExcel, downloadAccountsPsComparisonPdf,
 } from '../lib/api/reports';
 import { getAllPoliceStationsPublic } from '../lib/api/auth';
-import { formatNumber, todayISO, localISO } from '../lib/utils/format';
+import { formatINR, formatNumber, todayISO, localISO } from '../lib/utils/format';
 import { useAuthStore } from '../lib/stores/auth-store';
 import { AccountsPsDetailPanel } from '../components/dashboard/AccountsPsDetailPanel';
 import type {
   AccountsKpiSummary, AccountsPsComparison,
   AccountsDailyPoint, AccountsLayerDistribution,
   AccountsFirTrace, FirTraceAccount, FirTraceSource, FirTraceFlow,
+  FirTraceUnlinked,
   RepeatAccount, AccountFirOccurrence,
   AccountsGeoRegion, AccountsGeoScope,
 } from '../types';
@@ -917,7 +919,13 @@ function DeepAnalysisTab({ mode, focus, onBack }: {
           </div>
 
           {mode === 'graph' && (
-            <GraphicalAnalysisView trace={trace} />
+            <div className="space-y-4">
+              <GraphicalAnalysisView trace={trace} />
+              {/* Directly under the diagram, because it exists to answer
+                  the question the diagram provokes: money clearly left
+                  these accounts, so why are there no arrows. */}
+              <UnlinkedOutflows rows={trace.unlinked ?? []} />
+            </div>
           )}
 
           {mode === 'table' && (<>
@@ -1608,6 +1616,87 @@ function LegendChip({ color, label }: { color: string; label: string }) {
       <span className="inline-block w-3 h-3 rounded-full" style={{ background: color }} />
       {label}
     </span>
+  );
+}
+
+
+/** Money that left the case and cannot be drawn.
+ *
+ *  A link needs the recipient's ACCOUNT NUMBER so it can be matched
+ *  against the mule register. Whether the bank writes one down is
+ *  entirely a matter of channel — measured across the corpus:
+ *
+ *      RTGS 99%    NEFT 83%    UPI 69%    IMPS 13%
+ *
+ *  IMPS is not a parser failure. Inbound narrations read
+ *  "FT IMPS/IFI/<ref>/<NAME>/…" — a person and no account. Outbound
+ *  read "MB IMPS/IFO/<ref>/<IFSC>/…" — a branch code shared by
+ *  thousands of accounts. Matching on either would fabricate links.
+ *
+ *  So this money is listed rather than drawn. Without it the screen
+ *  shows a parsed statement, hundreds of rows, no arrows and nothing
+ *  explaining why — which reads as a broken diagram instead of as the
+ *  limit of what the bank disclosed. */
+function UnlinkedOutflows({ rows }: { rows: FirTraceUnlinked[] }) {
+  if (!rows.length) return null;
+  const total = rows.reduce((s, r) => s + r.amount, 0);
+  const unverified = rows.reduce((s, r) => s + r.unverified_txns, 0);
+
+  return (
+    <div className="rounded-2xl overflow-hidden" style={cardStyle}>
+      <div className="px-5 py-3" style={{ borderTop: '4px solid #b45309' }}>
+        <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>
+          Named recipients with no account number — {formatINR(total)}
+        </h3>
+        <div className="mt-1">
+          <CaveatNote summary="Why these have no arrow on the diagram above">
+            The bank named who received this money but did not record their
+            account number, so it cannot be matched against the mule
+            register and <b>cannot be drawn as a link</b>. This is the
+            bank's narration format, not a gap in parsing: RTGS carries an
+            account number 99% of the time and NEFT 83%, but IMPS only 13%
+            — it identifies the other party by name inbound, and by IFSC
+            (a branch, shared by thousands of accounts) outbound.
+            <b> These are leads, not evidence</b>: a truncated name is not
+            an identity, and the same person may appear more than once
+            spelled differently.
+          </CaveatNote>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr style={{ background: 'rgba(11,44,74,0.04)' }}>
+              <th className="text-left px-4 py-2 font-bold">Recipient (as the bank wrote it)</th>
+              <th className="text-left px-4 py-2 font-bold">Channel</th>
+              <th className="text-right px-4 py-2 font-bold">Transfers</th>
+              <th className="text-right px-4 py-2 font-bold">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={`${r.counterparty_name}-${r.channel}-${i}`}
+                  style={{ borderTop: '1px solid rgba(11,44,74,0.08)' }}>
+                <td className="px-4 py-2 font-semibold">{r.counterparty_name}</td>
+                <td className="px-4 py-2 opacity-70">{r.channel ?? '—'}</td>
+                <td className="px-4 py-2 text-right tabular-nums">{formatNumber(r.txns)}</td>
+                <td className="px-4 py-2 text-right tabular-nums font-semibold">
+                  {formatINR(r.amount)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {unverified > 0 && (
+        <div className="px-5 py-2 text-xs" style={{ color: 'var(--ksp-red)' }}>
+          {formatNumber(unverified)} further transfer{unverified === 1 ? '' : 's'} are
+          excluded from these totals because the statement's running balance
+          could not be verified. Untested money is never added to a figure
+          presented as fact.
+        </div>
+      )}
+    </div>
   );
 }
 

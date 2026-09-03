@@ -4,7 +4,7 @@ from datetime import date, timedelta
 from typing import List
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import bindparam, case, select, func, and_, text, true as sa_true
+from sqlalchemy import bindparam, case, select, func, and_, or_, text, true as sa_true
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
@@ -53,7 +53,7 @@ from schemas.dashboard import (
     FirCrimeTypeReport, FirCrimeTypeRow, FirCrimeOther, FirCrimeDistrictCell,
     FirPsCrimeCount,
     DuplicateIdSummary, DuplicateIdCluster, DuplicateIdMember,
-    MuleNetworkSummary, MuleNetworkRow, MuleLinkPeer,
+    MuleNetworkSummary, MuleNetworkRow, MuleLinkPeer, FirTraceUnlinked,
     StatementCoverageSummary, StatementCoverageRow,
     MoneyTrailSummary, StatementQualityRow, StatementChannelRow,
     MuleAccountList, MuleAccountRow,
@@ -2672,6 +2672,25 @@ async def get_accounts_layer_distribution(
     )
 
 
+#: Narration fragments that survive counterparty-name extraction and are
+#: not people. enrich.py has a _NOT_NAMES set for the same job; these are
+#: the ones that get through because they are two words, or mixed case,
+#: or simply were not on that list.
+#:
+#: Kept HERE rather than pushed upstream on purpose. Widening the
+#: parser's list would change what is written into 26 million rows and
+#: require a full re-parse to take effect; this only decides what one
+#: read-only panel shows, and can be corrected the moment somebody spots
+#: a name being wrongly hidden.
+_NOT_A_COUNTERPARTY = {
+    "upiintent", "fund tra", "fund tran", "paid via n", "paid via m",
+    "paid via s", "paid via u", "sent using", "sent from", "payment fr",
+    "payment to", "upi", "imps", "neft", "rtgs", "transfer", "cwdr",
+    "na", "n a", "nil", "self", "req pay", "reqpay", "trans", "transfe",
+    "mob", "mb", "ft", "fn", "collect", "merc", "w2b",
+}
+
+
 @router.get("/accounts-fir-trace", response_model=AccountsFirTrace)
 async def get_accounts_fir_trace(
     fir_no: str = Query(..., min_length=1, max_length=50,
@@ -3022,6 +3041,91 @@ async def get_accounts_fir_trace(
                 out_links=b["out"], in_links=b["in"],
                 txns=b["txns"], amount=b["amt"], peers=peers))
 
+    # ── money that left, named but unlinkable ────────────────────────
+    #
+    # A link needs the other party's ACCOUNT NUMBER, so it can be matched
+    # against the mule register. Measured across the corpus, whether the
+    # bank writes one is entirely a matter of channel:
+    #
+    #   RTGS 99%   NEFT 83%   UPI 69%   IMPS 13%
+    #
+    # IMPS is not a parser failure. Inbound reads
+    # "FT IMPS/IFI/<ref>/<NAME>/..." -- a person and no account. Outbound
+    # reads "MB IMPS/IFO/<ref>/<IFSC>/..." -- a BRANCH shared by
+    # thousands of accounts. Matching on either would fabricate links,
+    # which is why enrich.py refuses them.
+    #
+    # So this money is reported instead of drawn. Without it the screen
+    # shows a parsed statement, hundreds of rows, no arrows and no
+    # explanation, which reads as a broken diagram rather than as the
+    # limit of what the bank disclosed.
+    #
+    # ── ON READING THE FACT TABLE FROM AN ENDPOINT ───────────────────
+    #
+    # CLAUDE.md says no dashboard query touches statement_transactions,
+    # and this is the first that does. Deliberate, and narrow:
+    #
+    #   * it is an INDEXED lookup on the handful of account ids belonging
+    #     to one FIR (ix_stmt_txn_account), not an aggregate over 26M
+    #     rows. Measured at 61 ms for 1,530 rows.
+    #   * its cost grows with statements-per-account, which is bounded,
+    #     NOT with corpus size -- which is what the rule exists to
+    #     protect. A 200 GB fact table does not make this query slower.
+    #   * there is no summary table carrying counterparty names, and
+    #     adding one would mean a migration plus a full nightly rebuild
+    #     before a single officer saw anything.
+    #
+    # If this ever stops being a per-FIR lookup, it needs a summary
+    # table. Docs updated to say so rather than leaving the invariant
+    # quietly false.
+    unlinked: list[FirTraceUnlinked] = []
+    if traced_ids:
+        rows_u = (await db.execute(
+            select(
+                StatementTransaction.counterparty_name,
+                StatementTransaction.channel,
+                func.count().label("txns"),
+                # chain_ok = 1 ONLY. Untested money is counted
+                # separately, never added in -- folding the two together
+                # is what put a quadrillion-rupee total on a dashboard.
+                func.sum(case((StatementTransaction.chain_ok == 1,
+                               StatementTransaction.debit), else_=0)).label("amt"),
+                func.sum(case((StatementTransaction.chain_ok != 1, 1),
+                              else_=0)).label("unver"),
+            )
+            .where(
+                StatementTransaction.account_id.in_(traced_ids),
+                StatementTransaction.debit > 0,
+                # TRANSFER CHANNELS ONLY. A cash withdrawal has no
+                # counterparty at all, and the narration code for one
+                # ("CWDR") is picked up as a name -- on the first FIR
+                # tested it was the single largest "recipient" at
+                # 1.17 lakh across 165 rows, which is an ATM, not a
+                # person. Cash-out is a real and important destination
+                # and deserves its own treatment; it is not this list.
+                StatementTransaction.channel.in_(
+                    ("UPI", "IMPS", "NEFT", "RTGS", "TRANSFER")),
+                # Named, but with no account number and no UPI id -- the
+                # two things that could have made it a link.
+                StatementTransaction.counterparty_name.isnot(None),
+                StatementTransaction.counterparty_name != "",
+                func.lower(StatementTransaction.counterparty_name).notin_(
+                    _NOT_A_COUNTERPARTY),
+                or_(StatementTransaction.counterparty_account.is_(None),
+                    StatementTransaction.counterparty_account == ""),
+                or_(StatementTransaction.counterparty_upi.is_(None),
+                    StatementTransaction.counterparty_upi == ""),
+            )
+            .group_by(StatementTransaction.counterparty_name,
+                      StatementTransaction.channel)
+            .order_by(func.sum(case((StatementTransaction.chain_ok == 1,
+                                     StatementTransaction.debit), else_=0)).desc())
+            .limit(200))).all()
+        unlinked = [FirTraceUnlinked(
+            counterparty_name=nm, channel=ch, txns=int(n or 0),
+            amount=float(amt or 0), unverified_txns=int(unv or 0),
+        ) for nm, ch, n, amt, unv in rows_u]
+
     # ── the victim, at the head of the trail ─────────────────────────
     #
     # ALWAYS DRAWN, even when there is nothing to draw. A money trail
@@ -3078,6 +3182,7 @@ async def get_accounts_fir_trace(
     return AccountsFirTrace(
         flows=flows,
         network=network,
+        unlinked=unlinked,
         fir_no=fir,
         case=case_meta,
         accounts=accounts,

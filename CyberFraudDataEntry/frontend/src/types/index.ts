@@ -1172,6 +1172,17 @@ export type FirTraceSource =
    *  returned by the server under this tag. */
   | 'outside';
 
+export interface FirTraceUnlinked {
+  counterparty_name: string;
+  channel: string | null;
+  txns: number;
+  /** Chain-verified rows only, like every other money figure here. */
+  amount: number;
+  /** Rows left OUT of `amount` because the balance chain could not be
+   *  verified — shown separately, never folded in. */
+  unverified_txns: number;
+}
+
 export interface FirTraceAccount {
   source: FirTraceSource;
   layer: number | null;
@@ -1218,6 +1229,10 @@ export interface AccountsFirTrace {
    *  accounts' statements parsed AND both recorded as Mule. */
   flows: FirTraceFlow[];
   network: MuleNetworkRow[];
+  /** Money that left an account on this FIR to a counterparty the bank
+   *  NAMED but gave no account number for — so it can never become an
+   *  arrow. Reported instead of drawn. */
+  unlinked: FirTraceUnlinked[];
   warnings: string[];
 }
 
