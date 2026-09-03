@@ -250,10 +250,22 @@ MySQL 8+ / InnoDB / `utf8mb4` / `utf8mb4_unicode_ci`. `cases.id` is `VARCHAR(36)
 
 **All DERIVED.** Every row is a function of the files under
 `backend/uploads/` and is rebuildable by re-running `analysis.daily`.
-**No web endpoint reads `statement_transactions`** — dashboards read the
+**Exactly ONE web endpoint reads `statement_transactions`** (see below) — every other dashboard reads the
 ~150 MB of summary tables instead, which is what keeps page loads
 independent of a fact table heading for 200 GB. See
 [database.md](./database.md#107-upload-analysis-subsystem-7-tables).
+
+ONE EXCEPTION, added 2026-09-03 and deliberately narrow. The FIR trace
+(`/accounts-fir-trace`) reads the fact table to list named recipients
+that carry no account number, so the Graphical Analysis screen can say
+why money visibly left an account with no arrow drawn. It is an INDEXED
+lookup on the handful of account ids belonging to ONE FIR
+(`ix_stmt_txn_account`) -- measured at 61 ms for 1,530 rows -- so its
+cost grows with statements-per-account, which is bounded, and NOT with
+corpus size, which is what this rule exists to protect. No summary table
+carries counterparty names. If that query ever stops being per-FIR, it
+needs one.
+
 
 Total: 37 tables. Every child table CASCADE-deletes with its parent; every operator-created row carries `submitted_by`.
 
