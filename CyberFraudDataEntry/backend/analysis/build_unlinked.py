@@ -115,18 +115,40 @@ ACCOUNT_CHUNK = 300
 FULL_REBUILD_NOTE = True
 
 
-async def build(conn, dry_run: bool = False, recent_hours: int = 0) -> dict:
+async def build(engine, dry_run: bool = False, recent_hours: int = 0) -> dict:
+    # ONE TRANSACTION PER CHUNK, not one for the whole run.
+    #
+    # The first version took a connection from engine.begin() and did
+    # everything inside it. Killed after two chunks it reported 26,559
+    # rows processed and had written NOTHING -- the rollback took all of
+    # it. On a run that takes hours, that means any interruption at hour
+    # three costs three hours, and 1.5 M rows in a single transaction
+    # would bloat the undo log besides.
+    #
+    # Committing per chunk is also what makes the comment below true
+    # rather than aspirational: a run that dies halfway leaves the table
+    # PARTIAL, and re-running REPLACEs what it redoes.
     if recent_hours:
-        # Accounts with statement rows parsed in the window. created_at
-        # is set at insert, so this catches a re-parse as well as a
-        # first parse.
-        accounts = [r[0] for r in (await conn.execute(text(
-            "SELECT DISTINCT account_id FROM statement_transactions "
-            "WHERE created_at >= NOW() - INTERVAL :h HOUR"),
-            {"h": recent_hours})).all()]
+        # FROM THE LEDGER, not from the fact table.
+        #
+        # The first version selected on statement_transactions.created_at,
+        # which has no index -- so deciding what was "incremental"
+        # scanned all 26.5 M rows before any useful work began, every
+        # night. build_crypto already reads upload_ledger for exactly
+        # this: 33 k rows, one per processed file, and processed_at is
+        # what it is for.
+        async with engine.connect() as c0:
+            accounts = [str(r[0]) for r in (await c0.execute(text(
+                "SELECT DISTINCT account_id FROM upload_ledger "
+                "WHERE file_kind = 'statement' AND account_id IS NOT NULL "
+                "AND processed_at >= NOW() - INTERVAL :h HOUR"),
+                {"h": recent_hours})).all()]
+        print(f"  {len(accounts):,} account(s) touched in {recent_hours}h",
+              flush=True)
     else:
-        accounts = [r[0] for r in (await conn.execute(text(
-            "SELECT DISTINCT account_id FROM account_statement_summary"))).all()]
+        async with engine.connect() as c0:
+            accounts = [str(r[0]) for r in (await c0.execute(text(
+                "SELECT DISTINCT account_id FROM account_statement_summary"))).all()]
 
     stats = {"accounts": len(accounts), "rows": 0, "written": 0,
              "unverified": 0, "mode": f"recent {recent_hours}h" if recent_hours
@@ -142,49 +164,54 @@ async def build(conn, dry_run: bool = False, recent_hours: int = 0) -> dict:
     # beats absent on a screen an officer is reading.
     for i in range(0, len(accounts), ACCOUNT_CHUNK):
         chunk = accounts[i:i + ACCOUNT_CHUNK]
-        rows = (await conn.execute(text(f"""
-            SELECT t.account_id, t.counterparty_name, t.channel,
-                   COUNT(*) AS txns,
-                   SUM(CASE WHEN t.chain_ok = 1 THEN t.debit ELSE 0 END) AS ver,
-                   SUM(CASE WHEN t.chain_ok <> 1 THEN 1 ELSE 0 END) AS unver
-            FROM statement_transactions t
-            WHERE t.account_id IN :ids
-              AND t.debit > 0
-              AND t.channel IN ({chans})
-              AND t.counterparty_name IS NOT NULL
-              AND t.counterparty_name <> ''
-              AND LOWER(t.counterparty_name) NOT IN ({stop})
-              AND (t.counterparty_account IS NULL OR t.counterparty_account = '')
-              AND (t.counterparty_upi IS NULL OR t.counterparty_upi = '')
-            GROUP BY t.account_id, t.counterparty_name, t.channel
-        """).bindparams(bindparam("ids", expanding=True)),
-            {"ids": chunk})).all()
 
-        stats["rows"] += len(rows)
-        stats["unverified"] += sum(int(r[5] or 0) for r in rows)
-        if dry_run or not rows:
-            continue
+        # One committed transaction per chunk. Read and write together,
+        # so the rows written are the rows just read.
+        async with engine.begin() as conn:
+            rows = (await conn.execute(text(f"""
+                SELECT t.account_id, t.counterparty_name, t.channel,
+                       COUNT(*) AS txns,
+                       SUM(CASE WHEN t.chain_ok = 1 THEN t.debit ELSE 0 END) AS ver,
+                       SUM(CASE WHEN t.chain_ok <> 1 THEN 1 ELSE 0 END) AS unver
+                FROM statement_transactions t
+                WHERE t.account_id IN :ids
+                  AND t.debit > 0
+                  AND t.channel IN ({chans})
+                  AND t.counterparty_name IS NOT NULL
+                  AND t.counterparty_name <> ''
+                  AND LOWER(t.counterparty_name) NOT IN ({stop})
+                  AND (t.counterparty_account IS NULL OR t.counterparty_account = '')
+                  AND (t.counterparty_upi IS NULL OR t.counterparty_upi = '')
+                GROUP BY t.account_id, t.counterparty_name, t.channel
+            """).bindparams(bindparam("ids", expanding=True)),
+                {"ids": chunk})).all()
 
-        await conn.execute(text("""
-            REPLACE INTO account_unlinked_counterparty
-                (account_id, counterparty_name, channel, txns,
-                 verified_debit, unverified_txns)
-            VALUES (:a, :n, :c, :t, :v, :u)
-        """), [{"a": r[0], "n": r[1], "c": r[2], "t": int(r[3] or 0),
-                "v": float(r[4] or 0), "u": int(r[5] or 0)} for r in rows])
-        stats["written"] += len(rows)
+            stats["rows"] += len(rows)
+            stats["unverified"] += sum(int(r[5] or 0) for r in rows)
+
+            if rows and not dry_run:
+                await conn.execute(text("""
+                    REPLACE INTO account_unlinked_counterparty
+                        (account_id, counterparty_name, channel, txns,
+                         verified_debit, unverified_txns)
+                    VALUES (:a, :n, :c, :t, :v, :u)
+                """), [{"a": r[0], "n": r[1], "c": r[2], "t": int(r[3] or 0),
+                        "v": float(r[4] or 0), "u": int(r[5] or 0)} for r in rows])
+                stats["written"] += len(rows)
 
         done = min(i + ACCOUNT_CHUNK, len(accounts))
         print(f"  {done:,}/{len(accounts):,} accounts · "
-              f"{stats['rows']:,} rows", flush=True)
+              f"{stats['written']:,} rows written", flush=True)
 
     return stats
 
 
 async def _main(dry_run: bool, recent_hours: int) -> int:
     from database import engine
-    async with engine.begin() as conn:
-        st = await build(conn, dry_run, recent_hours)
+    # build() manages its own transactions, one per chunk, so it takes
+    # the engine rather than a connection. A single transaction around a
+    # multi-hour run loses everything on any interruption.
+    st = await build(engine, dry_run, recent_hours)
     await engine.dispose()
     print("=" * 60)
     print(f"  mode                        : {st['mode']}")
