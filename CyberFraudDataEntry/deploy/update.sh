@@ -65,7 +65,7 @@ echo "    Done."
 
 # ── 3. Run additive DB migrations ────────────────────────────────────
 echo
-echo "=== 3. Run additive DB migrations 001 → 004, 006 → 026 (idempotent) ==="
+echo "=== 3. Run additive DB migrations 001 → 004, 006 → 027 (idempotent) ==="
 # Migration 005 (chat_messages) is deliberately skipped until the GPU box
 # is in place for the chat feature — there's no point provisioning an
 # empty audit table for an endpoint the prod app does not yet expose.
@@ -101,6 +101,7 @@ sudo -u cyberfraud bash -c "
     venv/bin/python -m migrations.024_crypto_transactions
     venv/bin/python -m migrations.025_ifsc_branch
     venv/bin/python -m migrations.026_widen_summary_money
+    venv/bin/python -m migrations.027_unlinked_counterparty
 "
 
 # ── 4. Build the frontend ────────────────────────────────────────────
@@ -643,6 +644,24 @@ if [ "$WIDE" = "6" ]; then
     echo "    ✓ summary money columns are decimal(24,2) (migration 026)"
 else
     echo "    ✗ expected 6 decimal(24,2) columns, found $WIDE — migration 026 did not complete"
+    exit 1
+fi
+
+# Migration 027: the table behind the "named recipients with no account
+# number" panel on Graphical Analysis. It exists so that screen never
+# reads statement_transactions again -- the version that did took 15.6 s
+# on one FIR and returned a gateway timeout in production.
+#
+# Checks the TABLE, not its contents. It is filled by the nightly
+# analysis run, so on the deploy that creates it the table is correctly
+# empty and the panel correctly hidden.
+UNLINKED=$(MYSQL_PWD="$DB_PASS" mysql --skip-column-names --user="$DB_USER" "$DB_NAME"     -e "SELECT COUNT(*) FROM information_schema.tables
+        WHERE table_schema='$DB_NAME'
+          AND table_name='account_unlinked_counterparty'" 2>/dev/null || echo "ERROR")
+if [ "$UNLINKED" = "1" ]; then
+    echo "    ✓ account_unlinked_counterparty exists (migration 027)"
+else
+    echo "    ✗ account_unlinked_counterparty missing — migration 027 did not complete"
     exit 1
 fi
 

@@ -80,6 +80,8 @@ STEPS = [
      ["-m", "migrations.025_ifsc_branch"]),
     ("migration 026 — widen summary money columns",
      ["-m", "migrations.026_widen_summary_money"]),
+    ("migration 027 — named-but-unnumbered counterparties",
+     ["-m", "migrations.027_unlinked_counterparty"]),
     ("relink — repair account links after the restore",
      ["-m", "analysis.relink"]),
     ("parse statements — incremental",
@@ -101,6 +103,13 @@ STEPS = [
     # withdrawn rule stay on screen, indistinguishable from current ones.
     ("find crypto transactions — incremental",
      ["-m", "analysis.build_crypto", "--recent", "48"]),
+    # After parsing, like the links and crypto steps, and for the same
+    # reason: it reads freshly parsed narrations. A full rebuild rather
+    # than an incremental one -- it REPLACEs per (account, name,
+    # channel), so re-running is idempotent and a changed stop-word list
+    # takes effect without leaving withdrawn rows on screen.
+    ("summarise named-but-unnumbered recipients",
+     ["-m", "analysis.build_unlinked"]),
     ("verify summary cache",
      ["-m", "analysis.summary", "--check"]),
 ]

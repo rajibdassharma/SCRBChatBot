@@ -78,7 +78,7 @@ Old CLAUDE / SPEC docs mention only admin + unit_user — that's out of date. Su
   gunicorn.conf.py              # Prod process config — the systemd unit
                                 # will not start without it
   requirements-dev.txt          # app + analysis + test deps in one install
-  /migrations/001..026_*.py     # Numbered, idempotent
+  /migrations/001..027_*.py     # Numbered, idempotent
   /analysis/                    # Upload analysis — BATCH ONLY.
                                 # The web app never imports this.
                                 # daily.py is the nightly chain.
@@ -145,9 +145,10 @@ Prereqs: MySQL 8+, Python 3.10+, Node 18+.
 ## Code style
 
 **Backend**
-- One model file per DB table under `models/` — **36 of the 37 tables.**
-  The exception is `mule_account_link`, which is read by raw `text()` in
-  `routes_dashboard.py` and has no ORM model. Adding one is fine; just
+- One model file per DB table under `models/` — **36 of the 38 tables.**
+  The two exceptions are `mule_account_link` and
+  `account_unlinked_counterparty`, both read by raw `text()` in
+  `routes_dashboard.py` with no ORM model. Adding one is fine; just
   don't assume it is already there
 - One Pydantic domain file per feature under `schemas/`
 - One route module per feature under `api/`
@@ -189,7 +190,7 @@ Prereqs: MySQL 8+, Python 3.10+, Node 18+.
 
 ## Database
 
-37 tables. Full list in [Architecture.md](./Architecture.md#4-database-schema). Highlights:
+38 tables. Full list in [Architecture.md](./Architecture.md#4-database-schema). Highlights:
 
 - `users`, `units`, `police_stations`, `revoked_tokens` — identity
 - `cases` + 10 child tables — Cases & Petitions
@@ -198,8 +199,8 @@ Prereqs: MySQL 8+, Python 3.10+, Node 18+.
 - `dsr_entries`, `mule_entries`, `daily_work_entries`, `portals_dsr_entries`, `daily_nil_declarations` — DSR
 - `chat_messages` — Admin (audit trail)
 - `statement_transactions`, `upload_ledger`, `account_statement_summary`,
-  `id_photo_hashes`, `mule_account_link`, `crypto_txn`, `ifsc_branch` —
-  upload analysis (migrations 019–026). **All derived and rebuildable**
+  `id_photo_hashes`, `mule_account_link`, `crypto_txn`, `ifsc_branch`,
+  `account_unlinked_counterparty` — upload analysis (migrations 019–027). **All derived and rebuildable**
 
 Key UNIQUEs: `(unit_id, ps_id, fir_no)` on cases, `acknowledgement_no`+`fir_no` on mule_reports, `(unit_id, ps_id, report_date)` on dsr, `(unit_id, ps_id, fir_no, report_date)` on daily_work, `(unit_id, ps_id, serial_no)` on all_accounts.
 

@@ -3022,36 +3022,43 @@ async def get_accounts_fir_trace(
                 out_links=b["out"], in_links=b["in"],
                 txns=b["txns"], amount=b["amt"], peers=peers))
 
-    # ── money that left, named but unlinkable — WITHDRAWN ────────────
+    # ── money that left, named but unlinkable ────────────────────────
     #
-    # This endpoint briefly queried statement_transactions directly to
-    # list named recipients carrying no account number. It caused a
-    # GATEWAY TIMEOUT in production and is disabled.
+    # Read from the SUMMARY, never from statement_transactions.
     #
-    # WHY THE MEASUREMENT THAT JUSTIFIED IT WAS WORTHLESS. I timed one
-    # FIR -- 16 accounts, 1,530 statement rows, 61 ms -- and concluded
-    # the cost was "bounded by statements-per-account". FIR 0001/2026 at
-    # Bagalkot has 29 accounts and 66,055 rows, and takes 15.6 SECONDS
-    # on a 32 GB laptop. The server has 2 vCPU.
+    # The first version of this queried the fact table per FIR. It was
+    # reverted the same day: Bagalkot 0001/2026 has 29 accounts and
+    # 66,055 statement rows and took 15.6 s on a 32 GB laptop, a gateway
+    # timeout on the 2-vCPU server. The aggregation was not the cost --
+    # the same filter with no GROUP BY took 15.6 s too, because each of
+    # 66,000 index hits is a random read into a 27.6 GB table.
     #
-    # And the aggregation was not the problem: the same filter with no
-    # GROUP BY takes 15.6 s too. The cost is the row access. An index on
-    # account_id yields row pointers, and each fetch is a random read
-    # into a 27.6 GB table -- 66,000 of them. No amount of query tuning
-    # removes that, which is precisely why the rule in CLAUDE.md says no
-    # endpoint may read this table. The rule was right; my exception was
-    # one benchmark on an unrepresentative case.
+    # account_unlinked_counterparty (migration 027, filled nightly by
+    # analysis.build_unlinked) holds ~1.5 M rows and is indexed on
+    # account_id, so this is a few hundred rows however large the FIR.
     #
-    # TO BRING IT BACK, it needs what the rule always implied: a summary
-    # table at (account_id, counterparty_name, channel) grain, filled by
-    # the nightly analysis job, with a numbered migration. Then the
-    # endpoint reads a few hundred rows from a small table and the FIR
-    # size stops mattering.
-    #
-    # The response field and the UI panel stay. Both handle an empty
-    # list, so nothing breaks while it is unpopulated -- and reinstating
-    # it becomes a backend change alone.
+    # THE NAMES ARE NOT IDENTITIES. Banks truncate them, so "ROHIT KUMA"
+    # and "ROHIT KUM" may be one person. Grouped for display only --
+    # models/statement_transaction.py forbids this column as a join key
+    # and that still holds here.
     unlinked: list[FirTraceUnlinked] = []
+    if traced_ids:
+        rows_u = (await db.execute(text("""
+            SELECT counterparty_name, channel,
+                   SUM(txns)             AS txns,
+                   SUM(verified_debit)   AS amt,
+                   SUM(unverified_txns)  AS unver
+            FROM account_unlinked_counterparty
+            WHERE account_id IN :ids
+            GROUP BY counterparty_name, channel
+            ORDER BY SUM(verified_debit) DESC
+            LIMIT 200
+        """).bindparams(bindparam("ids", expanding=True)),
+            {"ids": traced_ids})).all()
+        unlinked = [FirTraceUnlinked(
+            counterparty_name=nm, channel=ch, txns=int(n or 0),
+            amount=float(amt or 0), unverified_txns=int(unv or 0),
+        ) for nm, ch, n, amt, unv in rows_u]
 
     # ── the victim, at the head of the trail ─────────────────────────
     #

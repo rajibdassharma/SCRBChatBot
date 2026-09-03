@@ -124,7 +124,7 @@ CyberFraudDataEntry/
 │   ├── utils/
 │   │   ├── validators.py       # amount cap, FIR No format
 │   │   └── sanitize.py         # strip_html for all free text
-│   ├── migrations/             # 001–026, idempotent, hand-rolled
+│   ├── migrations/             # 001–027, idempotent, hand-rolled
 │   └── analysis/               # Upload analysis — BATCH ONLY, never
 │       │                       # imported by the web app
 │       ├── daily.py            # The nightly chain: migrations → parse →
@@ -242,11 +242,11 @@ MySQL 8+ / InnoDB / `utf8mb4` / `utf8mb4_unicode_ci`. `cases.id` is `VARCHAR(36)
 |---|---|
 | `chat_messages` | Every question + answer + SQL for audit (migration 005) |
 
-### Upload analysis (7 tables, migrations 019–026)
+### Upload analysis (8 tables, migrations 019–027)
 
 `statement_transactions` (26.5 M rows / 27.6 GB), `upload_ledger`,
 `account_statement_summary`, `id_photo_hashes`, `mule_account_link`,
-`crypto_txn`, `ifsc_branch`.
+`crypto_txn`, `ifsc_branch`, `account_unlinked_counterparty`.
 
 **All DERIVED.** Every row is a function of the files under
 `backend/uploads/` and is rebuildable by re-running `analysis.daily`.
@@ -273,7 +273,7 @@ just because one FIR was small. Anything needing this data needs a
 summary table filled by the nightly job.
 
 
-Total: 37 tables. Every child table CASCADE-deletes with its parent; every operator-created row carries `submitted_by`.
+Total: 38 tables. Every child table CASCADE-deletes with its parent; every operator-created row carries `submitted_by`.
 
 ### Migration discipline
 
@@ -527,7 +527,7 @@ Every daily report has a `.json` sibling that returns the same aggregated rows t
 
 1. `git pull` on `/opt/scrb`
 2. pip install
-3. Run migrations 001 → 004, 006 → 026 (idempotent — each is a no-op when already applied; 005 is skipped on prod)
+3. Run migrations 001 → 004, 006 → 027 (idempotent — each is a no-op when already applied; 005 is skipped on prod)
 4. `npm install && npm run build` (frontend)
 5. rsync backend + frontend/dist into runtime
 6. Restart `cyberfraud-backend.service`
