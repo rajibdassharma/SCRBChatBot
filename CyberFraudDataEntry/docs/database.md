@@ -860,7 +860,7 @@ lets `backup-db.sh` exclude the largest of them.
 | `id_photo_hashes` | 21 k | SHA-256 + 24×24 perceptual hash per ID photo. Powers Duplicate IDs |
 | `mule_account_link` | 2.4 k | Direct mule → mule transfers, with a `cross_fir` flag. **The one table with no ORM model** — `routes_dashboard.py` reads it through raw `text()` |
 | `crypto_txn` | 984 | Statement rows naming a crypto exchange or asset |
-| `account_unlinked_counterparty` | ~1.5 M | Per (account, named counterparty, channel): money out to a recipient the bank named but did not number. Filled nightly by `analysis.build_unlinked` |
+| `account_unlinked_counterparty` | ~1.5 M | Per (account, named counterparty, channel): money out to a recipient the bank named but did not number. Filled by `analysis.build_unlinked` — `--recent 48` nightly, because a FULL rebuild is ~90 min on a laptop and hours on the server (63 s per 300 accounts, measured) |
 | `ifsc_branch` | 183 k | IFSC → bank / branch / district / state. Master data from outside |
 
 **The ledger and the fact table must live on the same machine.** Shipping

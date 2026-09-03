@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Money that left an account to a NAMED but UNNUMBERED counterparty.
 
-    python -m analysis.build_unlinked              # rebuild
-    python -m analysis.build_unlinked --dry-run    # report, write nothing
+    python -m analysis.build_unlinked                # FULL rebuild (slow)
+    python -m analysis.build_unlinked --recent 48    # only accounts parsed
+                                                     # in the last 48 h
+    python -m analysis.build_unlinked --dry-run      # report, write nothing
 
 WHAT THIS ANSWERS
 -----------------
@@ -97,13 +99,38 @@ NOT_A_COUNTERPARTY = {
 #: relocated off the request path.
 ACCOUNT_CHUNK = 300
 
+#: MEASURED, and the reason --recent exists.
+#:
+#: One chunk of 300 accounts takes 63 SECONDS on a 32 GB laptop. Across
+#: the 25,588 accounts that have a statement that is ~85 chunks, about
+#: 90 minutes here and several hours on the 2-vCPU server -- far too
+#: much to spend every night re-deriving rows that have not changed.
+#:
+#: So the nightly pass looks only at accounts whose statement rows were
+#: parsed recently, exactly as build_crypto does. A full rebuild stays
+#: available and is needed after any change to NOT_A_COUNTERPARTY or
+#: CHANNELS, because --recent only refreshes the accounts it touches:
+#: rows excluded by a withdrawn rule would otherwise sit there
+#: indefinitely, indistinguishable from current ones.
+FULL_REBUILD_NOTE = True
 
-async def build(conn, dry_run: bool = False) -> dict:
-    accounts = [r[0] for r in (await conn.execute(text(
-        "SELECT DISTINCT account_id FROM account_statement_summary"))).all()]
+
+async def build(conn, dry_run: bool = False, recent_hours: int = 0) -> dict:
+    if recent_hours:
+        # Accounts with statement rows parsed in the window. created_at
+        # is set at insert, so this catches a re-parse as well as a
+        # first parse.
+        accounts = [r[0] for r in (await conn.execute(text(
+            "SELECT DISTINCT account_id FROM statement_transactions "
+            "WHERE created_at >= NOW() - INTERVAL :h HOUR"),
+            {"h": recent_hours})).all()]
+    else:
+        accounts = [r[0] for r in (await conn.execute(text(
+            "SELECT DISTINCT account_id FROM account_statement_summary"))).all()]
 
     stats = {"accounts": len(accounts), "rows": 0, "written": 0,
-             "unverified": 0}
+             "unverified": 0, "mode": f"recent {recent_hours}h" if recent_hours
+             else "full rebuild"}
     if not accounts:
         return stats
 
@@ -154,13 +181,14 @@ async def build(conn, dry_run: bool = False) -> dict:
     return stats
 
 
-async def _main(dry_run: bool) -> int:
+async def _main(dry_run: bool, recent_hours: int) -> int:
     from database import engine
     async with engine.begin() as conn:
-        st = await build(conn, dry_run)
+        st = await build(conn, dry_run, recent_hours)
     await engine.dispose()
     print("=" * 60)
-    print(f"  accounts with a statement   : {st['accounts']:,}")
+    print(f"  mode                        : {st['mode']}")
+    print(f"  accounts examined           : {st['accounts']:,}")
     print(f"  named-but-unnumbered rows   : {st['rows']:,}")
     print(f"  written                     : {st['written']:,}")
     print(f"  txns excluded from the money: {st['unverified']:,}"
@@ -168,10 +196,17 @@ async def _main(dry_run: bool) -> int:
     print("=" * 60)
     if dry_run:
         print("dry run: nothing written.")
+    if st["mode"] != "full rebuild":
+        print("  --recent only REFRESHES the accounts it touched. After")
+        print("  changing NOT_A_COUNTERPARTY or CHANNELS, run a full")
+        print("  rebuild or withdrawn rows stay on screen.")
     return 0
 
 
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
-    sys.exit(asyncio.run(_main(ap.parse_args().dry_run)))
+    ap.add_argument("--recent", type=int, default=0, metavar="HOURS",
+                    help="only accounts with rows parsed in the last N hours")
+    a = ap.parse_args()
+    sys.exit(asyncio.run(_main(a.dry_run, a.recent)))

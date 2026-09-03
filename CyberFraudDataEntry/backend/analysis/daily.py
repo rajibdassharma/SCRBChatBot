@@ -104,12 +104,20 @@ STEPS = [
     ("find crypto transactions — incremental",
      ["-m", "analysis.build_crypto", "--recent", "48"]),
     # After parsing, like the links and crypto steps, and for the same
-    # reason: it reads freshly parsed narrations. A full rebuild rather
-    # than an incremental one -- it REPLACEs per (account, name,
-    # channel), so re-running is idempotent and a changed stop-word list
-    # takes effect without leaving withdrawn rows on screen.
-    ("summarise named-but-unnumbered recipients",
-     ["-m", "analysis.build_unlinked"]),
+    # reason: it reads freshly parsed narrations.
+    #
+    # --recent, NOT a full rebuild. Measured: one chunk of 300 accounts
+    # takes 63 s, and there are 25,588 accounts with a statement -- about
+    # 90 minutes on a laptop and several hours on this server. Far too
+    # much to spend nightly re-deriving rows that have not changed.
+    #
+    # Same caveat as build_crypto: --recent only refreshes the accounts
+    # it touches. After changing NOT_A_COUNTERPARTY or CHANNELS in
+    # build_unlinked.py, run a full `python -m analysis.build_unlinked`
+    # by hand -- otherwise rows excluded by the withdrawn rule stay on
+    # screen, indistinguishable from current ones.
+    ("summarise named-but-unnumbered recipients — incremental",
+     ["-m", "analysis.build_unlinked", "--recent", "48"]),
     ("verify summary cache",
      ["-m", "analysis.summary", "--check"]),
 ]

@@ -246,7 +246,10 @@ Things that have bitten, and will again:
   `statement_transactions` produces a server that skips every file it
   believes is done, and summaries describing rows that are not there
 - **`--recent` only ADDS rows.** After changing a detector pattern, run
-  the full rebuild or withdrawn matches stay on screen
+  the full rebuild or withdrawn matches stay on screen. This applies to
+  BOTH `build_crypto` and `build_unlinked` — the latter's full rebuild
+  is ~90 min on a laptop and hours on the server (63 s per 300
+  accounts, measured), which is exactly why it runs `--recent 48`
 - **Tuning constants were calibrated on a 32 GB laptop.** `RESERVE_GB`,
   `RESERVE_CORES`, `IDLE_TIMEOUT_S` all have env overrides set in
   `deploy/cyberfraud-nightly.service`, and every one of them was wrong
