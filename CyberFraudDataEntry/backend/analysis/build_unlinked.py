@@ -63,6 +63,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import os
+import re
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -93,6 +94,78 @@ NOT_A_COUNTERPARTY = {
     "mob", "mb", "ft", "fn", "collect", "merc", "w2b",
 }
 
+#: THREE CLASSES OF NOISE, found by running this and reading the output
+#: rather than by imagining what a bad name looks like.
+#:
+#: The top "recipients" by amount were OUT (Rs 14.93 crore), SBIN,
+#: UTIB, PUNB, MB IMPS and STATEBANKOFINDIA -- not one of them a
+#: person. An officer opening that panel would have seen a bank code as
+#: the largest destination of stolen money.
+#:
+#:   1. IFSC BANK PREFIXES. An IMPS narration reads
+#:      "MB IMPS/IFO/<ref>/SBIN0001234/..." and the name extractor takes
+#:      the four-letter bank code. Rejected by reusing the same prefix
+#:      list routes_dashboard.py already keeps.
+#:   2. SHORT FRAGMENTS. OUT, IXT, FT, MB. Anything under four
+#:      characters is not a name worth showing.
+#:   3. BANKS AND RAILS AS PARTIES. "STATEBANKOFINDIA", "KOT AK MAHINDRA
+#:      BANK", "CHENNAI ANNA NAGAR INTER BANK". A bank is where money
+#:      went, not who received it.
+#:
+#: None of this makes the column trustworthy -- it is the weakest in the
+#: schema and models/statement_transaction.py says so. It makes the list
+#: worth reading.
+MIN_NAME_LEN = 4
+
+#: Four-letter IFSC bank codes, mirrored from routes_dashboard.py's
+#: _IFSC_TO_BANK. Duplicated deliberately: analysis/ must never import
+#: from api/, and a stale entry here costs one noisy row rather than a
+#: broken import.
+IFSC_PREFIXES = {
+    "AIRP",
+    "AUBL",
+    "AXIS",
+    "BARB",
+    "BDBL",
+    "BKID",
+    "CBIN",
+    "CNRB",
+    "CSBK",
+    "DCBL",
+    "ESFB",
+    "FDRL",
+    "FINO",
+    "HDFC",
+    "IBKL",
+    "ICIC",
+    "IDFB",
+    "IDIB",
+    "INDB",
+    "IOBA",
+    "IPOS",
+    "JSFB",
+    "KARB",
+    "KKBK",
+    "KVBL",
+    "MAHB",
+    "PSIB",
+    "PUNB",
+    "PYTM",
+    "RATN",
+    "SBIN",
+    "SIBL",
+    "SUYB",
+    "TMBL",
+    "UBIN",
+    "UCBA",
+    "USFB",
+    "UTKS",
+    "YESB",
+}
+
+#: A name containing any of these is a bank or a channel, not a person.
+BANKISH = ("BANK", "IMPS", "NEFT", "RTGS", "UPI", "INTER BANK", "BILLPAY")
+
 #: Accounts per pass. The whole point of this script is that the fact
 #: table is only ever read in bounded slices -- a single unpartitioned
 #: GROUP BY over 26.5 M rows is the thing being avoided, not just
@@ -113,6 +186,62 @@ ACCOUNT_CHUNK = 300
 #: rows excluded by a withdrawn rule would otherwise sit there
 #: indefinitely, indistinguishable from current ones.
 FULL_REBUILD_NOTE = True
+
+
+#: Exactly four capitals and nothing else. Every IFSC bank code has this
+#: shape -- SBIN, UTIB, PUNB, BARB, CNRB, HDFC, FDRL -- and the name
+#: extractor lifts them straight out of an IMPS narration.
+#:
+#: This rejects a genuine four-letter name in capitals (RAJU, RAMU) and
+#: that trade is made deliberately: losing one real recipient from a
+#: LEAD list costs far less than an officer reading "UTIB — Rs 1.92
+#: crore" as the largest destination of stolen money. A prefix LIST was
+#: tried first and inherited its gaps -- routes_dashboard.py's map has
+#: 39 entries and no UTIB, so Axis survived the filter and went straight
+#: to the top of the table.
+_FOUR_CAPS = re.compile(r"^[A-Z]{4}$")
+
+#: A masked number the bank printed instead of a name.
+_MASKED = re.compile(r"^[X*x\d\s]+$")
+
+#: Narration fragments that are not names and are not short enough for
+#: MIN_NAME_LEN to catch.
+#:
+#: THE WORD BOUNDARIES MATTER AND WERE LOST ONCE ALREADY. An earlier
+#: edit wrote them through a shell heredoc, Python read the escape as
+#: a BACKSPACE, and the pattern compiled into control characters --
+#: matching nothing, while "TR To Trf MOB" sat at the top of the table
+#: at Rs 140 lakh. A regex that silently matches nothing looks exactly
+#: like a regex with nothing to match.
+#:
+#: Without the boundaries these would eat real names instead: MOB is
+#: inside MOBIN, SELF inside SELVAM.
+_FRAGMENT = re.compile(
+    r"TPARTY|INBIFT|BILLPAY"
+    r"|\bTRF\b|\bTR\s+TO\b|\bTRANSFER\b"
+    r"|\bPAYMENT\b|\bMOB\b|\bSELF\b"
+    r"|\bHEAD\s+OFFICE\b|\bBRANCH\b",
+    re.I)
+
+
+def _is_a_name(name: str | None) -> bool:
+    """Does this look like a person or a company, rather than a bank
+    code or a scrap of narration?
+
+    Deliberately strict. This feeds a LEAD list an officer reads top
+    down, so a false name near the top costs more than a real one
+    missing from the middle.
+    """
+    n = (name or "").strip()
+    if len(n) < MIN_NAME_LEN:
+        return False
+    if n.lower() in NOT_A_COUNTERPARTY:
+        return False
+    if n.upper() in IFSC_PREFIXES or _FOUR_CAPS.match(n):
+        return False
+    if _MASKED.match(n) or _FRAGMENT.search(n):
+        return False
+    return not any(b in n.upper() for b in BANKISH)
 
 
 async def build(engine, dry_run: bool = False, recent_hours: int = 0) -> dict:
@@ -168,7 +297,7 @@ async def build(engine, dry_run: bool = False, recent_hours: int = 0) -> dict:
         # One committed transaction per chunk. Read and write together,
         # so the rows written are the rows just read.
         async with engine.begin() as conn:
-            rows = (await conn.execute(text(f"""
+            raw = (await conn.execute(text(f"""
                 SELECT t.account_id, t.counterparty_name, t.channel,
                        COUNT(*) AS txns,
                        SUM(CASE WHEN t.chain_ok = 1 THEN t.debit ELSE 0 END) AS ver,
@@ -185,6 +314,10 @@ async def build(engine, dry_run: bool = False, recent_hours: int = 0) -> dict:
                 GROUP BY t.account_id, t.counterparty_name, t.channel
             """).bindparams(bindparam("ids", expanding=True)),
                 {"ids": chunk})).all()
+
+            # Filtered in Python, not SQL. The rules are readable here
+            # and would be an unmaintainable WHERE clause there.
+            rows = [r for r in raw if _is_a_name(r[1])]
 
             stats["rows"] += len(rows)
             stats["unverified"] += sum(int(r[5] or 0) for r in rows)
@@ -230,10 +363,54 @@ async def _main(dry_run: bool, recent_hours: int) -> int:
     return 0
 
 
+# ── self-check ───────────────────────────────────────────────────────
+#
+#     python -m analysis.build_unlinked --selftest
+#
+# Exists because _FRAGMENT has already been silently broken once: an
+# edit turned its word boundaries into backspace characters, the regex
+# compiled cleanly, matched nothing, and a narration fragment sat at the
+# top of the table at Rs 140 lakh. Nothing errored. Nothing logged.
+#
+# Every case below was taken from real output, on both sides.
+_SELFTEST = [
+    # (name, should_be_kept)
+    ("Sudharsan", True), ("ROHIT KUMA", True), ("Sumathi va", True),
+    ("ZERODHA BR", True), ("NAVEEN WADHERA", True),
+    # These two are why the boundaries are needed: MOB is inside MOBIN,
+    # SELF inside SELVAM.
+    ("MOBIN", True), ("SELVAM", True),
+    ("UTIB", False), ("SBIN", False), ("HDFC", False),   # IFSC codes
+    ("OUT", False), ("IXT", False), ("FT", False),       # too short
+    ("XXXXXXXXXX", False), ("******1234", False),        # masked
+    ("TR To Trf MOB", False), ("TPARTY TRANSFER", False),
+    ("INBIFTvferbhtjTPARTY TRANSFER", False),
+    ("HEAD OFFICE", False), ("STATEBANKOFINDIA", False),
+    ("KOT AK MAHINDRA BANK", False),
+]
+
+
+def selftest() -> int:
+    bad = 0
+    for name, want in _SELFTEST:
+        got = _is_a_name(name)
+        if got != want:
+            bad += 1
+            print(f"  FAIL  {name!r}: expected "
+                  f"{'keep' if want else 'drop'}, got "
+                  f"{'keep' if got else 'drop'}")
+    print(f"  {len(_SELFTEST) - bad}/{len(_SELFTEST)} name rules hold")
+    return 1 if bad else 0
+
+
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--recent", type=int, default=0, metavar="HOURS",
                     help="only accounts with rows parsed in the last N hours")
+    ap.add_argument("--selftest", action="store_true",
+                    help="check the name rules and exit — no DB needed")
     a = ap.parse_args()
+    if a.selftest:
+        sys.exit(selftest())
     sys.exit(asyncio.run(_main(a.dry_run, a.recent)))
