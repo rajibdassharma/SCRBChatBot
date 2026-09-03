@@ -251,7 +251,7 @@ Eight dashboard tabs that mine the files operators have ALREADY uploaded — ID 
 - Deep Analysis / Graphical Analysis: per-FIR account tables and the same relationships drawn as a graph
 
 **Non-functional expectations for this module:**
-- **No dashboard query AGGREGATES over the 26 M-row fact table.** Every screen reads pre-computed summary tables (~150 MB), so page load stays flat as the statement corpus grows. The single exception is the FIR trace, which does a bounded indexed lookup on one FIR's accounts to report named recipients with no account number — 61 ms measured, and its cost does not grow with the corpus
+- **No dashboard query touches the 26 M-row fact table.** Every screen reads pre-computed summary tables (~150 MB), so page load stays flat as the statement corpus grows. An exception was attempted on 2026-09-03 — a per-FIR lookup for the Graphical Analysis screen — and reverted the same day after a 15.6 s query timed out in production; see Architecture.md
 - Analysis runs nightly on the server (23:00 IST), before the backup, so each night's backup contains that night's analysis
 - Figures are as of the last nightly run, not live — the tabs are investigative, not transactional
 - Derived tables are rebuildable end-to-end from `backend/uploads/`; losing them costs time, not evidence

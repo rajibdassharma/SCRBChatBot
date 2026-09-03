@@ -210,20 +210,26 @@ All child tables CASCADE with parent. All `cases.id` FKs must match `VARCHAR(36)
 ## Upload analysis (`backend/analysis/`)
 
 A batch subsystem, not part of the web app. **Nothing under `api/` imports
-it, and only ONE endpoint reads `statement_transactions`** — dashboards
+it, and no endpoint reads `statement_transactions`** — dashboards
 read the ~150 MB of derived summary tables, which is what keeps page loads
 independent of a 27 GB fact table.
 
-ONE EXCEPTION, added 2026-09-03 and deliberately narrow. The FIR trace
-(`/accounts-fir-trace`) reads the fact table to list named recipients
-that carry no account number, so the Graphical Analysis screen can say
-why money visibly left an account with no arrow drawn. It is an INDEXED
-lookup on the handful of account ids belonging to ONE FIR
-(`ix_stmt_txn_account`) -- measured at 61 ms for 1,530 rows -- so its
-cost grows with statements-per-account, which is bounded, and NOT with
-corpus size, which is what this rule exists to protect. No summary table
-carries counterparty names. If that query ever stops being per-FIR, it
-needs one.
+AN EXCEPTION WAS TRIED ON 2026-09-03 AND REVERTED THE SAME DAY. The FIR
+trace read the fact table directly to list named recipients with no
+account number. It was justified on one measurement -- 16 accounts,
+1,530 rows, 61 ms -- and that FIR was not representative. FIR 0001/2026
+at Bagalkot has 29 accounts and 66,055 rows and took 15.6 SECONDS on a
+32 GB laptop; on the 2-vCPU server it was a gateway timeout.
+
+The aggregation was not the cost. The same filter with no GROUP BY also
+took 15.6 s. An index on account_id gives row pointers and each fetch is
+a random read into a 27.6 GB table -- 66,000 of them. No query tuning
+removes that.
+
+So the rule holds without exception, and the lesson is about the shape
+of the benchmark rather than the rule: a per-FIR lookup is not bounded
+just because one FIR was small. Anything needing this data needs a
+summary table filled by the nightly job.
 
 Runs on the SERVER nightly since 2026-08-17: `cyberfraud-nightly.timer`
 at 23:00 IST → `analysis.daily --skip-relink` → `backup-all.sh`. The
