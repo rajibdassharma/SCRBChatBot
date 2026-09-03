@@ -1638,7 +1638,19 @@ function LegendChip({ color, label }: { color: string; label: string }) {
  *  explaining why — which reads as a broken diagram instead of as the
  *  limit of what the bank disclosed. */
 function UnlinkedOutflows({ rows }: { rows: FirTraceUnlinked[] }) {
+  const [page, setPage] = useState(0);
+  // Back to the first page whenever a different FIR is traced —
+  // otherwise a short result set opened at page 4 renders empty and
+  // looks like the new case has no unlinked money.
+  useEffect(() => { setPage(0); }, [rows]);
+
+  const pg = paginate(rows.length, page);
+  const pageRows = pg.slice(rows);
+
   if (!rows.length) return null;
+  // Totals are for the WHOLE result, not the page. A footer that
+  // re-totalled per page would make the sum change as you paged
+  // through it, which is the kind of number an officer quotes.
   const total = rows.reduce((s, r) => s + r.amount, 0);
   const unverified = rows.reduce((s, r) => s + r.unverified_txns, 0);
 
@@ -1648,6 +1660,12 @@ function UnlinkedOutflows({ rows }: { rows: FirTraceUnlinked[] }) {
         <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>
           Named recipients with no account number — {formatINR(total)}
         </h3>
+        <p className="text-sm font-medium mt-0.5" style={{ color: 'var(--ksp-red)' }}>
+          {rows.length === 1
+            ? '1 recipient'
+            : `showing ${formatNumber(pg.firstIdx + 1)}–${formatNumber(pg.lastIdx)}`
+              + ` of ${formatNumber(rows.length)} recipients`}
+        </p>
         <div className="mt-1">
           <CaveatNote summary="Why these have no arrow on the diagram above">
             The bank named who received this money but did not record their
@@ -1674,7 +1692,7 @@ function UnlinkedOutflows({ rows }: { rows: FirTraceUnlinked[] }) {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => (
+            {pageRows.map((r, i) => (
               <tr key={`${r.counterparty_name}-${r.channel}-${i}`}
                   style={{ borderTop: '1px solid rgba(11,44,74,0.08)' }}>
                 <td className="px-4 py-2 font-semibold">{r.counterparty_name}</td>
@@ -1688,6 +1706,8 @@ function UnlinkedOutflows({ rows }: { rows: FirTraceUnlinked[] }) {
           </tbody>
         </table>
       </div>
+      <Pager total={rows.length} page={pg.safePage} pageCount={pg.pageCount}
+        onPage={setPage} noun="recipients" size={PAGE_SIZE} />
       {unverified > 0 && (
         <div className="px-5 py-2 text-xs" style={{ color: 'var(--ksp-red)' }}>
           {formatNumber(unverified)} further transfer{unverified === 1 ? '' : 's'} are
