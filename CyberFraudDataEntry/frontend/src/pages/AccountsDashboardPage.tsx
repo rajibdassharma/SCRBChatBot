@@ -7,7 +7,7 @@ import {
   Trophy, FileDown, FileSpreadsheet, Search, Network, Waypoints, Repeat,
   // Aliased: an unqualified `Map` would shadow the global Map constructor.
   Map as MapIcon, Fingerprint, Banknote, FileWarning, ArrowLeft,
-  LayoutDashboard, Bitcoin} from 'lucide-react';
+  LayoutDashboard, Bitcoin, FileText} from 'lucide-react';
 import { toast } from 'sonner';
 import * as XLSX from 'xlsx';
 import jsPDF from 'jspdf';
@@ -924,7 +924,7 @@ function DeepAnalysisTab({ mode, focus, onBack }: {
               {/* Directly under the diagram, because it exists to answer
                   the question the diagram provokes: money clearly left
                   these accounts, so why are there no arrows. */}
-              <UnlinkedOutflows rows={trace.unlinked ?? []} />
+              <UnlinkedOutflows rows={trace.unlinked ?? []} firNo={trace.fir_no} />
             </div>
           )}
 
@@ -1637,7 +1637,7 @@ function LegendChip({ color, label }: { color: string; label: string }) {
  *  shows a parsed statement, hundreds of rows, no arrows and nothing
  *  explaining why — which reads as a broken diagram instead of as the
  *  limit of what the bank disclosed. */
-function UnlinkedOutflows({ rows }: { rows: FirTraceUnlinked[] }) {
+function UnlinkedOutflows({ rows, firNo }: { rows: FirTraceUnlinked[]; firNo: string }) {
   const [page, setPage] = useState(0);
   // Back to the first page whenever a different FIR is traced —
   // otherwise a short result set opened at page 4 renders empty and
@@ -1654,18 +1654,119 @@ function UnlinkedOutflows({ rows }: { rows: FirTraceUnlinked[] }) {
   const total = rows.reduce((s, r) => s + r.amount, 0);
   const unverified = rows.reduce((s, r) => s + r.unverified_txns, 0);
 
+  /** Columns defined ONCE so Excel and PDF cannot disagree about what
+   *  the export contains — the same reason the other exports on this
+   *  page share a matrix. */
+  const matrix = () => ({
+    header: ['Recipient (as the bank wrote it)', 'Channel', 'Transfers',
+             'Amount (Rs)', 'Unverified transfers'],
+    body: rows.map((r) => [
+      r.counterparty_name,
+      r.channel ?? '',
+      r.txns,
+      // Raw number, not the formatted string. An Excel column of
+      // "Rs 84,222" cannot be summed by the person who opens it.
+      r.amount,
+      r.unverified_txns,
+    ]),
+  });
+
+  const stamp = `${firNo.replace(/[^0-9A-Za-z]+/g, '-')}`
+    + `_${new Date().toISOString().slice(0, 10)}`;
+
+  /** The caveat travels WITH the file.
+   *
+   *  On screen this table sits under an explanation of why these
+   *  recipients have no arrow. Exported, it becomes a list of names and
+   *  amounts with none of that — and it is exactly the artefact that
+   *  gets pasted into a case note. Anyone reading the sheet has to be
+   *  told the same thing the screen tells them. */
+  const CAVEAT = [
+    'These are LEADS, not evidence of a link.',
+    'The bank named who received this money but recorded no account number,'
+      + ' so it cannot be matched against the mule register.',
+    'This is the bank narration format, not a gap in parsing: RTGS carries an'
+      + ' account number 99% of the time and NEFT 83%, but IMPS only 13% — it'
+      + ' names the other party inbound and gives an IFSC (a branch, shared by'
+      + ' thousands of accounts) outbound.',
+    'Names are truncated by the bank and are NOT identities. The same person'
+      + ' may appear more than once, spelled differently.',
+    'Amounts include balance-chain-verified rows only.',
+  ];
+
+  function downloadExcel() {
+    if (!rows.length) { toast.error('Nothing to export.'); return; }
+    const { header, body } = matrix();
+    const ws = XLSX.utils.aoa_to_sheet([
+      [`Named recipients with no account number — FIR ${firNo}`],
+      ...CAVEAT.map((c) => [c]),
+      [],
+      header,
+      ...body,
+    ]);
+    ws['!cols'] = header.map((_, i) => ({
+      wch: Math.min(52, Math.max(12, Math.max(String(header[i]).length,
+        ...body.map((r) => String(r[i] ?? '').length)) + 2)) }));
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Unlinked recipients');
+    XLSX.writeFile(wb, `unlinked-recipients_${stamp}.xlsx`);
+  }
+
+  function downloadPdf() {
+    if (!rows.length) { toast.error('Nothing to export.'); return; }
+    const { header, body } = matrix();
+    const doc = new jsPDF({ orientation: 'portrait', unit: 'pt', format: 'a4' });
+    doc.setFontSize(14);
+    doc.text(`Named recipients with no account number — FIR ${firNo}`, 40, 40);
+    doc.setFontSize(10);
+    doc.text(`${formatNumber(rows.length)} recipients · ${formatINR(total)}`, 40, 58);
+    doc.setFontSize(7.5);
+    let y = 74;
+    for (const line of CAVEAT) {
+      for (const wrapped of doc.splitTextToSize(line, 515) as string[]) {
+        doc.text(wrapped, 40, y); y += 10;
+      }
+    }
+    autoTable(doc, {
+      startY: y + 6, head: [header],
+      body: body.map((r) => r.map((v, i) =>
+        i === 3 ? formatINR(Number(v)) : String(v ?? ''))),
+      styles: { fontSize: 8, cellPadding: 3, overflow: 'linebreak' },
+      headStyles: { fillColor: [11, 44, 74] },
+      alternateRowStyles: { fillColor: [245, 245, 247] },
+      columnStyles: { 2: { halign: 'right' }, 3: { halign: 'right' },
+                      4: { halign: 'right' } },
+    });
+    doc.save(`unlinked-recipients_${stamp}.pdf`);
+  }
+
   return (
     <div className="rounded-2xl overflow-hidden" style={cardStyle}>
       <div className="px-5 py-3" style={{ borderTop: '4px solid #b45309' }}>
         <h3 className="text-sm font-bold" style={{ color: 'var(--ksp-navy)' }}>
           Named recipients with no account number — {formatINR(total)}
         </h3>
-        <p className="text-sm font-medium mt-0.5" style={{ color: 'var(--ksp-red)' }}>
-          {rows.length === 1
-            ? '1 recipient'
-            : `showing ${formatNumber(pg.firstIdx + 1)}–${formatNumber(pg.lastIdx)}`
-              + ` of ${formatNumber(rows.length)} recipients`}
-        </p>
+        <div className="flex items-end justify-between gap-4 flex-wrap">
+          <p className="text-sm font-medium mt-0.5" style={{ color: 'var(--ksp-red)' }}>
+            {rows.length === 1
+              ? '1 recipient'
+              : `showing ${formatNumber(pg.firstIdx + 1)}–${formatNumber(pg.lastIdx)}`
+                + ` of ${formatNumber(rows.length)} recipients`}
+          </p>
+          {/* Exports carry the WHOLE result, not the page on screen. */}
+          <div className="flex gap-2">
+            <button onClick={downloadExcel} disabled={!rows.length}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-semibold disabled:opacity-40"
+              style={{ background: '#0a8f3c', color: '#fff' }}>
+              <FileSpreadsheet className="w-4 h-4" /> Excel
+            </button>
+            <button onClick={downloadPdf} disabled={!rows.length}
+              className="inline-flex items-center gap-1 px-3 py-1.5 rounded-lg text-sm font-semibold disabled:opacity-40"
+              style={{ background: '#8b1919', color: '#fff' }}>
+              <FileText className="w-4 h-4" /> PDF
+            </button>
+          </div>
+        </div>
         <div className="mt-1">
           <CaveatNote summary="Why these have no arrow on the diagram above">
             The bank named who received this money but did not record their
